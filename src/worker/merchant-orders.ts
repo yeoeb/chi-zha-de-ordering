@@ -195,6 +195,18 @@ export async function getOrderSnapshotById(db: D1Database, orderId: string) {
 	return buildMerchantOrders(results)[0] ?? null;
 }
 
+export async function getOrderSnapshotByPublicLookupToken(
+	db: D1Database,
+	publicLookupToken: string,
+) {
+	const { results } = await db
+		.prepare(`${SNAPSHOT_SELECT} WHERE orders.public_lookup_token = ? ${SNAPSHOT_ORDER}`)
+		.bind(publicLookupToken)
+		.all<MerchantOrderRow>();
+
+	return buildMerchantOrders(results)[0] ?? null;
+}
+
 function requireValidNow(now: Date) {
 	if (Number.isNaN(now.getTime())) {
 		throw new RangeError("now must be a valid date");

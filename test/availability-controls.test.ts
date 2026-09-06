@@ -108,15 +108,21 @@ describe("Merchant item availability", () => {
 
 	it("does not mutate an existing Order snapshot", async () => {
 		const creation = await postOrder("historical-order");
-		const created = (await creation.json()) as { order: { id: string } };
+		const created = (await creation.json()) as {
+			order: { publicLookupToken: string };
+		};
+		const createdInternal = await env.DB
+			.prepare("SELECT id FROM orders WHERE public_lookup_token = ?")
+			.bind(created.order.publicLookupToken)
+			.first<{ id: string }>();
 		await postAction("/api/merchant/menu-items/1/sold-out");
 
 		const customerResponse = await exports.default.fetch(
-			`https://example.com/api/orders/${created.order.id}`,
+			`https://example.com/api/orders/by-token/${created.order.publicLookupToken}`,
 		);
 		const customerOrder = await customerResponse.json();
 		const acceptResponse = await postAction(
-			`/api/merchant/orders/${created.order.id}/accept`,
+			`/api/merchant/orders/${createdInternal?.id}/accept`,
 		);
 
 		expect(customerResponse.status).toBe(200);
@@ -134,7 +140,13 @@ describe("Merchant item availability", () => {
 describe("Merchant store availability", () => {
 	it("pauses new checkout while existing Orders remain actionable, then resumes independently", async () => {
 		const existingCreation = await postOrder("existing-before-pause");
-		const existing = (await existingCreation.json()) as { order: { id: string } };
+		const existing = (await existingCreation.json()) as {
+			order: { publicLookupToken: string };
+		};
+		const existingInternal = await env.DB
+			.prepare("SELECT id FROM orders WHERE public_lookup_token = ?")
+			.bind(existing.order.publicLookupToken)
+			.first<{ id: string }>();
 		const initialStore = await exports.default.fetch("https://example.com/api/store");
 		expect(await initialStore.json()).toMatchObject({ is_accepting_orders: true });
 
@@ -158,10 +170,10 @@ describe("Merchant store availability", () => {
 			error: { code: "STORE_NOT_ACCEPTING_ORDERS" },
 		});
 
-		const accepted = await postAction(`/api/merchant/orders/${existing.order.id}/accept`);
-		const completed = await postAction(`/api/merchant/orders/${existing.order.id}/complete`);
+		const accepted = await postAction(`/api/merchant/orders/${existingInternal?.id}/accept`);
+		const completed = await postAction(`/api/merchant/orders/${existingInternal?.id}/complete`);
 		const customerOrder = await exports.default.fetch(
-			`https://example.com/api/orders/${existing.order.id}`,
+			`https://example.com/api/orders/by-token/${existing.order.publicLookupToken}`,
 		);
 		expect(accepted.status).toBe(200);
 		expect(completed.status).toBe(200);

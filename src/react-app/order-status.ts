@@ -1,7 +1,7 @@
 export type OrderStatus = "pending" | "accepted" | "completed" | "rejected";
 
 export type CustomerOrder = {
-	id: string;
+	publicLookupToken: string;
 	orderNumber: string;
 	status: OrderStatus;
 	customerName: string;

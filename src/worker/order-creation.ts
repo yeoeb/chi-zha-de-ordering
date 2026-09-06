@@ -19,6 +19,7 @@ export type CreateOrderRequest = {
 
 export type OrderSnapshot = {
 	id: string;
+	publicLookupToken: string;
 	orderNumber: string;
 	status: "pending" | "accepted" | "completed" | "rejected";
 	total: number;
@@ -61,6 +62,7 @@ export class OrderCreationError extends Error {
 
 type StoredOrderRow = {
 	orderId: string;
+	publicLookupToken: string;
 	orderNumber: string;
 	orderStatus: OrderSnapshot["status"];
 	totalAmount: number;
@@ -200,6 +202,7 @@ async function getStoredOrderByIdempotencyKey(db: D1Database, idempotencyKey: st
 		.prepare(
 			`SELECT
 				orders.id AS orderId,
+				orders.public_lookup_token AS publicLookupToken,
 				orders.order_number AS orderNumber,
 				orders.status AS orderStatus,
 				orders.total_amount AS totalAmount,
@@ -240,6 +243,7 @@ async function getStoredOrderByIdempotencyKey(db: D1Database, idempotencyKey: st
 
 	const order: OrderSnapshot = {
 		id: first.orderId,
+		publicLookupToken: first.publicLookupToken,
 		orderNumber: first.orderNumber,
 		status: first.orderStatus,
 		total: first.totalAmount,
@@ -316,6 +320,11 @@ function createOrderNumber(now: Date) {
 	return `CZ-${date}-${crypto.randomUUID().slice(0, 8).toUpperCase()}`;
 }
 
+export function createPublicLookupToken() {
+	const bytes = crypto.getRandomValues(new Uint8Array(32));
+	return [...bytes].map((value) => value.toString(16).padStart(2, "0")).join("");
+}
+
 function assertFingerprintMatches(existingFingerprint: string, requestFingerprint: string) {
 	if (existingFingerprint !== requestFingerprint) {
 		throw new OrderCreationError(
@@ -370,12 +379,14 @@ export async function createOrder(
 		now,
 	);
 	const orderId = crypto.randomUUID();
+	const publicLookupToken = createPublicLookupToken();
 	const orderNumber = createOrderNumber(now);
 	const statements: D1PreparedStatement[] = [
 		db
 			.prepare(
 				`INSERT INTO orders (
 					id,
+					public_lookup_token,
 					order_number,
 					status,
 					total_amount,
@@ -386,10 +397,11 @@ export async function createOrder(
 					special_order,
 					idempotency_key,
 					request_fingerprint
-				) VALUES (?, ?, 'pending', ?, ?, ?, ?, ?, ?, ?, ?)`,
+				) VALUES (?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?, ?, ?)`,
 			)
 			.bind(
 				orderId,
+				publicLookupToken,
 				orderNumber,
 				pricedCart.total,
 				preparationTime.estimatedReadyAt,
@@ -489,6 +501,7 @@ export async function createOrder(
 	return {
 		order: {
 			id: orderId,
+			publicLookupToken,
 			orderNumber,
 			status: "pending" as const,
 			total: pricedCart.total,

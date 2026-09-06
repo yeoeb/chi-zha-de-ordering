@@ -3,6 +3,7 @@
 	"description": "Local-first ordering system for the single-store chicken shop 吃炸的",
 	"dependencies": {
 		"hono": "^4.13.7",
+		"jose": "^6.2.12",
 		"react": "19.2.1",
 		"react-dom": "19.2.1"
 	},

@@ -1,0 +1,8 @@
+# Copy to .dev.vars for local Merchant API/UI access. Never set this bypass in production.
+MERCHANT_DEV_BYPASS=true
+PUBLIC_WRITE_RATE_LIMIT_DEV_BYPASS=true
+
+# Production only: set this to the exact Cloudflare Access-protected Merchant hostname.
+# MERCHANT_HOSTNAME=merchant.example.com
+# CF_ACCESS_TEAM_DOMAIN=https://your-team.cloudflareaccess.com
+# CF_ACCESS_AUD=your-access-application-audience-tag

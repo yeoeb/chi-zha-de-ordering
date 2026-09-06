@@ -17,12 +17,12 @@ function formatDateTime(timestamp: string) {
 }
 
 type CustomerOrderStatusProps = {
-	orderId: string;
+	publicLookupToken: string;
 	initialOrder?: CustomerOrder;
 };
 
 export default function CustomerOrderStatus({
-	orderId,
+	publicLookupToken,
 	initialOrder,
 }: CustomerOrderStatusProps) {
 	const [order, setOrder] = useState<CustomerOrder | null>(initialOrder ?? null);
@@ -39,10 +39,13 @@ export default function CustomerOrderStatus({
 			activeRequest = new AbortController();
 
 			try {
-				const response = await fetch(`/api/orders/${encodeURIComponent(orderId)}`, {
+				const response = await fetch(
+					`/api/orders/by-token/${encodeURIComponent(publicLookupToken)}`,
+					{
 					signal: activeRequest.signal,
 					cache: "no-store",
-				});
+					},
+				);
 
 				if (response.status === 404) {
 					if (!stopped) {
@@ -92,7 +95,7 @@ export default function CustomerOrderStatus({
 			}
 			activeRequest?.abort();
 		};
-	}, [initialOrder, orderId]);
+	}, [initialOrder, publicLookupToken]);
 
 	const statusCopy = order ? CUSTOMER_STATUS_COPY[order.status] : null;
 
@@ -146,7 +149,7 @@ export default function CustomerOrderStatus({
 
 					<ul className="customer-status-items">
 						{order.items.map((item, index) => (
-							<li key={`${order.id}-${index}`}>
+							<li key={`${order.publicLookupToken}-${index}`}>
 								<div>
 									<strong>
 										{item.name} × {item.quantity}

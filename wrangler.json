@@ -14,5 +14,15 @@
 			"database_name": "chi-zha-de-ordering-local",
 			"migrations_dir": "migrations"
 		}
+	],
+	"ratelimits": [
+		{
+			"name": "ORDER_RATE_LIMITER",
+			"namespace_id": "1001",
+			"simple": {
+				"limit": 20,
+				"period": 60
+			}
+		}
 	]
 }

@@ -1,7 +1,7 @@
-import { getOrderSnapshotById, type OrderStatus } from "./merchant-orders";
+import { getOrderSnapshotByPublicLookupToken, type OrderStatus } from "./merchant-orders";
 
 export type CustomerOrder = {
-	id: string;
+	publicLookupToken: string;
 	orderNumber: string;
 	status: OrderStatus;
 	customerName: string;
@@ -21,15 +21,26 @@ export type CustomerOrder = {
 	}>;
 };
 
-export async function getCustomerOrder(db: D1Database, orderId: string) {
-	const storedOrder = await getOrderSnapshotById(db, orderId);
+type CustomerOrderSource = Omit<CustomerOrder, "publicLookupToken" | "items"> & {
+	items: Array<{
+		name: string;
+		unitPrice: number;
+		quantity: number;
+		lineTotal: number;
+		modifiers: Array<{
+			groupName: string;
+			name: string;
+			priceDelta: number;
+		}>;
+	}>;
+};
 
-	if (!storedOrder) {
-		return null;
-	}
-
-	const order: CustomerOrder = {
-		id: storedOrder.id,
+export function toCustomerOrder(
+	storedOrder: CustomerOrderSource,
+	publicLookupToken: string,
+): CustomerOrder {
+	return {
+		publicLookupToken,
 		orderNumber: storedOrder.orderNumber,
 		status: storedOrder.status,
 		customerName: storedOrder.customerName,
@@ -48,6 +59,14 @@ export async function getCustomerOrder(db: D1Database, orderId: string) {
 			})),
 		})),
 	};
+}
 
-	return order;
+export async function getCustomerOrder(db: D1Database, publicLookupToken: string) {
+	const storedOrder = await getOrderSnapshotByPublicLookupToken(db, publicLookupToken);
+
+	if (!storedOrder) {
+		return null;
+	}
+
+	return toCustomerOrder(storedOrder, publicLookupToken);
 }

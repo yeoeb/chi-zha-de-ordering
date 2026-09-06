@@ -4,7 +4,7 @@ import {
 	parseCheckoutQuoteRequest,
 	validateAndPriceCart,
 } from "./checkout-quote";
-import { getCustomerOrder } from "./customer-orders";
+import { getCustomerOrder, toCustomerOrder } from "./customer-orders";
 import { getPreparationTimeEstimate } from "./preparation-time-policy";
 import {
 	createOrder,
@@ -23,8 +23,14 @@ import {
 	setStoreAcceptingOrders,
 } from "./merchant-availability";
 import { getStoreSettings } from "./store-settings";
+import { readBoundedJson, RequestBodyError } from "./request-body";
+import {
+	isMerchantRequestAllowed,
+	isRateLimitAllowed,
+	type SecurityBindings,
+} from "./security";
 
-const app = new Hono<{ Bindings: Env }>();
+const app = new Hono<{ Bindings: Env & SecurityBindings }>();
 
 type MenuRow = {
 	categoryId: number;
@@ -198,10 +204,22 @@ app.post("/api/checkout/quote", async (c) => {
 	let requestBody: unknown;
 
 	try {
-		requestBody = await c.req.json<unknown>();
-	} catch {
+		requestBody = await readBoundedJson(c.req.raw);
+	} catch (error) {
+		if (error instanceof RequestBodyError && error.status === 413) {
+			return c.json({ error: { code: error.code, message: error.message } }, 413);
+		}
+
 		return c.json(
-			{ error: { code: "INVALID_REQUEST", message: "Request body must be valid JSON" } },
+			{
+				error: {
+					code: "INVALID_REQUEST",
+					message:
+						error instanceof RequestBodyError
+							? error.message
+							: "Request body must be valid JSON",
+				},
+			},
 			400,
 		);
 	}
@@ -257,13 +275,45 @@ app.post("/api/checkout/quote", async (c) => {
 });
 
 app.post("/api/orders", async (c) => {
+	const clientAddress = c.req.header("CF-Connecting-IP");
+
+	if (
+		c.env.PUBLIC_WRITE_RATE_LIMIT_DEV_BYPASS !== "true" &&
+		c.env.ORDER_RATE_LIMITER
+	) {
+		const allowed = await isRateLimitAllowed(
+			c.env.ORDER_RATE_LIMITER,
+			`create-order:${clientAddress ?? "unknown"}`,
+		);
+
+		if (!allowed) {
+			c.header("Retry-After", "60");
+			return c.json(
+				{ error: { code: "RATE_LIMITED", message: "Too many Order requests" } },
+				429,
+			);
+		}
+	}
+
 	let requestBody: unknown;
 
 	try {
-		requestBody = await c.req.json<unknown>();
-	} catch {
+		requestBody = await readBoundedJson(c.req.raw);
+	} catch (error) {
+		if (error instanceof RequestBodyError && error.status === 413) {
+			return c.json({ error: { code: error.code, message: error.message } }, 413);
+		}
+
 		return c.json(
-			{ error: { code: "INVALID_ORDER_REQUEST", message: "Request body must be valid JSON" } },
+			{
+				error: {
+					code: "INVALID_ORDER_REQUEST",
+					message:
+						error instanceof RequestBodyError
+							? error.message
+							: "Request body must be valid JSON",
+				},
+			},
 			400,
 		);
 	}
@@ -273,7 +323,10 @@ app.post("/api/orders", async (c) => {
 		const request = parseCreateOrderRequest(requestBody);
 		const result = await createOrder(c.env.DB, request, idempotencyKey, new Date());
 
-		return c.json({ order: result.order }, result.replayed ? 200 : 201);
+		return c.json(
+			{ order: toCustomerOrder(result.order, result.order.publicLookupToken) },
+			result.replayed ? 200 : 201,
+		);
 	} catch (error) {
 		if (error instanceof CheckoutQuoteError || error instanceof OrderCreationError) {
 			return c.json(
@@ -286,9 +339,9 @@ app.post("/api/orders", async (c) => {
 	}
 });
 
-app.get("/api/orders/:id", async (c) => {
+app.get("/api/orders/by-token/:token", async (c) => {
 	c.header("Cache-Control", "no-store");
-	const order = await getCustomerOrder(c.env.DB, c.req.param("id"));
+	const order = await getCustomerOrder(c.env.DB, c.req.param("token"));
 
 	if (!order) {
 		return c.json(
@@ -298,6 +351,32 @@ app.get("/api/orders/:id", async (c) => {
 	}
 
 	return c.json({ order });
+});
+
+app.use("/api/merchant/*", async (c, next) => {
+	c.header("Cache-Control", "no-store");
+	const allowed = await isMerchantRequestAllowed({
+		devBypass: c.env.MERCHANT_DEV_BYPASS,
+		expectedHostname: c.env.MERCHANT_HOSTNAME,
+		requestUrl: c.req.url,
+		accessAudience: c.env.CF_ACCESS_AUD,
+		accessTeamDomain: c.env.CF_ACCESS_TEAM_DOMAIN,
+		accessToken: c.req.header("Cf-Access-Jwt-Assertion"),
+	});
+
+	if (!allowed) {
+		return c.json(
+			{
+				error: {
+					code: "MERCHANT_ACCESS_DENIED",
+					message: "Merchant access is not authorized",
+				},
+			},
+			403,
+		);
+	}
+
+	await next();
 });
 
 app.get("/api/merchant/orders", async (c) => {

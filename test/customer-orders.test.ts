@@ -4,6 +4,12 @@ import type { OrderStatus } from "../src/worker/merchant-orders";
 
 const persistedEta = "2026-09-06T06:30:00.000Z";
 
+function lookupToken(id: string) {
+	return Array.from({ length: 64 }, (_, index) =>
+		((id.charCodeAt(index % id.length) + index) % 16).toString(16),
+	).join("");
+}
+
 beforeAll(async () => {
 	await env.DB.batch([
 		env.DB.prepare(
@@ -43,14 +49,15 @@ async function insertOrder(id: string, status: OrderStatus = "pending") {
 		env.DB
 			.prepare(
 				`INSERT INTO orders (
-					id, order_number, status, total_amount, estimated_ready_at, created_at,
+					id, public_lookup_token, order_number, status, total_amount, estimated_ready_at, created_at,
 					accepted_at, completed_at, rejected_at, customer_name, customer_phone,
 					special_order, idempotency_key, request_fingerprint
-				) VALUES (?, ?, ?, 90, ?, '2026-09-06T05:00:00.000Z', ?, ?, ?, '王小明',
+				) VALUES (?, ?, ?, ?, 90, ?, '2026-09-06T05:00:00.000Z', ?, ?, ?, '王小明',
 					'0912345678', 0, ?, ?)`,
 			)
 			.bind(
 				id,
+				lookupToken(id),
 				`ORDER-${id}`,
 				status,
 				persistedEta,
@@ -78,14 +85,14 @@ async function insertOrder(id: string, status: OrderStatus = "pending") {
 	]);
 }
 
-describe("GET /api/orders/:id", () => {
+describe("GET /api/orders/by-token/:token", () => {
 	it.each<OrderStatus>(["pending", "accepted", "completed", "rejected"])(
 		"returns current %s status with persisted ETA and no-store",
 		async (status) => {
 			await insertOrder(`status-${status}`, status);
 
 			const response = await exports.default.fetch(
-				`https://example.com/api/orders/status-${status}`,
+				`https://example.com/api/orders/by-token/${lookupToken(`status-${status}`)}`,
 			);
 			const result = (await response.json()) as {
 				order: Record<string, unknown> & { status: string; estimatedReadyAt: string };
@@ -112,7 +119,7 @@ describe("GET /api/orders/:id", () => {
 		]);
 
 		const response = await exports.default.fetch(
-			"https://example.com/api/orders/snapshot-order",
+			`https://example.com/api/orders/by-token/${lookupToken("snapshot-order")}`,
 		);
 		const result = (await response.json()) as {
 			order: {
@@ -141,7 +148,9 @@ describe("GET /api/orders/:id", () => {
 	});
 
 	it("returns a no-store 404 for an unknown Order", async () => {
-		const response = await exports.default.fetch("https://example.com/api/orders/unknown-order");
+		const response = await exports.default.fetch(
+			`https://example.com/api/orders/by-token/${"f".repeat(64)}`,
+		);
 
 		expect(response.status).toBe(404);
 		expect(response.headers.get("Cache-Control")).toContain("no-store");
@@ -152,21 +161,21 @@ describe("GET /api/orders/:id", () => {
 		await insertOrder("transition-order");
 
 		const pending = await exports.default.fetch(
-			"https://example.com/api/orders/transition-order",
+			`https://example.com/api/orders/by-token/${lookupToken("transition-order")}`,
 		);
 		await exports.default.fetch(
 			"https://example.com/api/merchant/orders/transition-order/accept",
 			{ method: "POST" },
 		);
 		const accepted = await exports.default.fetch(
-			"https://example.com/api/orders/transition-order",
+			`https://example.com/api/orders/by-token/${lookupToken("transition-order")}`,
 		);
 		await exports.default.fetch(
 			"https://example.com/api/merchant/orders/transition-order/complete",
 			{ method: "POST" },
 		);
 		const completed = await exports.default.fetch(
-			"https://example.com/api/orders/transition-order",
+			`https://example.com/api/orders/by-token/${lookupToken("transition-order")}`,
 		);
 
 		const responses = await Promise.all([pending.json(), accepted.json(), completed.json()]) as Array<{

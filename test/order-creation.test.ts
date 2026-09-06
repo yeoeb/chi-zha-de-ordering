@@ -10,7 +10,7 @@ const defaultOrderRequest = {
 
 type OrderResponse = {
 	order: {
-		id: string;
+		publicLookupToken: string;
 		orderNumber: string;
 		status: string;
 		total: number;
@@ -80,11 +80,21 @@ async function insertQueueOrder(
 	await env.DB
 		.prepare(
 			`INSERT INTO orders (
-				id, order_number, status, total_amount, estimated_ready_at, created_at,
+				id, public_lookup_token, order_number, status, total_amount, estimated_ready_at, created_at,
 				customer_name, customer_phone, special_order, idempotency_key, request_fingerprint
-			) VALUES (?, ?, ?, 0, '2026-09-06T04:15:00.000Z', '2026-09-06T04:00:00.000Z', 'Queue', '0900000000', ?, ?, ?)`,
+			) VALUES (?, ?, ?, ?, 0, '2026-09-06T04:15:00.000Z', '2026-09-06T04:00:00.000Z', 'Queue', '0900000000', ?, ?, ?)`,
 		)
-		.bind(id, `QUEUE-${id}`, status, specialOrder ? 1 : 0, `queue-key-${id}`, "a".repeat(64))
+		.bind(
+			id,
+			Array.from({ length: 64 }, (_, index) =>
+				((id.charCodeAt(index % id.length) + index) % 16).toString(16),
+			).join(""),
+			`QUEUE-${id}`,
+			status,
+			specialOrder ? 1 : 0,
+			`queue-key-${id}`,
+			"a".repeat(64),
+		)
 		.run();
 }
 
@@ -100,8 +110,8 @@ describe("POST /api/orders", () => {
 			items: [{ name: "雞排", unitPrice: 100, lineTotal: 100 }],
 		});
 		const stored = await env.DB
-			.prepare("SELECT status, total_amount FROM orders WHERE id = ?")
-			.bind(result.order.id)
+			.prepare("SELECT status, total_amount FROM orders WHERE public_lookup_token = ?")
+			.bind(result.order.publicLookupToken)
 			.first<{ status: string; total_amount: number }>();
 		expect(stored).toEqual({ status: "pending", total_amount: 100 });
 	});
@@ -120,7 +130,7 @@ describe("POST /api/orders", () => {
 		const retry = (await retryResponse.json()) as OrderResponse;
 
 		expect(retryResponse.status).toBe(200);
-		expect(retry.order.id).toBe(first.order.id);
+		expect(retry.order.publicLookupToken).toBe(first.order.publicLookupToken);
 		expect(retry.order.items[0]).toMatchObject({
 			name: "雞排",
 			unitPrice: 100,
@@ -212,6 +222,7 @@ describe("POST /api/orders", () => {
 		expect(firstResponse.status).toBe(201);
 		expect(secondResponse.status).toBe(200);
 		expect(second.order).toEqual(first.order);
+		expect(second.order.publicLookupToken).toBe(first.order.publicLookupToken);
 		expect(count?.count).toBe(1);
 	});
 
@@ -235,12 +246,13 @@ describe("POST /api/orders", () => {
 			env.DB
 				.prepare(
 					`INSERT INTO orders (
-						id, order_number, status, total_amount, estimated_ready_at, created_at,
+							id, public_lookup_token, order_number, status, total_amount, estimated_ready_at, created_at,
 						customer_name, customer_phone, special_order, idempotency_key, request_fingerprint
-					) VALUES ('duplicate-id', 'DUPLICATE-NUMBER', 'pending', 0, ?, ?, 'Test', '0900000000', 0, 'db-unique-key', ?)`,
+						) VALUES ('duplicate-id', ?, 'DUPLICATE-NUMBER', 'pending', 0, ?, ?, 'Test', '0900000000', 0, 'db-unique-key', ?)`,
 				)
-				.bind(
-					"2026-09-06T04:15:00.000Z",
+					.bind(
+						"d".repeat(64),
+						"2026-09-06T04:15:00.000Z",
 					"2026-09-06T04:00:00.000Z",
 					"b".repeat(64),
 				)

@@ -2,7 +2,7 @@
 
 ## Current phase
 
-CP4 — Merchant Availability Controls complete and verified locally.
+CP5 — Production Security Foundation complete and verified locally. Deployment is still not approved.
 
 - CP0 — Initial Local Baseline: complete.
 - CP1 — Menu + Modifier + Client Cart: complete and verified.
@@ -15,6 +15,7 @@ CP4 — Merchant Availability Controls complete and verified locally.
 - CP3 Verification: complete.
 - CP3 — Merchant Processing + Customer Status: complete and verified.
 - CP4 — Merchant Availability Controls: complete and verified.
+- CP5 — Production Security Foundation: complete and verified.
 
 ## Implemented features
 
@@ -33,6 +34,9 @@ CP4 — Merchant Availability Controls complete and verified locally.
 - Explicit V1 Order state transitions guarded atomically by the expected current status in D1.
 - Customer Order status view can be reopened at `/orders/:id` and observes Merchant changes through bounded polling.
 - Merchant can independently mark customer-visible items sold out/available and pause/resume all new ordering.
+- Customer Order status uses a backend-generated opaque public lookup token rather than the internal Order ID.
+- Merchant APIs have a fail-closed Cloudflare Access JWT boundary with an explicit local-only bypass.
+- Public Order creation has a Cloudflare Workers Rate Limiting binding and bounded JSON request bodies.
 - Pure preparation-time policy with a UTC ISO-8601 absolute ready timestamp.
 - Reusable schema migrations are separate from replaceable local development fixtures.
 
@@ -43,7 +47,7 @@ CP4 — Merchant Availability Controls complete and verified locally.
 - `menu_items`: category foreign key, name, description, integer TWD price, deterministic sort order, and availability.
 - `modifier_groups`: menu item foreign key, name, `single` selection type, required state, deterministic sort order, and active state.
 - `modifier_options`: modifier group foreign key, name, integer TWD price delta, deterministic sort order, and active state.
-- `orders`: text ID, unique order number, constrained V1 status, authoritative integer total, absolute ETA/created/status timestamps, customer details, special-order flag, unique idempotency key, and request fingerprint.
+- `orders`: internal text ID, immutable unique 256-bit public lookup token, unique order number, constrained V1 status, authoritative integer total, absolute ETA/created/status timestamps, customer details, special-order flag, unique idempotency key, and request fingerprint.
 - `order_items`: Order/menu references plus immutable item name, unit price, quantity, line total, and deterministic snapshot order.
 - `order_item_modifiers`: Order-item/modifier references plus immutable group name, option name, price delta, and deterministic snapshot order.
 
@@ -55,8 +59,8 @@ SQLite boolean fields use constrained `0`/`1` values. No inventory, stock quanti
 - `GET /api/store`: single-store settings.
 - `GET /api/menu`: active categories and items with nested active modifier groups/options. The backend controls all relationships and ordering. Unavailable menu items remain present with `isAvailable: false`.
 - `POST /api/checkout/quote`: accepts only menu item IDs, quantities, and modifier option IDs. It validates current D1 data and returns normalized items, authoritative integer prices, total, lead minutes, and an absolute `estimatedReadyAt` timestamp. It does not create an Order.
-- `POST /api/orders`: accepts customer details, special-order state, and identity-only item selections with an `Idempotency-Key` header. It reuses authoritative validation/pricing, calculates queue-aware ETA, atomically stores snapshots, and returns the stored Order representation.
-- `GET /api/orders/:id`: returns a customer-safe historical Order projection from persisted snapshots with current status and committed ETA. Every response uses `Cache-Control: no-store`.
+- `POST /api/orders`: accepts customer details, special-order state, and identity-only item selections with an `Idempotency-Key` header. It reuses authoritative validation/pricing, calculates queue-aware ETA, atomically stores snapshots, and returns a customer-safe representation containing the public lookup token but not the internal Order ID.
+- `GET /api/orders/by-token/:token`: returns a customer-safe historical Order projection from persisted snapshots with current status and committed ETA. The old internal-ID route is not a public lookup contract. Every response uses `Cache-Control: no-store`.
 - `GET /api/merchant/orders`: returns only actionable `pending` and `accepted` Orders, oldest first, using stored item/modifier snapshots.
 - `POST /api/merchant/orders/:id/accept`: transitions `pending` to `accepted`.
 - `POST /api/merchant/orders/:id/reject`: transitions `pending` to `rejected`.
@@ -84,6 +88,7 @@ SQLite boolean fields use constrained `0`/`1` values. No inventory, stock quanti
 - An identical retry returns the same stored Order and does not revalidate changed menu data or create another Order.
 - Reusing a key with conflicting request content returns `409 IDEMPOTENCY_KEY_CONFLICT`.
 - Item and modifier snapshot writes are prepared with generated IDs and committed with the Order in one D1 transactional batch; any failed statement rolls back the sequence.
+- Order creation generates 32 cryptographically random bytes encoded as 64 lowercase hexadecimal characters. D1 enforces token uniqueness, validates new token shape, and prevents token mutation. Migration `0005` backfills historical local Orders.
 
 ## Merchant Order handling
 
@@ -98,8 +103,8 @@ SQLite boolean fields use constrained `0`/`1` values. No inventory, stock quanti
 
 ## Customer Order status
 
-- After Order creation, the customer is moved to `/orders/:id`; the opaque UUID route can also reopen the Order after a page reload.
-- The customer response contains Order ID/number, current status, customer name, creation time, persisted ETA, authoritative total, and snapshot items/modifiers. It excludes phone, idempotency data, special-order state, and internal transition timestamps.
+- After Order creation, the customer is moved to `/orders/:publicLookupToken`; the polling API reads `/api/orders/by-token/:token` and can reopen the Order after a page reload.
+- The customer response contains the public lookup token, Order number, current status, customer name, creation time, persisted ETA, authoritative total, and snapshot items/modifiers. It excludes the internal Order ID, phone, idempotency data, special-order state, and internal transition timestamps.
 - Customer wording is explicit: `pending` = 訂單已送出 / 等待店家確認, `accepted` = 店家已接受, `completed` = 訂單已完成, and `rejected` = 店家目前無法接單.
 - Pending and accepted views poll every 4 seconds. Completed and rejected views stop polling. The single chained timeout and active request are cleared/aborted when the component unmounts or the customer leaves the view.
 - A temporary request failure preserves the last successful Order and retries on the normal interval. A 404 displays a clear not-found message and stops polling.
@@ -143,6 +148,8 @@ SQLite boolean fields use constrained `0`/`1` values. No inventory, stock quanti
 - Availability mutations are four explicit action endpoints using prepared D1 statements; no generic field-patch or inventory abstraction was introduced.
 - The Merchant UI reuses `/api/store` and `/api/menu` for a touch-friendly operational section, while backend Quote/Order checks remain authoritative.
 - Static asset fallback remains SPA-based while `/api/*` always reaches the Worker first.
+- Merchant authorization is one small middleware boundary. In production it requires the exact configured Merchant hostname and cryptographically validates `Cf-Access-Jwt-Assertion` against the configured Cloudflare Access issuer, rotating JWK set, and audience. It does not trust a header without signature validation.
+- Public request-body parsing is bounded before JSON/domain validation. The Order rate limiter is isolated from idempotency and other correctness rules.
 
 ## Known V1 concurrency limitation
 
@@ -151,10 +158,16 @@ SQLite boolean fields use constrained `0`/`1` values. No inventory, stock quanti
 - Conditional transition updates prevent competing actions on one Order from both succeeding. They do not change the existing Order-creation queue snapshot limitation.
 - Store/item availability is read before the atomic Order snapshot batch. A simultaneous Merchant availability mutation can race within this small read-to-write window in V1; no distributed lock or reservation system is claimed or implemented.
 
-## Security limitation
+## Production security foundation
 
-- Merchant API endpoints and `/merchant` currently have no authentication or authorization. They are local-development-only and must not be exposed in production until merchant access control is implemented.
-- Customer Order lookup is also unauthenticated. UUID Order IDs are acceptable as opaque Local V1 lookup values, but production requires an explicit customer access-control or secure lookup-token boundary before public exposure.
+- Customer status lookup is possession-based through an immutable random 256-bit token. Internal Order IDs remain Merchant-side identifiers and are neither returned by public Order creation/status responses nor accepted by a public read route. This is not a Customer account system; anyone who obtains a token can read that Order's customer-safe status.
+- Production Merchant traffic must use a dedicated hostname protected by Cloudflare Access. The Worker additionally checks that exact hostname and validates the Access application JWT signature, issuer, and audience. Missing hostname/config/token, an invalid token, or an alternate `workers.dev`/preview/customer hostname fails closed with `403 MERCHANT_ACCESS_DENIED`.
+- Local Merchant access is enabled only when `MERCHANT_DEV_BYPASS=true` is intentionally set in an uncommitted `.dev.vars`; `.dev.vars.example` documents the setup. This binding must never be configured in production.
+- Because this Worker also serves public customer routes, Worker-wide Access must not block the whole app. Production routing must protect the Merchant hostname/path and must separately disable or protect alternate `workers.dev`, preview, custom-domain, and customer-host Merchant paths. The application guard protects Merchant APIs; Access must also protect the Merchant UI surface.
+- `POST /api/orders` uses the `ORDER_RATE_LIMITER` binding at 20 requests per 60 seconds per Cloudflare location and client-address key. Local/test may explicitly bypass it. This is permissive, eventually consistent abuse control—not globally exact accounting, authorization, idempotency, or a correctness mechanism. Shared client addresses can share a limit.
+- Both public POST endpoints reject non-JSON/malformed bodies and bodies over 32 KiB. Domain bounds remain 50 cart lines, quantity 1–99, 50 modifier options per line, customer name 1–50 characters, customer phone 1–30 characters, and idempotency key up to 128 characters.
+- Application code has no request/PII logging. Full phone numbers, Access JWTs/authorization headers, public lookup tokens, and credentials must not be logged or sent to analytics. Merchant and customer dynamic Order responses use `Cache-Control: no-store`.
+- Production Cloudflare Access applications, hostnames, D1 resources, environment values, and exposure rules have not been configured because deployment is not approved.
 
 ## Test approach
 
@@ -168,9 +181,9 @@ SQLite boolean fields use constrained `0`/`1` values. No inventory, stock quanti
 - Merchant tests cover every legal and required illegal transition, repeated/competing actions, transition timestamps, unchanged ETA, missing Orders, snapshot reads, active filtering, and deterministic oldest-first ordering.
 - Customer status tests cover all four statuses, snapshot isolation from Menu changes, persisted ETA, no-store cache headers, 404 behavior, Merchant transition visibility, and active/terminal polling decisions.
 - Availability integration tests cover idempotent sold-out/restore/pause/resume, Menu visibility, Quote/Order enforcement, stale Quote submissions, control independence, historical snapshots, and existing-Order transitions while paused.
-- CP4 verification passes 11 Vitest files and 75 tests, plus lint, TypeScript/build checks, and local curl sold-out, pause, independence, existing-Order, and CP0–CP3 regression flows.
+- CP5 verification passes 12 Vitest files and 86 tests, plus lint, TypeScript/build checks, local D1 migration/backfill checks, and curl smoke for token lookup, idempotent Order creation, Merchant transitions, availability controls, cache policy, and invalid/oversized requests.
 - Browser end-to-end tooling remains intentionally deferred; verification uses focused integration/unit tests and local HTTP smoke checks.
 
 ## Next feature
 
-Subject to Supervisor review: either CP5 — Notification + PWA Preparation, or Production Security. Production Security should be prioritized before any public deployment; no notification, PWA, authentication, or deployment work has started yet.
+Subject to Supervisor review: CP6 — Notification + PWA Preparation. Start with a notification delivery/interface decision and installability/offline-boundary plan; do not deploy or add payment/inventory as part of that checkpoint.

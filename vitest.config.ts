@@ -10,7 +10,11 @@ export default defineConfig(async () => {
 			cloudflareTest({
 				wrangler: { configPath: "./wrangler.json" },
 				miniflare: {
-					bindings: { TEST_MIGRATIONS: migrations },
+					bindings: {
+						TEST_MIGRATIONS: migrations,
+						MERCHANT_DEV_BYPASS: "true",
+						PUBLIC_WRITE_RATE_LIMIT_DEV_BYPASS: "true",
+					},
 				},
 			}),
 		],

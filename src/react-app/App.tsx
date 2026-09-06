@@ -312,7 +312,11 @@ function CustomerApp() {
 
 			const result = (await response.json()) as { order: CustomerOrder };
 			setCreatedOrder(result.order);
-			window.history.replaceState(null, "", `/orders/${encodeURIComponent(result.order.id)}`);
+			window.history.replaceState(
+				null,
+				"",
+				`/orders/${encodeURIComponent(result.order.publicLookupToken)}`,
+			);
 		} catch {
 			setOrderError(
 				"訂單尚未成功送出。餐點可能已變更，請確認資料後重試；重試不會重複建立訂單。",
@@ -323,7 +327,12 @@ function CustomerApp() {
 	}
 
 	if (createdOrder) {
-		return <CustomerOrderStatus orderId={createdOrder.id} initialOrder={createdOrder} />;
+		return (
+			<CustomerOrderStatus
+				publicLookupToken={createdOrder.publicLookupToken}
+				initialOrder={createdOrder}
+			/>
+		);
 	}
 
 	if (view === "checkout") {
@@ -635,7 +644,11 @@ function App() {
 
 	const orderRoute = window.location.pathname.match(/^\/orders\/([^/]+)$/);
 
-	return orderRoute ? <CustomerOrderStatus orderId={orderRoute[1]} /> : <CustomerApp />;
+	return orderRoute ? (
+		<CustomerOrderStatus publicLookupToken={orderRoute[1]} />
+	) : (
+		<CustomerApp />
+	);
 }
 
 export default App;

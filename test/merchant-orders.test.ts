@@ -11,6 +11,12 @@ const fixedNow = new Date("2026-09-06T05:00:00.000Z");
 const fixedNowIso = fixedNow.toISOString();
 const fixedEta = "2026-09-06T06:00:00.000Z";
 
+function lookupToken(id: string) {
+	return Array.from({ length: 64 }, (_, index) =>
+		((id.charCodeAt(index % id.length) + index) % 16).toString(16),
+	).join("");
+}
+
 beforeAll(async () => {
 	await env.DB.batch([
 		env.DB.prepare(
@@ -60,13 +66,14 @@ async function insertOrder({
 		env.DB
 			.prepare(
 				`INSERT INTO orders (
-					id, order_number, status, total_amount, estimated_ready_at, created_at,
+					id, public_lookup_token, order_number, status, total_amount, estimated_ready_at, created_at,
 					accepted_at, completed_at, rejected_at, customer_name, customer_phone,
 					special_order, idempotency_key, request_fingerprint
-				) VALUES (?, ?, ?, 90, ?, ?, ?, ?, ?, '王小明', '0912345678', 0, ?, ?)`,
+				) VALUES (?, ?, ?, ?, 90, ?, ?, ?, ?, ?, '王小明', '0912345678', 0, ?, ?)`,
 			)
 			.bind(
 				id,
+				lookupToken(id),
 				`ORDER-${id}`,
 				status,
 				fixedEta,
