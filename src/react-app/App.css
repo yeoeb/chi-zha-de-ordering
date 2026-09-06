@@ -244,6 +244,26 @@ h1 {
 	font-weight: 700;
 }
 
+.checkout-button:disabled {
+	color: #78716c;
+	background: #e7e5e4;
+}
+
+.store-paused-banner {
+	display: grid;
+	gap: 0.2rem;
+	margin: 1rem 1.25rem 0;
+	padding: 1rem;
+	border: 1px solid #facc15;
+	border-radius: 0.75rem;
+	color: #713f12;
+	background: #fef9c3;
+}
+
+.store-paused-banner span {
+	font-size: 0.9rem;
+}
+
 .checkout {
 	margin: 1.5rem 1.25rem 0;
 }
@@ -688,6 +708,7 @@ fieldset small {
 
 .merchant-security-note,
 .merchant-message,
+.merchant-controls,
 .merchant-orders {
 	margin: 1rem 1.25rem 0;
 }
@@ -709,6 +730,91 @@ fieldset small {
 .merchant-error {
 	color: #991b1b;
 	background: #fee2e2;
+}
+
+.merchant-controls {
+	padding: 1rem;
+	border: 1px solid #fdba74;
+	border-radius: 0.9rem;
+	background: #ffffff;
+}
+
+.merchant-controls > h2 {
+	margin-bottom: 1rem;
+}
+
+.store-control,
+.item-controls li {
+	display: flex;
+	gap: 1rem;
+	align-items: center;
+	justify-content: space-between;
+}
+
+.store-control {
+	padding: 1rem;
+	border-radius: 0.75rem;
+	background: #fff7ed;
+}
+
+.store-control h3,
+.item-controls-heading {
+	margin-bottom: 0.35rem;
+	font-size: 1rem;
+}
+
+.store-control .accepting {
+	color: #166534;
+}
+
+.store-control .paused,
+.item-controls .sold-out {
+	color: #b91c1c;
+}
+
+.item-controls .available {
+	color: #166534;
+}
+
+.store-control button,
+.item-controls button {
+	min-width: 7rem;
+	min-height: 3rem;
+	padding: 0.65rem 0.8rem;
+	border: 0;
+	border-radius: 0.65rem;
+	color: #ffffff;
+	background: #9a3412;
+	font-weight: 700;
+}
+
+.store-control button:disabled,
+.item-controls button:disabled {
+	opacity: 0.55;
+}
+
+.item-controls-heading {
+	margin-top: 1.5rem;
+}
+
+.item-controls {
+	margin: 0;
+	padding: 0;
+	list-style: none;
+}
+
+.item-controls li {
+	padding: 0.75rem 0;
+	border-top: 1px solid #ffedd5;
+}
+
+.item-controls li div {
+	display: grid;
+	gap: 0.2rem;
+}
+
+.item-controls li div > span {
+	font-size: 0.85rem;
 }
 
 .merchant-orders {

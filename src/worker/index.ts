@@ -17,6 +17,11 @@ import {
 	MerchantOrderError,
 	transitionMerchantOrder,
 } from "./merchant-orders";
+import {
+	AvailabilityControlError,
+	setMenuItemAvailability,
+	setStoreAcceptingOrders,
+} from "./merchant-availability";
 import { getStoreSettings } from "./store-settings";
 
 const app = new Hono<{ Bindings: Env }>();
@@ -203,10 +208,7 @@ app.post("/api/checkout/quote", async (c) => {
 
 	try {
 		const selections = parseCheckoutQuoteRequest(requestBody);
-		const [pricedCart, store] = await Promise.all([
-			validateAndPriceCart(c.env.DB, selections),
-			getStoreSettings(c.env.DB),
-		]);
+		const store = await getStoreSettings(c.env.DB);
 
 		if (!store) {
 			return c.json(
@@ -214,6 +216,20 @@ app.post("/api/checkout/quote", async (c) => {
 				500,
 			);
 		}
+
+		if (!store.is_accepting_orders) {
+			return c.json(
+				{
+					error: {
+						code: "STORE_NOT_ACCEPTING_ORDERS",
+						message: "Store is not accepting orders",
+					},
+				},
+				409,
+			);
+		}
+
+		const pricedCart = await validateAndPriceCart(c.env.DB, selections);
 
 		const preparationTime = getPreparationTimeEstimate(
 			{
@@ -287,6 +303,58 @@ app.get("/api/orders/:id", async (c) => {
 app.get("/api/merchant/orders", async (c) => {
 	const orders = await listActiveMerchantOrders(c.env.DB);
 	return c.json({ orders });
+});
+
+app.post("/api/merchant/menu-items/:id/sold-out", async (c) => {
+	try {
+		const item = await setMenuItemAvailability(c.env.DB, Number(c.req.param("id")), false);
+		return c.json({ item });
+	} catch (error) {
+		if (error instanceof AvailabilityControlError) {
+			return c.json({ error: { code: error.code, message: error.message } }, error.status);
+		}
+
+		throw error;
+	}
+});
+
+app.post("/api/merchant/menu-items/:id/restore", async (c) => {
+	try {
+		const item = await setMenuItemAvailability(c.env.DB, Number(c.req.param("id")), true);
+		return c.json({ item });
+	} catch (error) {
+		if (error instanceof AvailabilityControlError) {
+			return c.json({ error: { code: error.code, message: error.message } }, error.status);
+		}
+
+		throw error;
+	}
+});
+
+app.post("/api/merchant/store/pause", async (c) => {
+	try {
+		const store = await setStoreAcceptingOrders(c.env.DB, false);
+		return c.json({ store });
+	} catch (error) {
+		if (error instanceof AvailabilityControlError) {
+			return c.json({ error: { code: error.code, message: error.message } }, error.status);
+		}
+
+		throw error;
+	}
+});
+
+app.post("/api/merchant/store/resume", async (c) => {
+	try {
+		const store = await setStoreAcceptingOrders(c.env.DB, true);
+		return c.json({ store });
+	} catch (error) {
+		if (error instanceof AvailabilityControlError) {
+			return c.json({ error: { code: error.code, message: error.message } }, error.status);
+		}
+
+		throw error;
+	}
 });
 
 app.post("/api/merchant/orders/:id/accept", async (c) => {

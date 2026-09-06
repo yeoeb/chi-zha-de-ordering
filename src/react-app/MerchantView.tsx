@@ -22,6 +22,21 @@ type MerchantOrdersResponse = {
 	orders: MerchantOrder[];
 };
 
+type StoreSettings = {
+	display_name: string;
+	is_accepting_orders: boolean;
+};
+
+type MerchantMenuItem = {
+	id: number;
+	name: string;
+	isAvailable: boolean;
+};
+
+type MenuResponse = {
+	categories: Array<{ items: MerchantMenuItem[] }>;
+};
+
 type MerchantAction = "accept" | "reject" | "complete";
 
 function formatDateTime(timestamp: string) {
@@ -35,9 +50,11 @@ function formatDateTime(timestamp: string) {
 
 export default function MerchantView() {
 	const [orders, setOrders] = useState<MerchantOrder[]>([]);
+	const [store, setStore] = useState<StoreSettings | null>(null);
+	const [menuItems, setMenuItems] = useState<MerchantMenuItem[]>([]);
 	const [isLoading, setIsLoading] = useState(true);
 	const [error, setError] = useState<string | null>(null);
-	const [processingOrderId, setProcessingOrderId] = useState<string | null>(null);
+	const [processingControl, setProcessingControl] = useState<string | null>(null);
 	const [refreshVersion, setRefreshVersion] = useState(0);
 
 	useEffect(() => {
@@ -45,15 +62,27 @@ export default function MerchantView() {
 		setIsLoading(true);
 		setError(null);
 
-		fetch("/api/merchant/orders", { signal: controller.signal })
-			.then(async (response) => {
-				if (!response.ok) {
-					throw new Error("Merchant Orders request failed");
+		Promise.all([
+			fetch("/api/merchant/orders", { signal: controller.signal }),
+			fetch("/api/store", { signal: controller.signal }),
+			fetch("/api/menu", { signal: controller.signal }),
+		])
+			.then(async ([ordersResponse, storeResponse, menuResponse]) => {
+				if (!ordersResponse.ok || !storeResponse.ok || !menuResponse.ok) {
+					throw new Error("Merchant data request failed");
 				}
 
-				return response.json() as Promise<MerchantOrdersResponse>;
+				return Promise.all([
+					ordersResponse.json() as Promise<MerchantOrdersResponse>,
+					storeResponse.json() as Promise<StoreSettings>,
+					menuResponse.json() as Promise<MenuResponse>,
+				]);
 			})
-			.then((result) => setOrders(result.orders))
+			.then(([ordersResult, storeResult, menuResult]) => {
+				setOrders(ordersResult.orders);
+				setStore(storeResult);
+				setMenuItems(menuResult.categories.flatMap((category) => category.items));
+			})
 			.catch((requestError: unknown) => {
 				if (!(requestError instanceof Error && requestError.name === "AbortError")) {
 					setError("目前無法載入訂單，請稍後再試。");
@@ -69,7 +98,7 @@ export default function MerchantView() {
 	}, [refreshVersion]);
 
 	async function performAction(orderId: string, action: MerchantAction) {
-		setProcessingOrderId(orderId);
+		setProcessingControl(`order-${orderId}`);
 		setError(null);
 
 		try {
@@ -85,7 +114,26 @@ export default function MerchantView() {
 		} catch {
 			setError("訂單狀態可能已被更新，請重新整理後再試。");
 		} finally {
-			setProcessingOrderId(null);
+			setProcessingControl(null);
+		}
+	}
+
+	async function performAvailabilityAction(controlKey: string, endpoint: string) {
+		setProcessingControl(controlKey);
+		setError(null);
+
+		try {
+			const response = await fetch(endpoint, { method: "POST" });
+
+			if (!response.ok) {
+				throw new Error("Availability action failed");
+			}
+
+			setRefreshVersion((current) => current + 1);
+		} catch {
+			setError("營運狀態更新失敗，請稍後再試。");
+		} finally {
+			setProcessingControl(null);
 		}
 	}
 
@@ -104,6 +152,62 @@ export default function MerchantView() {
 					{error}
 				</p>
 			)}
+
+			{store && (
+				<section className="merchant-controls" aria-labelledby="operations-heading">
+					<h2 id="operations-heading">營運控制</h2>
+
+					<div className="store-control">
+						<div>
+							<h3>接單狀態</h3>
+							<strong className={store.is_accepting_orders ? "accepting" : "paused"}>
+								{store.is_accepting_orders ? "接單中" : "暫停接單"}
+							</strong>
+						</div>
+						<button
+							type="button"
+							disabled={processingControl !== null}
+							onClick={() =>
+								performAvailabilityAction(
+									"store",
+									store.is_accepting_orders
+										? "/api/merchant/store/pause"
+										: "/api/merchant/store/resume",
+								)
+							}
+						>
+							{store.is_accepting_orders ? "暫停接單" : "恢復接單"}
+						</button>
+					</div>
+
+					<h3 className="item-controls-heading">商品狀態</h3>
+					<ul className="item-controls">
+						{menuItems.map((item) => (
+							<li key={item.id}>
+								<div>
+									<strong>{item.name}</strong>
+									<span className={item.isAvailable ? "available" : "sold-out"}>
+										{item.isAvailable ? "販售中" : "售完"}
+									</span>
+								</div>
+								<button
+									type="button"
+									disabled={processingControl !== null}
+									onClick={() =>
+										performAvailabilityAction(
+											`item-${item.id}`,
+											`/api/merchant/menu-items/${item.id}/${item.isAvailable ? "sold-out" : "restore"}`,
+										)
+									}
+								>
+									{item.isAvailable ? "標記售完" : "恢復販售"}
+								</button>
+							</li>
+						))}
+					</ul>
+				</section>
+			)}
+
 			{isLoading && (
 				<p className="merchant-message" role="status">
 					訂單載入中…
@@ -115,7 +219,7 @@ export default function MerchantView() {
 
 			<section className="merchant-orders" aria-label="待處理訂單">
 				{orders.map((order) => {
-					const isProcessing = processingOrderId === order.id;
+					const isProcessing = processingControl === `order-${order.id}`;
 
 					return (
 						<article className={`merchant-order ${order.specialOrder ? "special" : ""}`} key={order.id}>

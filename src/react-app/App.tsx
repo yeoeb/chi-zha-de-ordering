@@ -16,6 +16,7 @@ import "./App.css";
 
 type StoreSettings = {
 	display_name: string;
+	is_accepting_orders: boolean;
 };
 
 type ModifierOption = {
@@ -206,7 +207,7 @@ function CustomerApp() {
 	}
 
 	async function openCheckout() {
-		if (cart.length === 0) {
+		if (cart.length === 0 || !store?.is_accepting_orders) {
 			return;
 		}
 
@@ -232,6 +233,18 @@ function CustomerApp() {
 			});
 
 			if (!response.ok) {
+				const rejection = (await response.json()) as {
+					error?: { code?: string };
+				};
+
+				if (rejection.error?.code === "STORE_NOT_ACCEPTING_ORDERS") {
+					setStore((current) =>
+						current ? { ...current, is_accepting_orders: false } : current,
+					);
+					setCheckoutError("目前暫停接單，請稍後再試。");
+					return;
+				}
+
 				throw new Error("Checkout quote was rejected");
 			}
 
@@ -445,6 +458,13 @@ function CustomerApp() {
 				cartItemCount={cartItemCount}
 			/>
 
+			{store && !store.is_accepting_orders && (
+				<p className="store-paused-banner" role="status">
+					<strong>目前暫停接單</strong>
+					<span>請稍後再試，菜單仍可瀏覽。</span>
+				</p>
+			)}
+
 			{!menu && !error && (
 				<p className="message" role="status">
 					菜單載入中…
@@ -536,8 +556,13 @@ function CustomerApp() {
 							<span>總計</span>
 							<strong>NT$ {cartTotal}</strong>
 						</p>
-						<button className="checkout-button" type="button" onClick={openCheckout}>
-							查看結帳報價
+						<button
+							className="checkout-button"
+							type="button"
+							disabled={!store?.is_accepting_orders}
+							onClick={openCheckout}
+						>
+							{store?.is_accepting_orders ? "查看結帳報價" : "目前暫停接單"}
 						</button>
 					</>
 				)}
