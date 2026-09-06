@@ -1,0 +1,40 @@
+{
+	"name": "chi-zha-de-ordering",
+	"description": "Local-first ordering system for the single-store chicken shop 吃炸的",
+	"dependencies": {
+		"hono": "^4.13.7",
+		"react": "19.2.1",
+		"react-dom": "19.2.1"
+	},
+	"devDependencies": {
+		"@cloudflare/vite-plugin": "1.52.1",
+		"@cloudflare/vitest-plugin": "^1.1.4",
+		"@eslint/js": "9.39.1",
+		"@types/node": "24.10.1",
+		"@types/react": "19.2.7",
+		"@types/react-dom": "19.2.3",
+		"@vitejs/plugin-react": "5.1.1",
+		"eslint": "9.39.2",
+		"eslint-plugin-react-hooks": "7.0.1",
+		"eslint-plugin-react-refresh": "0.4.24",
+		"globals": "16.5.0",
+		"typescript": "5.9.3",
+		"typescript-eslint": "8.48.0",
+		"vite": "^7.0.0",
+		"vitest": "^4.1.0",
+		"wrangler": "4.127.0"
+	},
+	"private": true,
+	"scripts": {
+		"build": "tsc -b && vite build",
+		"cf-typegen": "wrangler types",
+		"check": "npm run lint && npm run build",
+		"db:migrate:local": "wrangler d1 migrations apply chi-zha-de-ordering-local --local",
+		"db:seed:local": "wrangler d1 execute chi-zha-de-ordering-local --local --file=seeds/development.sql",
+		"dev": "vite",
+		"lint": "eslint .",
+		"preview": "npm run build && vite preview",
+		"test": "vitest run"
+	},
+	"type": "module"
+}

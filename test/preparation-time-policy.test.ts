@@ -1,0 +1,60 @@
+import { describe, expect, it } from "vitest";
+import { getPreparationTimeEstimate } from "../src/worker/preparation-time-policy";
+
+const now = new Date("2026-09-06T04:00:00.000Z");
+const settings = {
+	basePrepMinutes: 15,
+	normalOrderMinutes: 5,
+	specialExtraMinutes: 10,
+};
+
+describe("PreparationTimePolicy", () => {
+	it.each([
+		{ ordersAhead: 0, specialOrdersAhead: 0, expected: 15 },
+		{ ordersAhead: 2, specialOrdersAhead: 0, expected: 25 },
+		{ ordersAhead: 3, specialOrdersAhead: 1, expected: 40 },
+	])(
+		"returns $expected minutes for $ordersAhead orders with $specialOrdersAhead special",
+		({ ordersAhead, specialOrdersAhead, expected }) => {
+			expect(
+				getPreparationTimeEstimate(
+					{ ...settings, ordersAhead, specialOrdersAhead },
+					now,
+				).leadMinutes,
+			).toBe(expected);
+		},
+	);
+
+	it("rejects special queue counts greater than the total queue", () => {
+		expect(() =>
+			getPreparationTimeEstimate(
+				{ ...settings, ordersAhead: 1, specialOrdersAhead: 2 },
+				now,
+			),
+		).toThrow("specialOrdersAhead must not exceed ordersAhead");
+	});
+
+	it("never returns less than the base preparation time", () => {
+		const estimate = getPreparationTimeEstimate(
+			{
+				basePrepMinutes: 15,
+				normalOrderMinutes: 0,
+				specialExtraMinutes: 0,
+				ordersAhead: 10,
+				specialOrdersAhead: 5,
+			},
+			now,
+		);
+
+		expect(estimate.leadMinutes).toBe(15);
+	});
+
+	it("derives an absolute UTC timestamp from the supplied clock", () => {
+		const estimate = getPreparationTimeEstimate(
+			{ ...settings, ordersAhead: 2, specialOrdersAhead: 0 },
+			now,
+		);
+
+		expect(estimate.estimatedReadyAt).toBe("2026-09-06T04:25:00.000Z");
+	});
+});

@@ -1,0 +1,18 @@
+{
+	"$schema": "node_modules/wrangler/config-schema.json",
+	"name": "chi-zha-de-ordering",
+	"main": "./src/worker/index.ts",
+	"compatibility_date": "2026-08-18",
+	"assets": {
+		"directory": "./dist/client",
+		"not_found_handling": "single-page-application",
+		"run_worker_first": ["/api/*"]
+	},
+	"d1_databases": [
+		{
+			"binding": "DB",
+			"database_name": "chi-zha-de-ordering-local",
+			"migrations_dir": "migrations"
+		}
+	]
+}
