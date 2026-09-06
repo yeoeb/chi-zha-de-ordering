@@ -338,6 +338,15 @@ export async function validateAndPriceCart(
 		const unitPrice = item.itemPrice + modifiers.reduce((sum, modifier) => sum + modifier.priceDelta, 0);
 		const lineTotal = unitPrice * selection.quantity;
 
+		if (
+			!Number.isSafeInteger(unitPrice) ||
+			unitPrice < 0 ||
+			!Number.isSafeInteger(lineTotal) ||
+			lineTotal < 0
+		) {
+			throw new Error(`Menu item ${selection.menuItemId} produced an invalid price`);
+		}
+
 		pricedItems.push({
 			menuItemId: item.itemId,
 			name: item.itemName,
@@ -348,8 +357,11 @@ export async function validateAndPriceCart(
 		});
 	}
 
-	return {
-		items: pricedItems,
-		total: pricedItems.reduce((sum, item) => sum + item.lineTotal, 0),
-	};
+	const total = pricedItems.reduce((sum, item) => sum + item.lineTotal, 0);
+
+	if (!Number.isSafeInteger(total) || total < 0) {
+		throw new Error("Cart produced an invalid total");
+	}
+
+	return { items: pricedItems, total };
 }

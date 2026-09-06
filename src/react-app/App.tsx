@@ -1,4 +1,4 @@
-import { useEffect, useReducer, useRef, useState } from "react";
+import { useEffect, useReducer, useRef, useState, type FormEvent } from "react";
 import {
 	calculateUnitPrice,
 	cartReducer,
@@ -9,6 +9,9 @@ import {
 	type SelectedModifier,
 } from "./cart";
 import { isModifierSelectionComplete } from "./modifier-selection";
+import CustomerOrderStatus from "./CustomerOrderStatus";
+import MerchantView from "./MerchantView";
+import type { CustomerOrder } from "./order-status";
 import "./App.css";
 
 type StoreSettings = {
@@ -91,7 +94,7 @@ function formatReadyTime(estimatedReadyAt: string) {
 	}).format(new Date(estimatedReadyAt));
 }
 
-function App() {
+function CustomerApp() {
 	const [store, setStore] = useState<StoreSettings | null>(null);
 	const [menu, setMenu] = useState<MenuResponse | null>(null);
 	const [error, setError] = useState<string | null>(null);
@@ -102,7 +105,14 @@ function App() {
 	const [checkoutQuote, setCheckoutQuote] = useState<CheckoutQuote | null>(null);
 	const [checkoutError, setCheckoutError] = useState<string | null>(null);
 	const [isCheckoutLoading, setIsCheckoutLoading] = useState(false);
+	const [customerName, setCustomerName] = useState("");
+	const [customerPhone, setCustomerPhone] = useState("");
+	const [specialOrder, setSpecialOrder] = useState(false);
+	const [isOrderSubmitting, setIsOrderSubmitting] = useState(false);
+	const [orderError, setOrderError] = useState<string | null>(null);
+	const [createdOrder, setCreatedOrder] = useState<CustomerOrder | null>(null);
 	const checkoutRequest = useRef<AbortController | null>(null);
+	const orderIdempotencyKey = useRef<string | null>(null);
 
 	useEffect(() => {
 		const controller = new AbortController();
@@ -163,6 +173,11 @@ function App() {
 		: 0;
 	const cartItemCount = getCartItemCount(cart);
 	const cartTotal = getCartTotal(cart);
+	const checkoutItems = cart.map((line) => ({
+		menuItemId: line.menuItemId,
+		quantity: line.quantity,
+		modifierOptionIds: line.selectedModifiers.map((modifier) => modifier.optionId),
+	}));
 
 	function openItem(item: MenuItem) {
 		if (!item.isAvailable) {
@@ -201,6 +216,9 @@ function App() {
 		setView("checkout");
 		setCheckoutQuote(null);
 		setCheckoutError(null);
+		setOrderError(null);
+		setCreatedOrder(null);
+		orderIdempotencyKey.current = null;
 		setIsCheckoutLoading(true);
 
 		try {
@@ -208,11 +226,7 @@ function App() {
 				method: "POST",
 				headers: { "content-type": "application/json" },
 				body: JSON.stringify({
-					items: cart.map((line) => ({
-						menuItemId: line.menuItemId,
-						quantity: line.quantity,
-						modifierOptionIds: line.selectedModifiers.map((modifier) => modifier.optionId),
-					})),
+					items: checkoutItems,
 				}),
 				signal: controller.signal,
 			});
@@ -236,10 +250,67 @@ function App() {
 	}
 
 	function backToCart() {
+		if (isOrderSubmitting) {
+			return;
+		}
+
 		checkoutRequest.current?.abort();
 		checkoutRequest.current = null;
+		orderIdempotencyKey.current = null;
 		setIsCheckoutLoading(false);
 		setView("menu");
+	}
+
+	function resetSubmissionAttempt() {
+		orderIdempotencyKey.current = null;
+		setOrderError(null);
+	}
+
+	async function submitOrder(event: FormEvent<HTMLFormElement>) {
+		event.preventDefault();
+
+		if (!checkoutQuote || isOrderSubmitting || !customerName.trim() || !customerPhone.trim()) {
+			return;
+		}
+
+		const idempotencyKey = orderIdempotencyKey.current ?? crypto.randomUUID();
+		orderIdempotencyKey.current = idempotencyKey;
+		setIsOrderSubmitting(true);
+		setOrderError(null);
+
+		try {
+			const response = await fetch("/api/orders", {
+				method: "POST",
+				headers: {
+					"content-type": "application/json",
+					"Idempotency-Key": idempotencyKey,
+				},
+				body: JSON.stringify({
+					customerName,
+					customerPhone,
+					specialOrder,
+					items: checkoutItems,
+				}),
+			});
+
+			if (!response.ok) {
+				throw new Error("Order creation was rejected");
+			}
+
+			const result = (await response.json()) as { order: CustomerOrder };
+			setCreatedOrder(result.order);
+			window.history.replaceState(null, "", `/orders/${encodeURIComponent(result.order.id)}`);
+		} catch {
+			setOrderError(
+				"訂單尚未成功送出。餐點可能已變更，請確認資料後重試；重試不會重複建立訂單。",
+			);
+		} finally {
+			setIsOrderSubmitting(false);
+		}
+	}
+
+	if (createdOrder) {
+		return <CustomerOrderStatus orderId={createdOrder.id} initialOrder={createdOrder} />;
 	}
 
 	if (view === "checkout") {
@@ -250,7 +321,12 @@ function App() {
 					cartItemCount={cartItemCount}
 				/>
 				<section className="checkout" aria-labelledby="checkout-heading">
-					<button className="back-button" type="button" onClick={backToCart}>
+					<button
+						className="back-button"
+						type="button"
+						disabled={isOrderSubmitting}
+						onClick={backToCart}
+					>
 						← 返回購物車
 					</button>
 					<p className="eyebrow checkout-eyebrow">確認餐點</p>
@@ -297,7 +373,64 @@ function App() {
 								<span>結帳總計</span>
 								<strong>NT$ {checkoutQuote.total}</strong>
 							</p>
-							<p className="quote-note">價格與取餐時間已由店家系統重新確認。本階段尚不會送出訂單。</p>
+							<p className="quote-note">價格與取餐時間已由店家系統重新確認；送出時系統會再次驗證。</p>
+
+							<form className="customer-form" onSubmit={submitOrder}>
+								<label>
+									<span>姓名</span>
+									<input
+										type="text"
+										maxLength={50}
+										required
+										disabled={isOrderSubmitting}
+										value={customerName}
+										onChange={(event) => {
+											setCustomerName(event.target.value);
+											resetSubmissionAttempt();
+										}}
+									/>
+								</label>
+								<label>
+									<span>電話</span>
+									<input
+										type="tel"
+										maxLength={30}
+										required
+										disabled={isOrderSubmitting}
+										value={customerPhone}
+										onChange={(event) => {
+											setCustomerPhone(event.target.value);
+											resetSubmissionAttempt();
+										}}
+									/>
+								</label>
+								<label className="special-order-field">
+									<input
+										type="checkbox"
+										disabled={isOrderSubmitting}
+										checked={specialOrder}
+										onChange={(event) => {
+											setSpecialOrder(event.target.checked);
+											resetSubmissionAttempt();
+										}}
+									/>
+									<span>特殊訂單（需要較多準備時間）</span>
+								</label>
+
+								{orderError && (
+									<p className="message error" role="alert">
+										{orderError}
+									</p>
+								)}
+
+								<button
+									className="submit-order-button"
+									type="submit"
+									disabled={isOrderSubmitting || !customerName.trim() || !customerPhone.trim()}
+								>
+									{isOrderSubmitting ? "送出中…" : "送出訂單"}
+								</button>
+							</form>
 						</>
 					)}
 				</section>
@@ -468,6 +601,16 @@ function App() {
 			)}
 		</main>
 	);
+}
+
+function App() {
+	if (window.location.pathname === "/merchant") {
+		return <MerchantView />;
+	}
+
+	const orderRoute = window.location.pathname.match(/^\/orders\/([^/]+)$/);
+
+	return orderRoute ? <CustomerOrderStatus orderId={orderRoute[1]} /> : <CustomerApp />;
 }
 
 export default App;

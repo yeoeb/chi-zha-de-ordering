@@ -4,18 +4,22 @@ import {
 	parseCheckoutQuoteRequest,
 	validateAndPriceCart,
 } from "./checkout-quote";
+import { getCustomerOrder } from "./customer-orders";
 import { getPreparationTimeEstimate } from "./preparation-time-policy";
+import {
+	createOrder,
+	OrderCreationError,
+	parseCreateOrderRequest,
+	parseIdempotencyKey,
+} from "./order-creation";
+import {
+	listActiveMerchantOrders,
+	MerchantOrderError,
+	transitionMerchantOrder,
+} from "./merchant-orders";
+import { getStoreSettings } from "./store-settings";
 
 const app = new Hono<{ Bindings: Env }>();
-
-type StoreSettingsRow = {
-	id: number;
-	display_name: string;
-	is_accepting_orders: number;
-	base_prep_minutes: number;
-	normal_order_minutes: number;
-	special_extra_minutes: number;
-};
 
 type MenuRow = {
 	categoryId: number;
@@ -60,22 +64,6 @@ type MenuCategory = {
 	name: string;
 	items: MenuItem[];
 };
-
-async function getStoreSettings(db: D1Database) {
-	return db
-		.prepare(
-			`SELECT
-				id,
-				display_name,
-				is_accepting_orders,
-				base_prep_minutes,
-				normal_order_minutes,
-				special_extra_minutes
-			FROM store_settings
-			WHERE id = 1`,
-		)
-		.first<StoreSettingsRow>();
-}
 
 app.get("/api/health", (c) => c.json({ status: "ok" }));
 
@@ -232,7 +220,7 @@ app.post("/api/checkout/quote", async (c) => {
 				basePrepMinutes: store.base_prep_minutes,
 				normalOrderMinutes: store.normal_order_minutes,
 				specialExtraMinutes: store.special_extra_minutes,
-				// CP2A has no Order rows. CP2B will supply live queue counts here.
+				// A Quote is a preview; only Order creation uses the live queue.
 				ordersAhead: 0,
 				specialOrdersAhead: 0,
 			},
@@ -246,6 +234,99 @@ app.post("/api/checkout/quote", async (c) => {
 				{ error: { code: error.code, message: error.message } },
 				error.status,
 			);
+		}
+
+		throw error;
+	}
+});
+
+app.post("/api/orders", async (c) => {
+	let requestBody: unknown;
+
+	try {
+		requestBody = await c.req.json<unknown>();
+	} catch {
+		return c.json(
+			{ error: { code: "INVALID_ORDER_REQUEST", message: "Request body must be valid JSON" } },
+			400,
+		);
+	}
+
+	try {
+		const idempotencyKey = parseIdempotencyKey(c.req.header("Idempotency-Key"));
+		const request = parseCreateOrderRequest(requestBody);
+		const result = await createOrder(c.env.DB, request, idempotencyKey, new Date());
+
+		return c.json({ order: result.order }, result.replayed ? 200 : 201);
+	} catch (error) {
+		if (error instanceof CheckoutQuoteError || error instanceof OrderCreationError) {
+			return c.json(
+				{ error: { code: error.code, message: error.message } },
+				error.status,
+			);
+		}
+
+		throw error;
+	}
+});
+
+app.get("/api/orders/:id", async (c) => {
+	c.header("Cache-Control", "no-store");
+	const order = await getCustomerOrder(c.env.DB, c.req.param("id"));
+
+	if (!order) {
+		return c.json(
+			{ error: { code: "ORDER_NOT_FOUND", message: "Order not found" } },
+			404,
+		);
+	}
+
+	return c.json({ order });
+});
+
+app.get("/api/merchant/orders", async (c) => {
+	const orders = await listActiveMerchantOrders(c.env.DB);
+	return c.json({ orders });
+});
+
+app.post("/api/merchant/orders/:id/accept", async (c) => {
+	try {
+		const order = await transitionMerchantOrder(c.env.DB, c.req.param("id"), "accept", new Date());
+		return c.json({ order });
+	} catch (error) {
+		if (error instanceof MerchantOrderError) {
+			return c.json({ error: { code: error.code, message: error.message } }, error.status);
+		}
+
+		throw error;
+	}
+});
+
+app.post("/api/merchant/orders/:id/reject", async (c) => {
+	try {
+		const order = await transitionMerchantOrder(c.env.DB, c.req.param("id"), "reject", new Date());
+		return c.json({ order });
+	} catch (error) {
+		if (error instanceof MerchantOrderError) {
+			return c.json({ error: { code: error.code, message: error.message } }, error.status);
+		}
+
+		throw error;
+	}
+});
+
+app.post("/api/merchant/orders/:id/complete", async (c) => {
+	try {
+		const order = await transitionMerchantOrder(
+			c.env.DB,
+			c.req.param("id"),
+			"complete",
+			new Date(),
+		);
+		return c.json({ order });
+	} catch (error) {
+		if (error instanceof MerchantOrderError) {
+			return c.json({ error: { code: error.code, message: error.message } }, error.status);
 		}
 
 		throw error;

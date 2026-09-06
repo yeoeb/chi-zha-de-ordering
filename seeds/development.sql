@@ -1,4 +1,7 @@
 -- Replaceable local development fixtures. SQLite booleans use 0 = false, 1 = true.
+DELETE FROM order_item_modifiers;
+DELETE FROM order_items;
+DELETE FROM orders;
 DELETE FROM modifier_options;
 DELETE FROM modifier_groups;
 DELETE FROM menu_items;

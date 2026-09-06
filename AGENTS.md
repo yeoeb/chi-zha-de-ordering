@@ -9,4 +9,6 @@
 - Use ASCII identifiers in code and configuration; Chinese is allowed for display content.
 - Do not hardcode environment-specific Cloudflare resource IDs for local development.
 - Apply D1 migrations locally with `npm run db:migrate:local` and run `npm run check` before handoff.
-- Current scope ends at an authoritative Checkout Quote and pure ETA policy with zero live queue counts. It excludes Order creation/storage, merchant UI, authentication, notifications, payments, maps, analytics, PWA work, and deployment.
+- Current scope includes authoritative Checkout Quote, V1 Order creation, local-only Merchant Order handling, and customer Order status polling by opaque Order UUID.
+- Merchant authentication/authorization and customer Order lookup access control are required before any production deployment.
+- Notifications, payments, maps, analytics, PWA work, and deployment remain out of scope.
