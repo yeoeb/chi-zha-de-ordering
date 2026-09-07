@@ -739,6 +739,66 @@ fieldset small {
 	background: #ffffff;
 }
 
+.merchant-notifications {
+	margin: 1rem;
+	padding: 1rem;
+	border: 1px solid #fed7aa;
+	border-radius: 1rem;
+	background: #fff;
+}
+
+.merchant-notifications h2 {
+	margin: 0 0 0.75rem;
+}
+
+.merchant-notifications > p {
+	margin: 0;
+	color: #78716c;
+}
+
+.merchant-notifications ul {
+	margin: 0;
+	padding: 0;
+	list-style: none;
+}
+
+.merchant-notifications li {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: 1rem;
+	padding: 0.85rem 0;
+	border-top: 1px solid #f5e7dc;
+}
+
+.merchant-notifications li:first-child {
+	border-top: 0;
+}
+
+.merchant-notifications li div {
+	display: grid;
+	gap: 0.2rem;
+}
+
+.merchant-notifications li span,
+.merchant-notifications li small {
+	color: #57534e;
+}
+
+.merchant-notifications button {
+	min-height: 2.75rem;
+	padding: 0.65rem 1rem;
+	border: 0;
+	border-radius: 0.75rem;
+	background: #9a3412;
+	color: #fff;
+	font-weight: 700;
+}
+
+.merchant-notifications button:disabled {
+	opacity: 0.55;
+}
+
 .merchant-controls > h2 {
 	margin-bottom: 1rem;
 }

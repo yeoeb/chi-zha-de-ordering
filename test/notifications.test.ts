@@ -1,11 +1,14 @@
-import { env } from "cloudflare:workers";
+import { env, exports } from "cloudflare:workers";
 import { beforeAll, beforeEach, describe, expect, it } from "vitest";
+import app from "../src/worker/index";
 import { createOrder, type OrderSnapshot } from "../src/worker/order-creation";
 import {
 	buildLineNewOrderMessage,
 	deliverNewOrderNotification,
 	FakeNotificationProvider,
 	LineNotificationProvider,
+	listMerchantNotificationDeliveries,
+	retryNotificationDelivery,
 } from "../src/worker/notifications";
 
 const orderRequest = {
@@ -144,6 +147,220 @@ describe("new Order notification delivery", () => {
 		expect(count?.count).toBe(1);
 		expect(provider.notifications).toHaveLength(1);
 		expect(duplicateAttempt).toEqual({ attempted: false });
+	});
+
+	it("retries a failed delivery successfully and increments attempt metadata", async () => {
+		const result = await createOrder(env.DB, orderRequest, "retry-success", fixedNow);
+		if (result.replayed) throw new Error("Expected a newly created Order");
+
+		await deliverNewOrderNotification(
+			env.DB,
+			result.notificationDeliveryId,
+			toNotification(result.order),
+			new FakeNotificationProvider("INITIAL_FAILURE"),
+			fixedNow,
+		);
+		const retryAt = new Date("2026-09-07T04:02:00.000Z");
+		const provider = new FakeNotificationProvider();
+		const delivery = await retryNotificationDelivery(
+			env.DB,
+			result.notificationDeliveryId,
+			provider,
+			retryAt,
+		);
+
+		expect(provider.notifications).toHaveLength(1);
+		expect(delivery).toMatchObject({
+			status: "sent",
+			attemptCount: 2,
+			lastAttemptAt: retryAt.toISOString(),
+			sentAt: retryAt.toISOString(),
+			lastError: null,
+		});
+	});
+
+	it("keeps a failed retry observable and increments attempt_count", async () => {
+		const result = await createOrder(env.DB, orderRequest, "retry-failure", fixedNow);
+		if (result.replayed) throw new Error("Expected a newly created Order");
+
+		await deliverNewOrderNotification(
+			env.DB,
+			result.notificationDeliveryId,
+			toNotification(result.order),
+			new FakeNotificationProvider("INITIAL_FAILURE"),
+			fixedNow,
+		);
+		const retryAt = new Date("2026-09-07T04:02:00.000Z");
+		const delivery = await retryNotificationDelivery(
+			env.DB,
+			result.notificationDeliveryId,
+			new FakeNotificationProvider("RETRY_FAILURE"),
+			retryAt,
+		);
+
+		expect(delivery).toMatchObject({
+			status: "failed",
+			attemptCount: 2,
+			lastAttemptAt: retryAt.toISOString(),
+			lastError: "RETRY_FAILURE: Fake provider delivery failed",
+		});
+		await expect(
+			env.DB.prepare("SELECT status FROM orders WHERE id = ?").bind(result.order.id).first(),
+		).resolves.toEqual({ status: "pending" });
+	});
+
+	it("never resends a sent delivery and reports unknown delivery IDs", async () => {
+		const result = await createOrder(env.DB, orderRequest, "retry-sent", fixedNow);
+		if (result.replayed) throw new Error("Expected a newly created Order");
+
+		await deliverNewOrderNotification(
+			env.DB,
+			result.notificationDeliveryId,
+			toNotification(result.order),
+			new FakeNotificationProvider(),
+			fixedNow,
+		);
+		const retryProvider = new FakeNotificationProvider();
+
+		await expect(
+			retryNotificationDelivery(
+				env.DB,
+				result.notificationDeliveryId,
+				retryProvider,
+				new Date("2026-09-07T04:02:00.000Z"),
+			),
+		).rejects.toMatchObject({ status: 409, code: "NOTIFICATION_ALREADY_SENT" });
+		await expect(
+			retryNotificationDelivery(env.DB, "missing-delivery", retryProvider, fixedNow),
+		).rejects.toMatchObject({ status: 404, code: "NOTIFICATION_DELIVERY_NOT_FOUND" });
+		expect(retryProvider.notifications).toHaveLength(0);
+	});
+
+	it("rejects an active pending attempt but recovers it after the stale threshold", async () => {
+		const result = await createOrder(env.DB, orderRequest, "retry-stale-pending", fixedNow);
+		if (result.replayed) throw new Error("Expected a newly created Order");
+
+		await env.DB
+			.prepare(
+				`UPDATE notification_deliveries
+				SET status = 'pending', attempt_count = 1, last_attempt_at = ?
+				WHERE id = ?`,
+			)
+			.bind(fixedNow.toISOString(), result.notificationDeliveryId)
+			.run();
+		const provider = new FakeNotificationProvider();
+
+		await expect(
+			retryNotificationDelivery(
+				env.DB,
+				result.notificationDeliveryId,
+				provider,
+				new Date("2026-09-07T04:00:30.000Z"),
+			),
+		).rejects.toMatchObject({
+			status: 409,
+			code: "NOTIFICATION_DELIVERY_IN_PROGRESS",
+		});
+
+		const recovered = await retryNotificationDelivery(
+			env.DB,
+			result.notificationDeliveryId,
+			provider,
+			new Date("2026-09-07T04:01:01.000Z"),
+		);
+		expect(recovered).toMatchObject({ status: "sent", attemptCount: 2 });
+		expect(provider.notifications).toHaveLength(1);
+	});
+
+	it("enforces notification uniqueness in D1", async () => {
+		const result = await createOrder(env.DB, orderRequest, "durable-uniqueness", fixedNow);
+		if (result.replayed) throw new Error("Expected a newly created Order");
+
+		await expect(
+			env.DB
+				.prepare(
+					`INSERT INTO notification_deliveries (
+						id, order_id, channel, event_type, status, attempt_count, created_at
+					) VALUES (?, ?, 'line', 'new_order', 'pending', 0, ?)`,
+				)
+				.bind("duplicate-intent", result.order.id, fixedNow.toISOString())
+				.run(),
+		).rejects.toThrow(/UNIQUE constraint failed/);
+	});
+
+	it("lists only operational fields with failed deliveries first", async () => {
+		const sent = await createOrder(env.DB, orderRequest, "list-sent", fixedNow);
+		const failed = await createOrder(
+			env.DB,
+			orderRequest,
+			"list-failed",
+			new Date("2026-09-07T04:01:00.000Z"),
+		);
+		if (sent.replayed || failed.replayed) throw new Error("Expected newly created Orders");
+
+		await deliverNewOrderNotification(
+			env.DB,
+			sent.notificationDeliveryId,
+			toNotification(sent.order),
+			new FakeNotificationProvider(),
+			fixedNow,
+		);
+		await deliverNewOrderNotification(
+			env.DB,
+			failed.notificationDeliveryId,
+			toNotification(failed.order),
+			new FakeNotificationProvider("FAILURE"),
+			fixedNow,
+		);
+		const deliveries = await listMerchantNotificationDeliveries(env.DB);
+
+		expect(deliveries.map((delivery) => delivery.status)).toEqual(["failed", "sent"]);
+		expect(deliveries[0]).not.toHaveProperty("customerPhone");
+		expect(deliveries[0]).not.toHaveProperty("publicLookupToken");
+	});
+
+	it("keeps Merchant notification endpoints behind the existing guard", async () => {
+		const denied = await app.request(
+			new Request("https://merchant.example.com/api/merchant/notifications/missing/retry", {
+				method: "POST",
+			}),
+			undefined,
+			{ DB: env.DB } as Env,
+			{} as ExecutionContext,
+		);
+		const localList = await exports.default.fetch(
+			"https://example.com/api/merchant/notifications",
+		);
+
+		expect(denied.status).toBe(403);
+		expect(await denied.json()).toMatchObject({
+			error: { code: "MERCHANT_ACCESS_DENIED" },
+		});
+		expect(localList.status).toBe(200);
+		expect(localList.headers.get("Cache-Control")).toContain("no-store");
+	});
+
+	it("retries through the protected Merchant action with the explicit test bypass", async () => {
+		const result = await createOrder(env.DB, orderRequest, "merchant-retry-route", fixedNow);
+		if (result.replayed) throw new Error("Expected a newly created Order");
+
+		await deliverNewOrderNotification(
+			env.DB,
+			result.notificationDeliveryId,
+			toNotification(result.order),
+			new FakeNotificationProvider("INITIAL_FAILURE"),
+			fixedNow,
+		);
+		const response = await exports.default.fetch(
+			`https://example.com/api/merchant/notifications/${result.notificationDeliveryId}/retry`,
+			{ method: "POST" },
+		);
+		const body = await response.json();
+
+		expect(response.status).toBe(200);
+		expect(body).toMatchObject({
+			delivery: { status: "sent", attemptCount: 2, lastError: null },
+		});
 	});
 });
 

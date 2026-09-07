@@ -27,6 +27,9 @@ import { readBoundedJson, RequestBodyError } from "./request-body";
 import {
 	createNotificationProvider,
 	deliverNewOrderNotification,
+	listMerchantNotificationDeliveries,
+	NotificationDeliveryError,
+	retryNotificationDelivery,
 	type NotificationBindings,
 } from "./notifications";
 import {
@@ -398,6 +401,29 @@ app.use("/api/merchant/*", async (c, next) => {
 app.get("/api/merchant/orders", async (c) => {
 	const orders = await listActiveMerchantOrders(c.env.DB);
 	return c.json({ orders });
+});
+
+app.get("/api/merchant/notifications", async (c) => {
+	const deliveries = await listMerchantNotificationDeliveries(c.env.DB);
+	return c.json({ deliveries });
+});
+
+app.post("/api/merchant/notifications/:id/retry", async (c) => {
+	try {
+		const delivery = await retryNotificationDelivery(
+			c.env.DB,
+			c.req.param("id"),
+			createNotificationProvider(c.env),
+			new Date(),
+		);
+		return c.json({ delivery });
+	} catch (error) {
+		if (error instanceof NotificationDeliveryError) {
+			return c.json({ error: { code: error.code, message: error.message } }, error.status);
+		}
+
+		throw error;
+	}
 });
 
 app.post("/api/merchant/menu-items/:id/sold-out", async (c) => {

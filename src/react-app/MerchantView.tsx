@@ -22,6 +22,23 @@ type MerchantOrdersResponse = {
 	orders: MerchantOrder[];
 };
 
+type MerchantNotification = {
+	id: string;
+	orderNumber: string;
+	channel: "line";
+	eventType: "new_order";
+	status: "pending" | "sent" | "failed";
+	attemptCount: number;
+	lastAttemptAt: string | null;
+	sentAt: string | null;
+	lastError: string | null;
+	createdAt: string;
+};
+
+type MerchantNotificationsResponse = {
+	deliveries: MerchantNotification[];
+};
+
 type StoreSettings = {
 	display_name: string;
 	is_accepting_orders: boolean;
@@ -52,6 +69,7 @@ function formatDateTime(timestamp: string) {
 
 export default function MerchantView() {
 	const [orders, setOrders] = useState<MerchantOrder[]>([]);
+	const [notifications, setNotifications] = useState<MerchantNotification[]>([]);
 	const [store, setStore] = useState<StoreSettings | null>(null);
 	const [menuItems, setMenuItems] = useState<MerchantMenuItem[]>([]);
 	const [isLoading, setIsLoading] = useState(true);
@@ -67,23 +85,34 @@ export default function MerchantView() {
 
 		async function loadMerchantData() {
 			try {
-				const [ordersResponse, storeResponse, menuResponse] = await Promise.all([
+				const [ordersResponse, notificationsResponse, storeResponse, menuResponse] = await Promise.all([
 					fetch("/api/merchant/orders", { signal: controller.signal, cache: "no-store" }),
+					fetch("/api/merchant/notifications", {
+						signal: controller.signal,
+						cache: "no-store",
+					}),
 					fetch("/api/store", { signal: controller.signal, cache: "no-store" }),
 					fetch("/api/menu", { signal: controller.signal, cache: "no-store" }),
 				]);
 
-				if (!ordersResponse.ok || !storeResponse.ok || !menuResponse.ok) {
+				if (
+					!ordersResponse.ok ||
+					!notificationsResponse.ok ||
+					!storeResponse.ok ||
+					!menuResponse.ok
+				) {
 					throw new Error("Merchant data request failed");
 				}
 
-				const [ordersResult, storeResult, menuResult] = await Promise.all([
+				const [ordersResult, notificationsResult, storeResult, menuResult] = await Promise.all([
 					ordersResponse.json() as Promise<MerchantOrdersResponse>,
+					notificationsResponse.json() as Promise<MerchantNotificationsResponse>,
 					storeResponse.json() as Promise<StoreSettings>,
 					menuResponse.json() as Promise<MenuResponse>,
 				]);
 
 				setOrders(ordersResult.orders);
+				setNotifications(notificationsResult.deliveries);
 				setStore(storeResult);
 				setMenuItems(menuResult.categories.flatMap((category) => category.items));
 				setError(null);
@@ -144,6 +173,28 @@ export default function MerchantView() {
 			setRefreshVersion((current) => current + 1);
 		} catch {
 			setError("營運狀態更新失敗，請稍後再試。");
+		} finally {
+			setProcessingControl(null);
+		}
+	}
+
+	async function retryNotification(deliveryId: string) {
+		setProcessingControl(`notification-${deliveryId}`);
+		setError(null);
+
+		try {
+			const response = await fetch(
+				`/api/merchant/notifications/${encodeURIComponent(deliveryId)}/retry`,
+				{ method: "POST" },
+			);
+
+			if (!response.ok) {
+				throw new Error("Notification retry failed");
+			}
+
+			setRefreshVersion((current) => current + 1);
+		} catch {
+			setError("通知重新傳送失敗，請查看通知狀態後再試。");
 		} finally {
 			setProcessingControl(null);
 		}
@@ -219,6 +270,52 @@ export default function MerchantView() {
 					</ul>
 				</section>
 			)}
+
+			<section className="merchant-notifications" aria-labelledby="notifications-heading">
+				<h2 id="notifications-heading">通知狀態</h2>
+				{notifications.length === 0 ? (
+					<p>目前沒有通知紀錄。</p>
+				) : (
+					<ul>
+						{notifications.map((delivery) => {
+							const lastAttemptTime = delivery.lastAttemptAt
+								? new Date(delivery.lastAttemptAt).getTime()
+								: null;
+							const isStalePending =
+								delivery.status === "pending" &&
+								lastAttemptTime !== null &&
+								Date.now() - lastAttemptTime >= 60_000;
+							const canRetry =
+								delivery.status === "failed" ||
+								(delivery.status === "pending" &&
+									(delivery.attemptCount === 0 ||
+										delivery.lastAttemptAt === null ||
+										isStalePending));
+
+							return (
+								<li key={delivery.id}>
+									<div>
+										<strong>訂單 #{delivery.orderNumber}</strong>
+										<span>
+											LINE · {delivery.status === "sent" ? "已通知" : delivery.status === "failed" ? "傳送失敗" : "傳送中"}
+										</span>
+										<small>已嘗試 {delivery.attemptCount} 次</small>
+									</div>
+									{canRetry && (
+										<button
+											type="button"
+											disabled={processingControl !== null}
+											onClick={() => retryNotification(delivery.id)}
+										>
+											重新傳送
+										</button>
+									)}
+								</li>
+							);
+						})}
+					</ul>
+				)}
+			</section>
 
 			{isLoading && (
 				<p className="merchant-message" role="status">

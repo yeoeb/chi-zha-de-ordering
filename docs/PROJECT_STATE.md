@@ -2,7 +2,7 @@
 
 ## Current phase
 
-CP6 — PWA + Merchant Notification Foundation implemented and verified locally. Deployment is still not approved.
+CP7 — Notification Reliability + Deployment Readiness Verification implemented and verified locally. No deployment was performed or approved.
 
 - CP0 — Initial Local Baseline: complete.
 - CP1 — Menu + Modifier + Client Cart: complete and verified.
@@ -17,6 +17,7 @@ CP6 — PWA + Merchant Notification Foundation implemented and verified locally.
 - CP4 — Merchant Availability Controls: complete and verified.
 - CP5 — Production Security Foundation: complete and verified.
 - CP6 — PWA + Merchant Notification Foundation: complete and verified.
+- CP7 — Notification Reliability + Deployment Readiness Verification: complete and verified.
 
 ## Implemented features
 
@@ -41,6 +42,7 @@ CP6 — PWA + Merchant Notification Foundation implemented and verified locally.
 - Installable PWA shell with a manifest, documented placeholder icons, and a Service Worker that bypasses every API request.
 - Merchant active Orders refresh on a bounded five-second chained poll while the Merchant view is mounted.
 - Every new logical Order atomically stores one LINE notification intent; a provider attempt runs after durable Order creation and records `sent` or `failed` without changing the Order result.
+- Merchant notification observability lists recent failed/pending deliveries first and provides a guarded explicit retry without exposing Customer PII or provider credentials.
 - Pure preparation-time policy with a UTC ISO-8601 absolute ready timestamp.
 - Reusable schema migrations are separate from replaceable local development fixtures.
 
@@ -54,7 +56,7 @@ CP6 — PWA + Merchant Notification Foundation implemented and verified locally.
 - `orders`: internal text ID, immutable unique 256-bit public lookup token, unique order number, constrained V1 status, authoritative integer total, absolute ETA/created/status timestamps, customer details, special-order flag, unique idempotency key, and request fingerprint.
 - `order_items`: Order/menu references plus immutable item name, unit price, quantity, line total, and deterministic snapshot order.
 - `order_item_modifiers`: Order-item/modifier references plus immutable group name, option name, price delta, and deterministic snapshot order.
-- `notification_deliveries`: one unique `new_order`/`line` delivery per Order, status (`pending`, `sent`, or `failed`), attempt count, sanitized last error, creation time, and optional sent time.
+- `notification_deliveries`: one unique `new_order`/`line` delivery per Order, status (`pending`, `sent`, or `failed`), attempt count, last-attempt time, sanitized last error, creation time, and optional sent time.
 
 SQLite boolean fields use constrained `0`/`1` values. No inventory, stock quantity, image, combo, promotion, coupon, payment, delivery, account, or generic workflow schema exists.
 
@@ -67,6 +69,8 @@ SQLite boolean fields use constrained `0`/`1` values. No inventory, stock quanti
 - `POST /api/orders`: accepts customer details, special-order state, and identity-only item selections with an `Idempotency-Key` header. It reuses authoritative validation/pricing, calculates queue-aware ETA, atomically stores snapshots, and returns a customer-safe representation containing the public lookup token but not the internal Order ID.
 - `GET /api/orders/by-token/:token`: returns a customer-safe historical Order projection from persisted snapshots with current status and committed ETA. The old internal-ID route is not a public lookup contract. Every response uses `Cache-Control: no-store`.
 - `GET /api/merchant/orders`: returns only actionable `pending` and `accepted` Orders, oldest first, using stored item/modifier snapshots.
+- `GET /api/merchant/notifications`: returns at most 50 recent operational delivery records, ordering failed then pending before sent, without phone numbers, public tokens, or credentials.
+- `POST /api/merchant/notifications/:id/retry`: retries a failed, never-attempted, or stale-pending delivery through the configured provider. Sent and actively in-progress deliveries return a conflict; missing deliveries return 404.
 - `POST /api/merchant/orders/:id/accept`: transitions `pending` to `accepted`.
 - `POST /api/merchant/orders/:id/reject`: transitions `pending` to `rejected`.
 - `POST /api/merchant/orders/:id/complete`: transitions `accepted` to `completed`.
@@ -174,10 +178,23 @@ SQLite boolean fields use constrained `0`/`1` values. No inventory, stock quanti
 - Production builds register a minimal Service Worker. Navigation uses network-first with an application-shell fallback; same-origin static assets are cached. All API paths are excluded, and there is no offline Checkout or Order replay.
 - The Merchant PWA remains a live operational view and polls every five seconds only while mounted. LINE is a convenience alert, never the authoritative Order queue.
 - Order creation atomically persists exactly one pending `line`/`new_order` intent with the Order snapshots. The unique `(order_id, channel, event_type)` constraint and DB-backed Order idempotency prevent a retry from creating or sending a second logical notification.
-- Delivery claims a pending intent with `attempt_count = 0` before calling the provider. Success records `sent` and `sent_at`; failure records `failed` and a bounded sanitized reason. In either case the Order remains `pending` and the Customer receives the successful Order response.
+- Delivery claims an eligible intent with a conditional D1 update before calling the provider, increments `attempt_count`, and records `last_attempt_at`. Success records `sent` and `sent_at`; failure records `failed` and a bounded sanitized reason. In either case the Order remains unchanged and the Customer's successful Order response is independent of delivery.
+- Manual retry accepts `failed`, never-attempted `pending`, or `pending` whose prior claim is at least 60 seconds old. This makes abandoned best-effort work recoverable while rejecting an active attempt. A `sent` delivery is never eligible again.
 - Local development uses the Fake provider when `NOTIFICATION_PROVIDER=fake`, or by default when the explicit Merchant development bypass is enabled. Production LINE delivery requires `NOTIFICATION_PROVIDER=line`, `LINE_CHANNEL_ACCESS_TOKEN`, and `LINE_MERCHANT_RECIPIENT_ID`; credentials are never hardcoded or returned.
 - The LINE provider uses the Messaging API push endpoint with a bounded text body, Bearer authorization, and a five-second timeout. Its message includes only the customer-safe Order number, item names/quantities, total, and ready time—never phone, lookup token, internal ID, or credentials.
-- `waitUntil` extends the best-effort attempt but is not a durable retry system. Failed/pending records are observable in D1; retry tooling, Queues/Cron, delivery dashboards, and quota recovery remain deferred.
+- `waitUntil` extends the best-effort initial attempt but is not a durable retry system. Failed/stale records can be retried explicitly by the Merchant; automated scheduling, Queues/Cron, delivery dashboards, and quota recovery remain deferred.
+
+## Deployment readiness verification
+
+- `npm run verify:fresh-d1` creates isolated temporary local persistence, applies migrations `0001` through `0007` from an empty state, applies only the replaceable development seed in that isolated database, checks required Store/Menu data, and verifies Order public-token/idempotency plus notification uniqueness and `last_attempt_at`. Temporary persistence is validated and removed afterward.
+- Schema/data classification: migration `0001` includes the required single-store `吃炸的` configuration; migrations `0002`–`0007` are reusable schema/evolution; `seeds/development.sql` is destructive, replaceable local Menu fixture data and must never run in production.
+- `npm run verify:deploy-dry-run` executes installed Wrangler with `deploy --dry-run --outdir` into a validated temporary directory, checks the emitted Worker bundle and source deployment configuration, checks built PWA assets, and removes dry-run output. No upload or remote resource operation occurs.
+- Production design uses a public Customer hostname and a separate Merchant hostname covered by a self-hosted Cloudflare Access application. The existing application guard additionally requires the exact Merchant hostname and cryptographically validates the Access assertion issuer, audience, and signature.
+- The Access-looking request header alone is never trusted. `workers.dev`, previews, old routes, alternate Custom Domains, and `/merchant` on the Customer hostname must be disabled, Access-protected, or explicitly blocked/redirected and tested before launch.
+- Production D1 creation, the real database ID, Rate Limiting namespace, Access application, domains, LINE credentials/recipient, and non-secret environment values remain intentionally absent. The authorized procedure is recorded in `docs/DEPLOYMENT_RUNBOOK.md`.
+- LINE staging verification requires a later explicit authorization for exactly one controlled external send, followed by a simulated failure/retry and duplicate check. No real LINE call was made in CP7.
+- PWA production verification must occur over HTTPS and cover manifest/icons, installation, Merchant start-up, live API behavior, and proof that offline Order submission remains impossible.
+- Application rollback uses a recorded prior Worker version and `wrangler rollback` only after D1-schema compatibility review. Worker rollback does not revert D1. D1 recovery is separately approved and bookmark-aware; forward corrective migrations are preferred.
 
 ## Production security foundation
 
@@ -204,9 +221,11 @@ SQLite boolean fields use constrained `0`/`1` values. No inventory, stock quanti
 - Availability integration tests cover idempotent sold-out/restore/pause/resume, Menu visibility, Quote/Order enforcement, stale Quote submissions, control independence, historical snapshots, and existing-Order transitions while paused.
 - CP5 verification passed 12 Vitest files and 86 tests, plus lint, TypeScript/build checks, local D1 migration/backfill checks, and curl smoke for token lookup, idempotent Order creation, Merchant transitions, availability controls, cache policy, and invalid/oversized requests.
 - CP6 adds focused notification tests for intent persistence, fake success/failure, Order survival, idempotent duplicate protection, LINE request shape, and credential-safe failures. The build performs a lightweight manifest/icon/Service Worker boundary verification.
-- CP6 verification passes 13 Vitest files and 92 tests. `npm run check` and the explicit production build pass, including PWA artifact verification; local curl smoke covers Order create/retry/status, Merchant accept/complete/reject, availability controls, and fake notification delivery records.
+- CP6 verification passed 13 Vitest files and 92 tests. `npm run check` and the explicit production build passed, including PWA artifact verification; local curl smoke covered Order create/retry/status, Merchant accept/complete/reject, availability controls, and fake notification delivery records.
+- CP7 adds retry/observability tests for success and repeated failure, monotonic attempts/timestamps, sent/missing conflicts, DB-backed uniqueness, safe Merchant fields, the protected retry boundary, and the explicit local/test bypass. Fresh migration and Wrangler dry-run verification are executable repository scripts.
+- CP7 verification passes 13 Vitest files and 100 tests. `npm run check` and the explicit build pass; all seven migrations pass from isolated empty D1 state; Wrangler 4.127.0 dry-run emits the Worker bundle, reads ten static assets, reports the D1/Rate Limiting bindings, and exits without upload. Curl smoke covers notification visibility/retry, retry conflict, Customer/Order/Merchant/availability regressions, and no-context/forged-header Merchant denial.
 - Browser end-to-end tooling remains intentionally deferred; verification uses focused integration/unit tests and local HTTP smoke checks.
 
 ## Next feature
 
-Subject to Supervisor review: CP7 — Notification Reliability + Deployment Readiness Verification. Add an authenticated, observable retry operation or queue-backed recovery only if the operational requirement justifies it; validate real-host PWA/Access/LINE configuration in a staging plan, but do not deploy without explicit approval.
+CP8 — Explicitly Authorized Production Deployment. Proceed only with separate approval and the completed production checklist/runbook gates: create and bind Production D1, apply reviewed migrations/configuration, provision Access/hostnames/Rate Limiting/secrets, deploy a recorded version, and execute controlled Customer/Merchant/LINE/PWA smoke with a prepared rollback point.

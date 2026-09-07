@@ -36,6 +36,8 @@
 		"lint": "eslint .",
 		"preview": "npm run build && vite preview",
 		"test": "vitest run",
+		"verify:deploy-dry-run": "node scripts/verify-deployment-dry-run.mjs",
+		"verify:fresh-d1": "node scripts/verify-fresh-d1.mjs",
 		"verify:pwa": "node scripts/verify-pwa.mjs"
 	},
 	"type": "module"
