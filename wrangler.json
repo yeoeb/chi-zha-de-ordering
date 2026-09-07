@@ -11,7 +11,8 @@
 	"d1_databases": [
 		{
 			"binding": "DB",
-			"database_name": "chi-zha-de-ordering-local",
+			"database_name": "chi-zha-de-db",
+			"database_id": "d104f4b2-1be3-4d4b-b781-008807206dd3",
 			"migrations_dir": "migrations"
 		}
 	],
