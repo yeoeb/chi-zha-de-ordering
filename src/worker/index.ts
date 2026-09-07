@@ -25,12 +25,17 @@ import {
 import { getStoreSettings } from "./store-settings";
 import { readBoundedJson, RequestBodyError } from "./request-body";
 import {
+	createNotificationProvider,
+	deliverNewOrderNotification,
+	type NotificationBindings,
+} from "./notifications";
+import {
 	isMerchantRequestAllowed,
 	isRateLimitAllowed,
 	type SecurityBindings,
 } from "./security";
 
-const app = new Hono<{ Bindings: Env & SecurityBindings }>();
+const app = new Hono<{ Bindings: Env & SecurityBindings & NotificationBindings }>();
 
 type MenuRow = {
 	categoryId: number;
@@ -322,6 +327,17 @@ app.post("/api/orders", async (c) => {
 		const idempotencyKey = parseIdempotencyKey(c.req.header("Idempotency-Key"));
 		const request = parseCreateOrderRequest(requestBody);
 		const result = await createOrder(c.env.DB, request, idempotencyKey, new Date());
+
+		if (!result.replayed) {
+			c.executionCtx.waitUntil(
+				deliverNewOrderNotification(
+					c.env.DB,
+					result.notificationDeliveryId,
+					result.order,
+					createNotificationProvider(c.env),
+				),
+			);
+		}
 
 		return c.json(
 			{ order: toCustomerOrder(result.order, result.order.publicLookupToken) },

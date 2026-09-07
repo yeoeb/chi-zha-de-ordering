@@ -1,0 +1,25 @@
+{
+	"id": "/",
+	"name": "吃炸的",
+	"short_name": "吃炸的",
+	"description": "吃炸的單店點餐與店家接單系統",
+	"start_url": "/merchant",
+	"scope": "/",
+	"display": "standalone",
+	"theme_color": "#a33a20",
+	"background_color": "#fff8ef",
+	"icons": [
+		{
+			"src": "/icons/icon-192.png",
+			"sizes": "192x192",
+			"type": "image/png",
+			"purpose": "any maskable"
+		},
+		{
+			"src": "/icons/icon-512.png",
+			"sizes": "512x512",
+			"type": "image/png",
+			"purpose": "any maskable"
+		}
+	]
+}

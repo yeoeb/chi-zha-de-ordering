@@ -1,6 +1,12 @@
 # Copy to .dev.vars for local Merchant API/UI access. Never set this bypass in production.
 MERCHANT_DEV_BYPASS=true
 PUBLIC_WRITE_RATE_LIMIT_DEV_BYPASS=true
+NOTIFICATION_PROVIDER=fake
+
+# Production only: set NOTIFICATION_PROVIDER=line and store the token as a Cloudflare Secret.
+# NOTIFICATION_PROVIDER=line
+# LINE_CHANNEL_ACCESS_TOKEN=store-as-a-cloudflare-secret
+# LINE_MERCHANT_RECIPIENT_ID=merchant-line-user-id
 
 # Production only: set this to the exact Cloudflare Access-protected Merchant hostname.
 # MERCHANT_HOSTNAME=merchant.example.com

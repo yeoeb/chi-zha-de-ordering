@@ -27,7 +27,7 @@
 	},
 	"private": true,
 	"scripts": {
-		"build": "tsc -b && vite build",
+		"build": "node scripts/verify-pwa.mjs && tsc -b && vite build",
 		"cf-typegen": "wrangler types",
 		"check": "npm run lint && npm run build",
 		"db:migrate:local": "wrangler d1 migrations apply chi-zha-de-ordering-local --local",
@@ -35,7 +35,8 @@
 		"dev": "vite",
 		"lint": "eslint .",
 		"preview": "npm run build && vite preview",
-		"test": "vitest run"
+		"test": "vitest run",
+		"verify:pwa": "node scripts/verify-pwa.mjs"
 	},
 	"type": "module"
 }

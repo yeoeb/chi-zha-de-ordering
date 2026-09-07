@@ -39,6 +39,8 @@ type MenuResponse = {
 
 type MerchantAction = "accept" | "reject" | "complete";
 
+const MERCHANT_REFRESH_INTERVAL_MS = 5_000;
+
 function formatDateTime(timestamp: string) {
 	return new Intl.DateTimeFormat("zh-TW", {
 		month: "numeric",
@@ -59,42 +61,52 @@ export default function MerchantView() {
 
 	useEffect(() => {
 		const controller = new AbortController();
+		let pollTimeout: number | undefined;
 		setIsLoading(true);
 		setError(null);
 
-		Promise.all([
-			fetch("/api/merchant/orders", { signal: controller.signal }),
-			fetch("/api/store", { signal: controller.signal }),
-			fetch("/api/menu", { signal: controller.signal }),
-		])
-			.then(async ([ordersResponse, storeResponse, menuResponse]) => {
+		async function loadMerchantData() {
+			try {
+				const [ordersResponse, storeResponse, menuResponse] = await Promise.all([
+					fetch("/api/merchant/orders", { signal: controller.signal, cache: "no-store" }),
+					fetch("/api/store", { signal: controller.signal, cache: "no-store" }),
+					fetch("/api/menu", { signal: controller.signal, cache: "no-store" }),
+				]);
+
 				if (!ordersResponse.ok || !storeResponse.ok || !menuResponse.ok) {
 					throw new Error("Merchant data request failed");
 				}
 
-				return Promise.all([
+				const [ordersResult, storeResult, menuResult] = await Promise.all([
 					ordersResponse.json() as Promise<MerchantOrdersResponse>,
 					storeResponse.json() as Promise<StoreSettings>,
 					menuResponse.json() as Promise<MenuResponse>,
 				]);
-			})
-			.then(([ordersResult, storeResult, menuResult]) => {
+
 				setOrders(ordersResult.orders);
 				setStore(storeResult);
 				setMenuItems(menuResult.categories.flatMap((category) => category.items));
-			})
-			.catch((requestError: unknown) => {
+				setError(null);
+			} catch (requestError) {
 				if (!(requestError instanceof Error && requestError.name === "AbortError")) {
 					setError("目前無法載入訂單，請稍後再試。");
 				}
-			})
-			.finally(() => {
+			} finally {
 				if (!controller.signal.aborted) {
 					setIsLoading(false);
+					pollTimeout = window.setTimeout(loadMerchantData, MERCHANT_REFRESH_INTERVAL_MS);
 				}
-			});
+			}
+		}
 
-		return () => controller.abort();
+		void loadMerchantData();
+
+		return () => {
+			controller.abort();
+			if (pollTimeout !== undefined) {
+				window.clearTimeout(pollTimeout);
+			}
+		};
 	}, [refreshVersion]);
 
 	async function performAction(orderId: string, action: MerchantAction) {

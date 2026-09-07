@@ -10,6 +10,14 @@ Deployment is not approved. Complete and verify this checklist before any public
 - [ ] No alternate unprotected Merchant route exists.
 - [ ] Public Order lookup uses the opaque token and internal IDs are not public contracts.
 - [ ] `ORDER_RATE_LIMITER` namespace and limits configured/reviewed for the production account.
+- [ ] Final PWA icons reviewed and placeholder artwork replaced if needed.
+- [ ] Manifest installability verified over HTTPS.
+- [ ] Service Worker API caching boundary reviewed.
+- [ ] LINE Official Account and Messaging API channel configured.
+- [ ] `LINE_CHANNEL_ACCESS_TOKEN` stored as a Cloudflare Secret.
+- [ ] `LINE_MERCHANT_RECIPIENT_ID` configured without committing it to source.
+- [ ] LINE quota and pricing understood.
+- [ ] Notification provider failure path verified without affecting Order creation.
 - [ ] Production secrets and environment configuration reviewed; no credentials are hardcoded.
 - [ ] `workers.dev`, preview URL, custom-domain, and customer-host Merchant exposure reviewed.
 - [ ] PII/token/auth-header logging reviewed and disabled.

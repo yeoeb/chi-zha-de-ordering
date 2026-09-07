@@ -43,6 +43,10 @@ export type OrderSnapshot = {
 	}>;
 };
 
+export type CreateOrderResult =
+	| { order: OrderSnapshot; replayed: true }
+	| { order: OrderSnapshot; replayed: false; notificationDeliveryId: string };
+
 type OrderCreationErrorCode =
 	| "INVALID_ORDER_REQUEST"
 	| "INVALID_IDEMPOTENCY_KEY"
@@ -340,7 +344,7 @@ export async function createOrder(
 	request: CreateOrderRequest,
 	idempotencyKey: string,
 	now: Date,
-) {
+): Promise<CreateOrderResult> {
 	const requestFingerprint = await createRequestFingerprint(request);
 	const existing = await getStoredOrderByIdempotencyKey(db, idempotencyKey);
 
@@ -379,6 +383,7 @@ export async function createOrder(
 		now,
 	);
 	const orderId = crypto.randomUUID();
+	const notificationDeliveryId = crypto.randomUUID();
 	const publicLookupToken = createPublicLookupToken();
 	const orderNumber = createOrderNumber(now);
 	const statements: D1PreparedStatement[] = [
@@ -412,6 +417,19 @@ export async function createOrder(
 				idempotencyKey,
 				requestFingerprint,
 			),
+		db
+			.prepare(
+				`INSERT INTO notification_deliveries (
+					id,
+					order_id,
+					channel,
+					event_type,
+					status,
+					attempt_count,
+					created_at
+				) VALUES (?, ?, 'line', 'new_order', 'pending', 0, ?)`,
+			)
+			.bind(notificationDeliveryId, orderId, createdAt),
 	];
 	const responseItems: OrderSnapshot["items"] = [];
 
@@ -513,5 +531,6 @@ export async function createOrder(
 			items: responseItems,
 		},
 		replayed: false,
+		notificationDeliveryId,
 	};
 }

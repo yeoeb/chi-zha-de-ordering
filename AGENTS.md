@@ -9,8 +9,10 @@
 - Use ASCII identifiers in code and configuration; Chinese is allowed for display content.
 - Do not hardcode environment-specific Cloudflare resource IDs for local development.
 - Apply D1 migrations locally with `npm run db:migrate:local` and run `npm run check` before handoff.
-- Current scope includes authoritative Checkout Quote, V1 Order creation, Merchant Order handling, customer Order status polling, manual item/store availability controls, and the CP5 production security foundation.
+- Current scope includes the completed customer/merchant Order flow, manual availability controls, the CP5 security foundation, and CP6 PWA/merchant notification foundation.
 - Public Customer Order reads use only the opaque lookup token; do not expose internal Order IDs as a public lookup contract.
 - Merchant routes must fail closed outside an explicit local-only bypass and must remain behind the documented Cloudflare Access boundary in production.
 - Never log full customer phone numbers, public lookup tokens, authorization headers, Access JWTs, or credentials.
-- Inventory quantities, notifications, payments, maps, analytics, PWA work, and deployment remain out of scope.
+- Notification delivery must remain an after-commit side effect: provider failure never rolls back an Order, and the Merchant UI remains the operational source of truth.
+- Service Workers must bypass all `/api/*` requests. Never queue or imply successful offline Order submission.
+- Inventory quantities, payments, maps, analytics, native apps, offline Order queues, and deployment remain out of scope.

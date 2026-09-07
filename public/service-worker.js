@@ -1,0 +1,70 @@
+const SHELL_CACHE = "chi-zha-de-shell-v1";
+const SHELL_FILES = [
+	"/",
+	"/manifest.webmanifest",
+	"/icons/icon-192.png",
+	"/icons/icon-512.png",
+];
+
+self.addEventListener("install", (event) => {
+	event.waitUntil(caches.open(SHELL_CACHE).then((cache) => cache.addAll(SHELL_FILES)));
+	self.skipWaiting();
+});
+
+self.addEventListener("activate", (event) => {
+	event.waitUntil(
+		caches
+			.keys()
+			.then((keys) =>
+				Promise.all(keys.filter((key) => key !== SHELL_CACHE).map((key) => caches.delete(key))),
+			)
+			.then(() => self.clients.claim()),
+	);
+});
+
+async function cacheSuccessfulResponse(cacheKey, response) {
+	if (response.ok && response.type === "basic") {
+		const cache = await caches.open(SHELL_CACHE);
+		await cache.put(cacheKey, response.clone());
+	}
+	return response;
+}
+
+async function handleNavigation(request) {
+	try {
+		return await cacheSuccessfulResponse(request, await fetch(request));
+	} catch {
+		return (await caches.match(request)) ?? (await caches.match("/")) ?? Response.error();
+	}
+}
+
+async function handleStaticAsset(request) {
+	const cached = await caches.match(request);
+	if (cached) {
+		return cached;
+	}
+
+	return cacheSuccessfulResponse(request, await fetch(request));
+}
+
+self.addEventListener("fetch", (event) => {
+	const request = event.request;
+	const url = new URL(request.url);
+
+	if (
+		request.method !== "GET" ||
+		url.origin !== self.location.origin ||
+		url.pathname.startsWith("/api/")
+	) {
+		return;
+	}
+
+	if (request.mode === "navigate") {
+		event.respondWith(handleNavigation(request));
+		return;
+	}
+
+	if (["script", "style", "image", "font", "manifest"].includes(request.destination)) {
+		event.respondWith(handleStaticAsset(request));
+	}
+});
