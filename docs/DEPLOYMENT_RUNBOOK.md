@@ -6,9 +6,9 @@ Production deployment is not approved by this document. Run remote or mutating c
 
 - Clean, reviewed Git checkpoint and an explicit release approval.
 - Cloudflare account/zone access, Zero Trust enabled, and permission to manage Workers, D1, Rate Limiting, domains, and Access.
-- A public Customer hostname and a separate Merchant hostname selected under a Cloudflare-managed domain.
-- LINE Official Account, Messaging API channel, Merchant recipient ID, and reviewed quota/pricing.
-- No `.dev.vars`, development bypass, real secret, or real identifier in Git or the build artifact.
+- For the first staging release, the registered workers.dev hostname with path-scoped Merchant Access already configured. Separate Customer/Merchant Custom Domains remain a later production gate.
+- For a LINE-enabled release: LINE Official Account, Messaging API channel, Merchant recipient ID, and reviewed quota/pricing. These are not prerequisites for an explicitly disabled initial release.
+- No `.dev.vars`, development bypass, credential, or secret value in Git or the build artifact. Reviewed non-secret resource identifiers belong in deployment configuration.
 
 ## Pre-deploy verification
 
@@ -25,28 +25,27 @@ git rev-parse HEAD
 
 Record the release commit, current Worker deployment/version, current D1 Time Travel bookmark, configuration review, and smoke-test owner.
 
-## Production D1 creation
+## Production D1
 
-During an authorized CP8 release only:
+The approved remote database already exists:
 
-```powershell
-npx wrangler d1 create chi-zha-de-ordering-production --location=apac
-```
+- Binding: `DB`
+- Name: `chi-zha-de-db`
+- ID: `d104f4b2-1be3-4d4b-b781-008807206dd3`
+- Location: APAC
 
-Record the returned real database ID. Add it to a production-specific `DB` binding with `binding = DB` and the production database name. Do not replace the ID with a placeholder and do not point production at the local database name.
+Do not create a second database. Before deployment, verify the binding and query the paused Store/Menu state read-only.
 
 ## Migration procedure
 
 Migrations are sequential and forward-applied. Migration `0001` creates the required single-store `吃炸的` settings row. `seeds/development.sql` is disposable local Menu fixture data and must never run against production.
 
 ```powershell
-npx wrangler d1 migrations list DB --remote --env production
-npx wrangler d1 time-travel info DB --env production
-npx wrangler d1 migrations apply DB --remote --env production
-npx wrangler d1 migrations list DB --remote --env production
+npm.cmd exec wrangler -- d1 migrations list DB --remote
+npm.cmd exec wrangler -- d1 time-travel info DB
 ```
 
-Save the pre-migration Time Travel bookmark. Verify tables, indexes, the public lookup-token unique index, Order idempotency uniqueness, notification intent uniqueness, and `last_attempt_at`. Prepare and review a separate one-time production Menu SQL file with real products/prices; execute it only after approval. Query Store/Menu read-only before opening Customer traffic.
+All seven migrations and the reviewed `production-data/initial-store-menu.sql` data write have already been applied. Never rerun that file against the populated database. Verify tables, indexes, constraints, `PRAGMA quick_check`, Store/Menu counts, and `is_accepting_orders = 0` read-only before deployment.
 
 ## Configuration
 
@@ -54,36 +53,37 @@ Production non-secret configuration must include:
 
 - Real production D1 ID bound as `DB`.
 - Production Rate Limiting namespace bound as `ORDER_RATE_LIMITER`.
-- `NOTIFICATION_PROVIDER=line`.
+- `NOTIFICATION_PROVIDER=disabled` for the recommended initial release, or `NOTIFICATION_PROVIDER=line` only when both LINE values are configured and a real smoke is authorized.
+- `LINE_MERCHANT_RECIPIENT_ID` for LINE-enabled releases. This is a non-secret operational identifier, but keep it out of public source, logs, URLs, and API responses as confidential deployment configuration.
 - Exact `MERCHANT_HOSTNAME` for the Access-protected hostname.
 - Exact `CF_ACCESS_TEAM_DOMAIN` and `CF_ACCESS_AUD` for the Merchant Access application.
 
+The first staging release uses `workers_dev=true`, `preview_urls=false`, `MERCHANT_HOSTNAME=chi-zha-de-ordering.yeoeb55688.workers.dev`, and `NOTIFICATION_PROVIDER=disabled`.
+
 `MERCHANT_DEV_BYPASS` and `PUBLIC_WRITE_RATE_LIMIT_DEV_BYPASS` must be absent. Review the generated Worker bundle/config before release.
 
-## Secrets
+## Notification release modes and secrets
 
-Treat both LINE values as deployment-managed confidential configuration:
+Mode A (recommended first deployment) sets `NOTIFICATION_PROVIDER=disabled`. The Worker starts normally, Orders remain durable, Merchant polling remains authoritative, and each new Order's notification intent records a sanitized `NOTIFICATION_DISABLED` failure. Fake delivery is accepted only alongside the explicit development bypass; do not configure `fake` or either development bypass in production.
 
-- `LINE_CHANNEL_ACCESS_TOKEN`
-- `LINE_MERCHANT_RECIPIENT_ID`
+Mode B sets `NOTIFICATION_PROVIDER=line`, supplies the non-secret confidential `LINE_MERCHANT_RECIPIENT_ID`, and stores `LINE_CHANNEL_ACCESS_TOKEN` as a Cloudflare Secret. Missing or invalid LINE configuration selects the disabled provider; it does not fail Worker startup or Order creation.
 
-Do not commit them or pass them on a command line. After the Worker resource exists and only during an authorized release, use an interactive secret command such as:
+Do not commit the token, put it on a command line, or expose either LINE value in logs or responses. `wrangler secret put` creates a new Worker version and deploys it immediately, so it is prohibited during pre-deployment preparation. After the Worker resource/version boundary exists and only during an authorized version-based release, prepare the token interactively without deploying it using:
 
 ```powershell
-npx wrangler versions secret put LINE_CHANNEL_ACCESS_TOKEN --env production
-npx wrangler versions secret put LINE_MERCHANT_RECIPIENT_ID --env production
+npm.cmd exec wrangler -- versions secret put LINE_CHANNEL_ACCESS_TOKEN --name chi-zha-de-ordering
 ```
 
-`wrangler secret put` creates and deploys a Worker version immediately; prefer the version-scoped command when preparing a controlled release. Confirm secrets are absent from logs, API responses, notification errors, source, `.env`, build output, and documentation.
+This command creates a version containing the secret but does not deploy that version. Confirm the exact version identifier before any later deployment. Configure the recipient through the reviewed deployment configuration/dashboard boundary without printing it in the transcript. Confirm the token is absent from logs, API responses, notification errors, source, `.env`, build output, and documentation.
 
 ## Cloudflare Access
 
-- Customer: `order.<domain>` remains public.
-- Merchant: `merchant.<domain>` is a self-hosted Cloudflare Access application covering the entire Merchant hostname, including the UI and `/api/merchant/*`.
-- Configure the Worker guard with that exact Merchant hostname, Access team issuer, and application audience.
+- Staging Customer routes remain public on `chi-zha-de-ordering.yeoeb55688.workers.dev`.
+- The self-hosted Access application protects only `/merchant*` and `/api/merchant/*` on that host.
+- The Worker guard is configured with that exact hostname, `https://yeoeb.cloudflareaccess.com`, and the manually verified application audience.
 - The guard accepts an Access assertion only after exact-hostname matching and cryptographic JWT signature/issuer/audience validation. An Access-looking header on another hostname is untrusted.
-- Block or redirect `/merchant` on the Customer hostname. The API guard must still return `403` there.
-- Disable the Worker's `workers.dev` production route when practical. Otherwise explicitly protect it and preview URLs, and verify Merchant APIs fail closed on every alternate route/domain.
+- For the current shared workers.dev host, confirm only the two Merchant path patterns trigger Access and Customer paths remain public. On future separate Custom Domains, block or redirect `/merchant` on the Customer hostname as defense in depth.
+- Keep workers.dev enabled only for this staging phase and preview URLs disabled. After verified Custom Domains exist, disable workers.dev and keep previews disabled.
 - Test unauthenticated, authenticated, expired-token, forged-header, wrong-audience, Customer-host, `workers.dev`, and preview access before launch.
 
 Do not protect the entire shared Worker with a Worker-level Access policy because that would also require Customer authentication.
@@ -94,11 +94,11 @@ Attach the same reviewed Worker release to the public Customer and Access-protec
 
 ## Deployment
 
-Only after D1, secrets, Rate Limiting, Access, hostnames, and rollback data are ready:
+Only after the final pre-deploy gate passes and explicit Gate 12 approval is given:
 
 ```powershell
-npx wrangler deploy --env production
-npx wrangler deployments list --env production
+npm.cmd exec wrangler -- deploy
+npm.cmd exec wrangler -- deployments list
 ```
 
 Capture the new version/deployment ID and do not open Customer traffic until smoke verification passes.
@@ -130,11 +130,11 @@ Over HTTPS on the intended Merchant hostname, verify manifest, 192/512 icons, Se
 
 ### Application rollback
 
-Record the previous known-good version before deployment. If the new application is unhealthy and the prior code is compatible with the current D1 schema:
+The first deployment has no prior Worker version. If it is unhealthy, keep the store paused, disable/remove Worker exposure if necessary, fix forward, and deploy a corrected version. Once a known-good earlier version exists and is compatible with the current D1 schema:
 
 ```powershell
-npx wrangler deployments list --env production
-npx wrangler rollback <previous-version-id> --env production
+npm.cmd exec wrangler -- deployments list
+npm.cmd exec wrangler -- rollback <previous-version-id>
 ```
 
 Re-run health, Customer read, and Access-authenticated Merchant smoke checks. Worker rollback does not revert D1, bindings, secrets, Access, routes, or data.

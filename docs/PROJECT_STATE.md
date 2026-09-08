@@ -2,7 +2,7 @@
 
 ## Current phase
 
-CP7 — Notification Reliability + Deployment Readiness Verification implemented and verified locally. No deployment was performed or approved.
+CP8 Gate 11 — Final Pre-Deploy Verification is complete. The first workers.dev staging deployment is prepared but has not been executed.
 
 - CP0 — Initial Local Baseline: complete.
 - CP1 — Menu + Modifier + Client Cart: complete and verified.
@@ -18,12 +18,14 @@ CP7 — Notification Reliability + Deployment Readiness Verification implemented
 - CP5 — Production Security Foundation: complete and verified.
 - CP6 — PWA + Merchant Notification Foundation: complete and verified.
 - CP7 — Notification Reliability + Deployment Readiness Verification: complete and verified.
+- CP8 Gates 0–11 — production data, Access boundary, staging configuration, and final pre-deploy verification: complete.
+- CP8 Gate 12 — first Worker deployment: not executed; separate approval is required.
 
 ## Implemented features
 
 - React SPA served by Vite with the Cloudflare Vite plugin.
 - Hono Worker API with explicit Worker-first routing for `/api/*`.
-- Local D1 binding named `DB`; no remote Cloudflare resource ID is configured.
+- D1 binding `DB` targets the production `chi-zha-de-db` database. All seven migrations and the human-approved Store/Menu configuration are applied remotely; the store remains paused.
 - Single-store settings stored in D1 and exposed through the API.
 - Active menu categories, items, modifier groups, and modifier options are grouped and deterministically sorted by the backend.
 - Mobile-first menu with sold-out handling and required single-choice item configuration.
@@ -180,7 +182,7 @@ SQLite boolean fields use constrained `0`/`1` values. No inventory, stock quanti
 - Order creation atomically persists exactly one pending `line`/`new_order` intent with the Order snapshots. The unique `(order_id, channel, event_type)` constraint and DB-backed Order idempotency prevent a retry from creating or sending a second logical notification.
 - Delivery claims an eligible intent with a conditional D1 update before calling the provider, increments `attempt_count`, and records `last_attempt_at`. Success records `sent` and `sent_at`; failure records `failed` and a bounded sanitized reason. In either case the Order remains unchanged and the Customer's successful Order response is independent of delivery.
 - Manual retry accepts `failed`, never-attempted `pending`, or `pending` whose prior claim is at least 60 seconds old. This makes abandoned best-effort work recoverable while rejecting an active attempt. A `sent` delivery is never eligible again.
-- Local development uses the Fake provider when `NOTIFICATION_PROVIDER=fake`, or by default when the explicit Merchant development bypass is enabled. Production LINE delivery requires `NOTIFICATION_PROVIDER=line`, `LINE_CHANNEL_ACCESS_TOKEN`, and `LINE_MERCHANT_RECIPIENT_ID`; credentials are never hardcoded or returned.
+- Local development can use the Fake provider only with the explicit Merchant development bypass. The first staging release explicitly sets `NOTIFICATION_PROVIDER=disabled`; production LINE delivery later requires `NOTIFICATION_PROVIDER=line`, `LINE_CHANNEL_ACCESS_TOKEN`, and `LINE_MERCHANT_RECIPIENT_ID`.
 - The LINE provider uses the Messaging API push endpoint with a bounded text body, Bearer authorization, and a five-second timeout. Its message includes only the customer-safe Order number, item names/quantities, total, and ready time—never phone, lookup token, internal ID, or credentials.
 - `waitUntil` extends the best-effort initial attempt but is not a durable retry system. Failed/stale records can be retried explicitly by the Merchant; automated scheduling, Queues/Cron, delivery dashboards, and quota recovery remain deferred.
 
@@ -191,7 +193,7 @@ SQLite boolean fields use constrained `0`/`1` values. No inventory, stock quanti
 - `npm run verify:deploy-dry-run` executes installed Wrangler with `deploy --dry-run --outdir` into a validated temporary directory, checks the emitted Worker bundle and source deployment configuration, checks built PWA assets, and removes dry-run output. No upload or remote resource operation occurs.
 - Production design uses a public Customer hostname and a separate Merchant hostname covered by a self-hosted Cloudflare Access application. The existing application guard additionally requires the exact Merchant hostname and cryptographically validates the Access assertion issuer, audience, and signature.
 - The Access-looking request header alone is never trusted. `workers.dev`, previews, old routes, alternate Custom Domains, and `/merchant` on the Customer hostname must be disabled, Access-protected, or explicitly blocked/redirected and tested before launch.
-- Production D1 creation, the real database ID, Rate Limiting namespace, Access application, domains, LINE credentials/recipient, and non-secret environment values remain intentionally absent. The authorized procedure is recorded in `docs/DEPLOYMENT_RUNBOOK.md`.
+- Production D1 `chi-zha-de-db`, its remote schema/data, the Rate Limiting binding, workers.dev staging hostname, path-scoped Access application, and Merchant guard variables are configured and verified. LINE and Custom Domains remain intentionally absent.
 - LINE staging verification requires a later explicit authorization for exactly one controlled external send, followed by a simulated failure/retry and duplicate check. No real LINE call was made in CP7.
 - PWA production verification must occur over HTTPS and cover manifest/icons, installation, Merchant start-up, live API behavior, and proof that offline Order submission remains impossible.
 - Application rollback uses a recorded prior Worker version and `wrangler rollback` only after D1-schema compatibility review. Worker rollback does not revert D1. D1 recovery is separately approved and bookmark-aware; forward corrective migrations are preferred.
@@ -205,7 +207,7 @@ SQLite boolean fields use constrained `0`/`1` values. No inventory, stock quanti
 - `POST /api/orders` uses the `ORDER_RATE_LIMITER` binding at 20 requests per 60 seconds per Cloudflare location and client-address key. Local/test may explicitly bypass it. This is permissive, eventually consistent abuse control—not globally exact accounting, authorization, idempotency, or a correctness mechanism. Shared client addresses can share a limit.
 - Both public POST endpoints reject non-JSON/malformed bodies and bodies over 32 KiB. Domain bounds remain 50 cart lines, quantity 1–99, 50 modifier options per line, customer name 1–50 characters, customer phone 1–30 characters, and idempotency key up to 128 characters.
 - Application code has no request/PII logging. Full phone numbers, Access JWTs/authorization headers, public lookup tokens, and credentials must not be logged or sent to analytics. Merchant and customer dynamic Order responses use `Cache-Control: no-store`.
-- Production Cloudflare Access applications, hostnames, D1 resources, environment values, and exposure rules have not been configured because deployment is not approved.
+- The workers.dev staging Access application protects only `/merchant*` and `/api/merchant/*`; Customer routes remain public. The Worker guard is configured for the exact hostname, issuer, and audience. Preview URLs are disabled and no Custom Domain exists yet.
 
 ## Test approach
 
@@ -223,9 +225,9 @@ SQLite boolean fields use constrained `0`/`1` values. No inventory, stock quanti
 - CP6 adds focused notification tests for intent persistence, fake success/failure, Order survival, idempotent duplicate protection, LINE request shape, and credential-safe failures. The build performs a lightweight manifest/icon/Service Worker boundary verification.
 - CP6 verification passed 13 Vitest files and 92 tests. `npm run check` and the explicit production build passed, including PWA artifact verification; local curl smoke covered Order create/retry/status, Merchant accept/complete/reject, availability controls, and fake notification delivery records.
 - CP7 adds retry/observability tests for success and repeated failure, monotonic attempts/timestamps, sent/missing conflicts, DB-backed uniqueness, safe Merchant fields, the protected retry boundary, and the explicit local/test bypass. Fresh migration and Wrangler dry-run verification are executable repository scripts.
-- CP7 verification passes 13 Vitest files and 100 tests. `npm run check` and the explicit build pass; all seven migrations pass from isolated empty D1 state; Wrangler 4.127.0 dry-run emits the Worker bundle, reads ten static assets, reports the D1/Rate Limiting bindings, and exits without upload. Curl smoke covers notification visibility/retry, retry conflict, Customer/Order/Merchant/availability regressions, and no-context/forged-header Merchant denial.
+- CP7 verification plus the Fake-provider production guard passes 13 Vitest files and 101 tests. Gate 11 reconfirms the full suite, lint/build/PWA checks, the remote paused Store and empty Order queue, and a Wrangler 4.127.0 dry-run with D1, Rate Limiting, Access variables, disabled notifications, and ten static assets without upload.
 - Browser end-to-end tooling remains intentionally deferred; verification uses focused integration/unit tests and local HTTP smoke checks.
 
 ## Next feature
 
-CP8 — Explicitly Authorized Production Deployment. Proceed only with separate approval and the completed production checklist/runbook gates: create and bind Production D1, apply reviewed migrations/configuration, provision Access/hostnames/Rate Limiting/secrets, deploy a recorded version, and execute controlled Customer/Merchant/LINE/PWA smoke with a prepared rollback point.
+CP8 Gate 12 — explicitly authorized first Worker deployment with `npm.cmd exec wrangler -- deploy`, followed only by the separately scoped staging smoke gates. The store must remain paused, LINE remains disabled, and no Custom Domain is introduced.
