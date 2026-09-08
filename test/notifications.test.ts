@@ -4,6 +4,7 @@ import app from "../src/worker/index";
 import { createOrder, type OrderSnapshot } from "../src/worker/order-creation";
 import {
 	buildLineNewOrderMessage,
+	createNotificationProvider,
 	deliverNewOrderNotification,
 	FakeNotificationProvider,
 	LineNotificationProvider,
@@ -453,5 +454,29 @@ describe("LINE notification provider", () => {
 		expect(message).toContain("總計 $170");
 		expect(message).not.toContain("customerPhone");
 		expect(message).not.toContain("publicLookupToken");
+	});
+});
+
+describe("notification provider selection", () => {
+	const notification = {
+		orderNumber: "CZ-PROVIDER-SELECTION",
+		total: 70,
+		estimatedReadyAt: "2026-09-07T13:35:00.000Z",
+		items: [{ name: "香雞排", quantity: 1 }],
+	};
+
+	it("requires the explicit development bypass before Fake can be selected", async () => {
+		const productionProvider = createNotificationProvider({
+			NOTIFICATION_PROVIDER: "fake",
+		});
+		const developmentProvider = createNotificationProvider({
+			NOTIFICATION_PROVIDER: "fake",
+			MERCHANT_DEV_BYPASS: "true",
+		});
+
+		await expect(productionProvider.notifyNewOrder(notification)).rejects.toMatchObject({
+			code: "NOTIFICATION_DISABLED",
+		});
+		expect(developmentProvider).toBeInstanceOf(FakeNotificationProvider);
 	});
 });

@@ -165,8 +165,9 @@ export function createNotificationProvider(bindings: NotificationBindings): Noti
 	}
 
 	if (
-		bindings.NOTIFICATION_PROVIDER === "fake" ||
-		(bindings.NOTIFICATION_PROVIDER === undefined && bindings.MERCHANT_DEV_BYPASS === "true")
+		bindings.MERCHANT_DEV_BYPASS === "true" &&
+		(bindings.NOTIFICATION_PROVIDER === "fake" ||
+			bindings.NOTIFICATION_PROVIDER === undefined)
 	) {
 		return new FakeNotificationProvider();
 	}
