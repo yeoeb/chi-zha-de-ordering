@@ -34,6 +34,8 @@ beforeAll(async () => {
 
 beforeEach(async () => {
 	await env.DB.batch([
+		env.DB.prepare("DELETE FROM line_merchant_binding"),
+		env.DB.prepare("DELETE FROM line_merchant_pairing_challenge"),
 		env.DB.prepare("DELETE FROM notification_deliveries"),
 		env.DB.prepare("DELETE FROM order_item_modifiers"),
 		env.DB.prepare("DELETE FROM order_items"),
@@ -466,17 +468,89 @@ describe("notification provider selection", () => {
 	};
 
 	it("requires the explicit development bypass before Fake can be selected", async () => {
-		const productionProvider = createNotificationProvider({
-			NOTIFICATION_PROVIDER: "fake",
-		});
-		const developmentProvider = createNotificationProvider({
-			NOTIFICATION_PROVIDER: "fake",
-			MERCHANT_DEV_BYPASS: "true",
-		});
+		const productionProvider = createNotificationProvider(
+			{
+				NOTIFICATION_PROVIDER: "fake",
+			},
+			env.DB,
+		);
+		const developmentProvider = createNotificationProvider(
+			{
+				NOTIFICATION_PROVIDER: "fake",
+				MERCHANT_DEV_BYPASS: "true",
+			},
+			env.DB,
+		);
 
 		await expect(productionProvider.notifyNewOrder(notification)).rejects.toMatchObject({
 			code: "NOTIFICATION_DISABLED",
 		});
 		expect(developmentProvider).toBeInstanceOf(FakeNotificationProvider);
+	});
+
+	it("resolves the LINE recipient only from the D1 Merchant binding", async () => {
+		const requests: Array<RequestInit | undefined> = [];
+		const fetcher = (async (_input: RequestInfo | URL, init?: RequestInit) => {
+			requests.push(init);
+			return new Response(null, { status: 200 });
+		}) as typeof fetch;
+		const provider = createNotificationProvider(
+			{
+				NOTIFICATION_PROVIDER: "line",
+				LINE_CHANNEL_ACCESS_TOKEN: "test-channel-token",
+			},
+			env.DB,
+			fetcher,
+		);
+
+		await expect(provider.notifyNewOrder(notification)).rejects.toMatchObject({
+			code: "LINE_RECIPIENT_NOT_PAIRED",
+		});
+		expect(requests).toHaveLength(0);
+
+		await env.DB.prepare(
+			`INSERT INTO line_merchant_binding (id, recipient_user_id, paired_at, updated_at)
+			VALUES (1, ?, ?, ?)`,
+		)
+			.bind(`U${"a".repeat(32)}`, fixedNow.toISOString(), fixedNow.toISOString())
+			.run();
+		await provider.notifyNewOrder(notification);
+
+		const body = JSON.parse(String(requests[0]?.body)) as { to: string };
+		expect(body.to).toBe(`U${"a".repeat(32)}`);
+	});
+
+	it("keeps a durable Order when the bound LINE provider fails", async () => {
+		await env.DB.prepare(
+			`INSERT INTO line_merchant_binding (id, recipient_user_id, paired_at, updated_at)
+			VALUES (1, ?, ?, ?)`,
+		)
+			.bind(`U${"b".repeat(32)}`, fixedNow.toISOString(), fixedNow.toISOString())
+			.run();
+		const result = await createOrder(env.DB, orderRequest, "line-provider-failure", fixedNow);
+		if (result.replayed) throw new Error("Expected a newly created Order");
+		const provider = createNotificationProvider(
+			{
+				NOTIFICATION_PROVIDER: "line",
+				LINE_CHANNEL_ACCESS_TOKEN: "test-channel-token",
+			},
+			env.DB,
+			(async () => new Response(null, { status: 503 })) as typeof fetch,
+		);
+
+		const delivery = await deliverNewOrderNotification(
+			env.DB,
+			result.notificationDeliveryId,
+			toNotification(result.order),
+			provider,
+			fixedNow,
+		);
+		const storedOrder = await env.DB
+			.prepare("SELECT status FROM orders WHERE id = ?")
+			.bind(result.order.id)
+			.first<{ status: string }>();
+
+		expect(delivery).toMatchObject({ attempted: true, sent: false });
+		expect(storedOrder).toEqual({ status: "pending" });
 	});
 });

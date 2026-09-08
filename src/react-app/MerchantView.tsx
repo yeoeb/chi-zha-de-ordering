@@ -208,7 +208,7 @@ export default function MerchantView() {
 				<p>依送單時間排列，先處理最早的訂單。</p>
 			</header>
 
-			<p className="merchant-security-note">本頁僅供本機開發使用，目前尚未加入店家身分驗證。</p>
+			<p className="merchant-security-note">店家管理頁已啟用身分驗證。</p>
 
 			{error && (
 				<p className="merchant-message merchant-error" role="alert">

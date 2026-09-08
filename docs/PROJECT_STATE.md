@@ -2,7 +2,7 @@
 
 ## Current phase
 
-CP8 Gate 14 — real LINE verification preparation is complete. No LINE message or secret mutation has occurred; the workers.dev store remains paused.
+CP8 Gate 15A — the secure LINE Merchant pairing foundation is implemented and verified locally. Migration `0008`, the new Worker code, and secrets have not been applied or deployed remotely; the workers.dev store remains paused.
 
 - CP0 — Initial Local Baseline: complete.
 - CP1 — Menu + Modifier + Client Cart: complete and verified.
@@ -22,6 +22,7 @@ CP8 Gate 14 — real LINE verification preparation is complete. No LINE message 
 - CP8 Gate 12F — first Worker bootstrap deployment and public/unauthenticated smoke verification: complete.
 - CP8 Gate 13 — Access-authenticated Merchant read-only smoke verification: complete.
 - CP8 Gate 14 — real LINE verification preparation: complete; external delivery remains separately gated.
+- CP8 Gate 15A — secure LINE Merchant pairing foundation: implemented and verified locally only.
 
 ## Implemented features
 
@@ -47,6 +48,7 @@ CP8 Gate 14 — real LINE verification preparation is complete. No LINE message 
 - Merchant active Orders refresh on a bounded five-second chained poll while the Merchant view is mounted.
 - Every new logical Order atomically stores one LINE notification intent; a provider attempt runs after durable Order creation and records `sent` or `failed` without changing the Order result.
 - Merchant notification observability lists recent failed/pending deliveries first and provides a guarded explicit retry without exposing Customer PII or provider credentials.
+- Authenticated Merchant pairing creates one cryptographically random ten-minute code whose SHA-256 hash is stored in D1. A valid signed LINE webhook plus the one-time code can bind or rebind the singleton Merchant recipient without exposing the LINE user ID through APIs.
 - Pure preparation-time policy with a UTC ISO-8601 absolute ready timestamp.
 - Reusable schema migrations are separate from replaceable local development fixtures.
 
@@ -61,6 +63,8 @@ CP8 Gate 14 — real LINE verification preparation is complete. No LINE message 
 - `order_items`: Order/menu references plus immutable item name, unit price, quantity, line total, and deterministic snapshot order.
 - `order_item_modifiers`: Order-item/modifier references plus immutable group name, option name, price delta, and deterministic snapshot order.
 - `notification_deliveries`: one unique `new_order`/`line` delivery per Order, status (`pending`, `sent`, or `failed`), attempt count, last-attempt time, sanitized last error, creation time, and optional sent time.
+- `line_merchant_binding`: singleton D1 record containing the validated LINE recipient user ID and pairing timestamps. It is never projected through Customer or Merchant APIs.
+- `line_merchant_pairing_challenge`: singleton one-time challenge containing only the code hash, ten-minute expiry, creation time, and optional consumed time. Creating another challenge atomically replaces the prior one.
 
 SQLite boolean fields use constrained `0`/`1` values. No inventory, stock quantity, image, combo, promotion, coupon, payment, delivery, account, or generic workflow schema exists.
 
@@ -74,6 +78,9 @@ SQLite boolean fields use constrained `0`/`1` values. No inventory, stock quanti
 - `GET /api/orders/by-token/:token`: returns a customer-safe historical Order projection from persisted snapshots with current status and committed ETA. The old internal-ID route is not a public lookup contract. Every response uses `Cache-Control: no-store`.
 - `GET /api/merchant/orders`: returns only actionable `pending` and `accepted` Orders, oldest first, using stored item/modifier snapshots.
 - `GET /api/merchant/notifications`: returns at most 50 recent operational delivery records, ordering failed then pending before sent, without phone numbers, public tokens, or credentials.
+- `POST /api/line/webhook`: public LINE callback boundary. It verifies `x-line-signature` over the exact raw body before JSON parsing, accepts empty verification events, and processes only a valid `綁定 <code>` user message.
+- `POST /api/merchant/line/pairing`: protected Merchant action that replaces any prior challenge and returns a random one-time code once with its expiry. Plaintext is never stored.
+- `GET /api/merchant/line/status`: protected Merchant projection returning only paired state and optional pairing time, never the recipient user ID.
 - `POST /api/merchant/notifications/:id/retry`: retries a failed, never-attempted, or stale-pending delivery through the configured provider. Sent and actively in-progress deliveries return a conflict; missing deliveries return 404.
 - `POST /api/merchant/orders/:id/accept`: transitions `pending` to `accepted`.
 - `POST /api/merchant/orders/:id/reject`: transitions `pending` to `rejected`.
@@ -184,14 +191,15 @@ SQLite boolean fields use constrained `0`/`1` values. No inventory, stock quanti
 - Order creation atomically persists exactly one pending `line`/`new_order` intent with the Order snapshots. The unique `(order_id, channel, event_type)` constraint and DB-backed Order idempotency prevent a retry from creating or sending a second logical notification.
 - Delivery claims an eligible intent with a conditional D1 update before calling the provider, increments `attempt_count`, and records `last_attempt_at`. Success records `sent` and `sent_at`; failure records `failed` and a bounded sanitized reason. In either case the Order remains unchanged and the Customer's successful Order response is independent of delivery.
 - Manual retry accepts `failed`, never-attempted `pending`, or `pending` whose prior claim is at least 60 seconds old. This makes abandoned best-effort work recoverable while rejecting an active attempt. A `sent` delivery is never eligible again.
-- Local development can use the Fake provider only with the explicit Merchant development bypass. The first staging release explicitly sets `NOTIFICATION_PROVIDER=disabled`; production LINE delivery later requires `NOTIFICATION_PROVIDER=line`, `LINE_CHANNEL_ACCESS_TOKEN`, and `LINE_MERCHANT_RECIPIENT_ID`.
+- Local development can use the Fake provider only with the explicit Merchant development bypass. The deployed staging release remains `NOTIFICATION_PROVIDER=disabled`. The target LINE design uses `NOTIFICATION_PROVIDER=line`, secret `LINE_CHANNEL_ACCESS_TOKEN`, secret `LINE_CHANNEL_SECRET`, and the authoritative recipient from `line_merchant_binding`; `LINE_MERCHANT_RECIPIENT_ID` is removed.
 - The LINE provider uses the Messaging API push endpoint with a bounded text body, Bearer authorization, and a five-second timeout. Its message includes only the customer-safe Order number, item names/quantities, total, and ready time—never phone, lookup token, internal ID, or credentials.
+- When LINE mode has no paired recipient, delivery fails closed with `LINE_RECIPIENT_NOT_PAIRED`; it never falls back to Fake. Pairing/rebinding requires a fresh code generated behind the Merchant Access/JWT boundary. Signature verification alone never authorizes a LINE user.
 - `waitUntil` extends the best-effort initial attempt but is not a durable retry system. Failed/stale records can be retried explicitly by the Merchant; automated scheduling, Queues/Cron, delivery dashboards, and quota recovery remain deferred.
 
 ## Deployment readiness verification
 
-- `npm run verify:fresh-d1` creates isolated temporary local persistence, applies migrations `0001` through `0007` from an empty state, applies only the replaceable development seed in that isolated database, checks required Store/Menu data, and verifies Order public-token/idempotency plus notification uniqueness and `last_attempt_at`. Temporary persistence is validated and removed afterward.
-- Schema/data classification: migration `0001` includes the required single-store `吃炸的` configuration; migrations `0002`–`0007` are reusable schema/evolution; `seeds/development.sql` is destructive, replaceable local Menu fixture data and must never run in production.
+- `npm run verify:fresh-d1` creates isolated temporary local persistence, applies migrations `0001` through `0008` from an empty state, applies only the replaceable development seed in that isolated database, and verifies the Store/Menu, Order/notification constraints, retry timestamp, and LINE pairing tables. Temporary persistence is validated and removed afterward.
+- Schema/data classification: migration `0001` includes the required single-store `吃炸的` configuration; migrations `0002`–`0008` are reusable schema/evolution; `seeds/development.sql` is destructive, replaceable local Menu fixture data and must never run in production. Migration `0008` remains unapplied remotely pending an explicit migration gate.
 - `npm run verify:deploy-dry-run` executes installed Wrangler with `deploy --dry-run --outdir` into a validated temporary directory, checks the emitted Worker bundle and source deployment configuration, checks built PWA assets, and removes dry-run output. No upload or remote resource operation occurs.
 - Production design uses a public Customer hostname and a separate Merchant hostname covered by a self-hosted Cloudflare Access application. The existing application guard additionally requires the exact Merchant hostname and cryptographically validates the Access assertion issuer, audience, and signature.
 - The Access-looking request header alone is never trusted. `workers.dev`, previews, old routes, alternate Custom Domains, and `/merchant` on the Customer hostname must be disabled, Access-protected, or explicitly blocked/redirected and tested before launch.
@@ -215,14 +223,24 @@ SQLite boolean fields use constrained `0`/`1` values. No inventory, stock quanti
 ## Gate 14 LINE verification preparation
 
 - LINE delivery is implemented in `src/worker/notifications.ts` behind `NotificationProvider.notifyNewOrder`. Order creation stores the unique `line`/`new_order` intent in the Order's atomic D1 batch, then invokes delivery through `waitUntil` only after durable creation. Provider failure records `failed` and never rolls back or changes the Order.
-- `NOTIFICATION_PROVIDER=line` selects the LINE provider only when both `LINE_CHANNEL_ACCESS_TOKEN` and `LINE_MERCHANT_RECIPIENT_ID` are present and bounded. Missing/invalid configuration selects the disabled provider. Fake delivery requires the explicit local development bypass and cannot silently report success in staging/production.
+- Gate 14 identified that the original LINE provider required both an access token and environment-supplied recipient. Gate 15A supersedes that target design with a D1-paired recipient while preserving fail-closed disabled/Fake behavior.
 - The provider posts one bounded text message to `https://api.line.me/v2/bot/message/push` with Bearer authorization, JSON content, a five-second timeout, and sanitized failure codes. Neither credential is returned or logged.
-- Both `LINE_CHANNEL_ACCESS_TOKEN` and `LINE_MERCHANT_RECIPIENT_ID` are treated as sensitive operational secrets. Neither may be committed, placed in Wrangler vars/docs/chat/shell history, or printed in logs. The installed Wrangler supports a future version-only bulk secret upload from an uncommitted temporary file; Gate 14 did not execute it.
-- The repository has no LINE webhook endpoint, signature validation, or recipient-ID capture flow. The Merchant recipient ID must be obtained from a legitimate signed webhook event or another verified LINE Official Account administrative source before a real send. Building a webhook capture flow is a separately reviewed task.
+- Gate 14 classified LINE configuration as sensitive and established the version-only secret workflow. Gate 15A now requires only `LINE_CHANNEL_ACCESS_TOKEN` and `LINE_CHANNEL_SECRET` as Worker Secrets; the recipient identifier is captured into D1 and never copied through configuration.
+- Gate 14 identified the absence of a webhook, signature validation, and recipient capture. Gate 15A closes those gaps locally through the public signed webhook plus Access-authenticated one-time-code pairing; none of that code or schema is deployed yet.
 - The planned one-send diagnostic text is: `吃炸的系統測試通知\n店家通知功能連線成功。\n此訊息為上線前測試，無須處理。` The current transport emits LINE text messages, but the public/application interface is intentionally new-Order-specific. A later source-change gate must expose a non-public provider-level diagnostic seam or use an equivalent controlled local invocation; no temporary public endpoint or fake Order should be created.
 - Notification status uses `pending`, `sent`, and `failed`. Claims increment `attempt_count` and set `last_attempt_at`; successful delivery sets `sent_at`, while sanitized failure remains retryable. Sent deliveries cannot be resent, and D1 uniqueness on `(order_id, channel, event_type)` prevents a second logical intent.
 - Retry is idempotently guarded at the D1 intent/claim boundary, but external exactly-once delivery is not guaranteed: the current LINE push request has no provider retry key, so an accepted request followed by a lost response could be retried and delivered twice. This must be considered during the controlled LINE verification and later reliability review.
 - The Merchant banner saying the page is local-only and unauthenticated is stale now that staging uses Cloudflare Access plus the Worker JWT guard. It is recorded for a later small UI source-change gate and was not changed during Gate 14 preparation.
+
+## Gate 15A secure LINE pairing foundation
+
+- `LINE_CHANNEL_SECRET` is a new Worker Secret used only to verify LINE webhook HMAC-SHA256 signatures. The exact raw UTF-8 request bytes are verified with Web Crypto before JSON parsing; raw bodies, signatures, pairing codes, and LINE user IDs are never logged.
+- Authenticated Merchant challenge creation uses eight unbiased characters from a 32-character alphabet (`XXXX-XXXX`, 40 bits), a ten-minute TTL, and one singleton row. Only SHA-256 of the normalized code is stored; issuing a new challenge invalidates the previous one.
+- A valid webhook can bind only `source.type = user`, a `U` plus 32-hex-character user ID, a text message exactly matching `綁定 <code>`, and an unexpired/unconsumed hash match. Binding and challenge consumption use one conditional D1 batch. Redelivery and consumed-code replay are harmless.
+- Rebinding is allowed only after an authenticated Merchant issues a fresh challenge. Normal webhook traffic and a valid LINE signature alone cannot overwrite the singleton recipient.
+- LINE delivery resolves the recipient exclusively from D1. Missing binding produces bounded `LINE_RECIPIENT_NOT_PAIRED`; `LINE_MERCHANT_RECIPIENT_ID` is no longer a binding or fallback.
+- The Merchant security notice now says `店家管理頁已啟用身分驗證。` without exposing Access implementation details.
+- Local verification passes 14 Vitest files and 117 tests, `npm run check`, the production build/PWA checks, and an isolated empty-D1 application of all eight migrations. No remote migration, deployment, secret, LINE message, Order, Access change, or store resume occurred.
 
 ## Production security foundation
 
@@ -256,4 +274,4 @@ SQLite boolean fields use constrained `0`/`1` values. No inventory, stock quanti
 
 ## Next feature
 
-CP8 Gate 15 — perform HTTPS PWA verification on the deployed staging surface: supported-device installability, standalone launch, Merchant Access login/start-up, Service Worker scope/cache inspection, live API freshness, and confirmation that offline Order submission remains impossible. Keep the store paused and make no Order, LINE, D1, Access, or deployment mutation.
+CP8 Gate 15B — review migration `0008` and the two-secret deployment boundary, then prepare (without executing) the remote migration, version-only secret upload, and staging pairing verification sequence. Any remote D1 migration, secret version, deployment, webhook configuration, or LINE action requires its own explicit approval.

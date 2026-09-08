@@ -37,8 +37,18 @@ import {
 	isRateLimitAllowed,
 	type SecurityBindings,
 } from "./security";
+import {
+	createLinePairingChallenge,
+	getLinePairingStatus,
+	LineWebhookError,
+	MAX_LINE_WEBHOOK_BODY_BYTES,
+	processLineWebhook,
+	type LinePairingBindings,
+} from "./line-pairing";
 
-const app = new Hono<{ Bindings: Env & SecurityBindings & NotificationBindings }>();
+const app = new Hono<{
+	Bindings: Env & SecurityBindings & NotificationBindings & LinePairingBindings;
+}>();
 
 type MenuRow = {
 	categoryId: number;
@@ -208,6 +218,41 @@ app.get("/api/menu", async (c) => {
 	return c.json({ categories });
 });
 
+app.post("/api/line/webhook", async (c) => {
+	const declaredLength = Number(c.req.header("content-length"));
+
+	if (Number.isFinite(declaredLength) && declaredLength > MAX_LINE_WEBHOOK_BODY_BYTES) {
+		return c.json(
+			{
+				error: {
+					code: "LINE_WEBHOOK_BODY_TOO_LARGE",
+					message: `LINE webhook body must not exceed ${MAX_LINE_WEBHOOK_BODY_BYTES} bytes`,
+				},
+			},
+			413,
+		);
+	}
+
+	const rawBody = new Uint8Array(await c.req.raw.arrayBuffer());
+
+	try {
+		await processLineWebhook(
+			c.env.DB,
+			rawBody,
+			c.req.header("x-line-signature"),
+			c.env.LINE_CHANNEL_SECRET,
+			new Date(),
+		);
+		return c.json({ ok: true });
+	} catch (error) {
+		if (error instanceof LineWebhookError) {
+			return c.json({ error: { code: error.code, message: error.message } }, error.status);
+		}
+
+		throw error;
+	}
+});
+
 app.post("/api/checkout/quote", async (c) => {
 	let requestBody: unknown;
 
@@ -337,7 +382,7 @@ app.post("/api/orders", async (c) => {
 					c.env.DB,
 					result.notificationDeliveryId,
 					result.order,
-					createNotificationProvider(c.env),
+					createNotificationProvider(c.env, c.env.DB),
 				),
 			);
 		}
@@ -408,12 +453,34 @@ app.get("/api/merchant/notifications", async (c) => {
 	return c.json({ deliveries });
 });
 
+app.post("/api/merchant/line/pairing", async (c) => {
+	if (!c.env.LINE_CHANNEL_SECRET?.trim()) {
+		return c.json(
+			{
+				error: {
+					code: "LINE_WEBHOOK_NOT_CONFIGURED",
+					message: "LINE webhook is not configured",
+				},
+			},
+			503,
+		);
+	}
+
+	const challenge = await createLinePairingChallenge(c.env.DB, new Date());
+	return c.json(challenge, 201);
+});
+
+app.get("/api/merchant/line/status", async (c) => {
+	const status = await getLinePairingStatus(c.env.DB);
+	return c.json(status);
+});
+
 app.post("/api/merchant/notifications/:id/retry", async (c) => {
 	try {
 		const delivery = await retryNotificationDelivery(
 			c.env.DB,
 			c.req.param("id"),
-			createNotificationProvider(c.env),
+			createNotificationProvider(c.env, c.env.DB),
 			new Date(),
 		);
 		return c.json({ delivery });

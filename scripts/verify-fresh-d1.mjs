@@ -7,7 +7,7 @@ import { fileURLToPath } from "node:url";
 const root = dirname(dirname(fileURLToPath(import.meta.url)));
 const safeTempRoot = realpathSync(tmpdir());
 const persistenceDirectory = mkdtempSync(join(safeTempRoot, "chi-zha-de-fresh-d1-"));
-const database = "chi-zha-de-ordering-local";
+const database = "DB";
 const wranglerBin = join(root, "node_modules", "wrangler", "bin", "wrangler.js");
 
 function runWrangler(arguments_, expectJson = false) {
@@ -65,16 +65,20 @@ try {
 				(SELECT COUNT(*) FROM store_settings WHERE id = 1 AND display_name = '吃炸的') AS storeCount,
 				(SELECT COUNT(*) FROM menu_items) AS menuItemCount,
 				(SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' AND name = 'orders_public_lookup_token_unique') AS publicTokenIndexCount,
-				(SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' AND name = 'notification_deliveries_status_idx') AS notificationStatusIndexCount`,
+				(SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' AND name = 'notification_deliveries_status_idx') AS notificationStatusIndexCount,
+				(SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'line_merchant_binding') AS lineBindingTableCount,
+				(SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'line_merchant_pairing_challenge') AS lineChallengeTableCount`,
 		], true),
 	);
 
 	if (
-		summary.migrationCount !== 7 ||
+		summary.migrationCount !== 8 ||
 		summary.storeCount !== 1 ||
 		summary.menuItemCount !== 5 ||
 		summary.publicTokenIndexCount !== 1 ||
-		summary.notificationStatusIndexCount !== 1
+		summary.notificationStatusIndexCount !== 1 ||
+		summary.lineBindingTableCount !== 1 ||
+		summary.lineChallengeTableCount !== 1
 	) {
 		throw new Error(`Unexpected fresh D1 summary: ${JSON.stringify(summary)}`);
 	}
@@ -110,13 +114,20 @@ try {
 		throw new Error("Fresh D1 is missing notification_deliveries.last_attempt_at");
 	}
 
-	const migrationFiles = readFileSync(join(root, "migrations", "0007_add_notification_last_attempt_at.sql"), "utf8");
-	if (!migrationFiles.includes("last_attempt_at")) {
+	const notificationMigration = readFileSync(join(root, "migrations", "0007_add_notification_last_attempt_at.sql"), "utf8");
+	if (!notificationMigration.includes("last_attempt_at")) {
 		throw new Error("Migration 0007 content could not be verified");
+	}
+	const pairingMigration = readFileSync(join(root, "migrations", "0008_create_line_merchant_pairing.sql"), "utf8");
+	if (
+		!pairingMigration.includes("line_merchant_binding") ||
+		!pairingMigration.includes("line_merchant_pairing_challenge")
+	) {
+		throw new Error("Migration 0008 content could not be verified");
 	}
 
 	console.log(
-		"Fresh D1 PASS: 7 sequential migrations, required store row, replaceable 5-item development seed, uniqueness constraints, and last_attempt_at verified.",
+		"Fresh D1 PASS: 8 sequential migrations, required store row, replaceable 5-item development seed, Order/notification constraints, retry timestamp, and LINE pairing tables verified.",
 	);
 } finally {
 	const resolvedPersistence = resolve(persistenceDirectory);

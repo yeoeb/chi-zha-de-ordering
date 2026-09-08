@@ -45,7 +45,7 @@ npm.cmd exec wrangler -- d1 migrations list DB --remote
 npm.cmd exec wrangler -- d1 time-travel info DB
 ```
 
-All seven migrations and the reviewed `production-data/initial-store-menu.sql` data write have already been applied. Never rerun that file against the populated database. Verify tables, indexes, constraints, `PRAGMA quick_check`, Store/Menu counts, and `is_accepting_orders = 0` read-only before deployment.
+Migrations `0001` through `0007` and the reviewed `production-data/initial-store-menu.sql` data write have already been applied. Migration `0008_create_line_merchant_pairing.sql` is locally verified but requires a separate remote migration approval and a fresh Time Travel bookmark. Never rerun the production data file against the populated database. Verify tables, indexes, constraints, `PRAGMA quick_check`, Store/Menu counts, and `is_accepting_orders = 0` read-only before deployment.
 
 ## Configuration
 
@@ -53,8 +53,8 @@ Production non-secret configuration must include:
 
 - Real production D1 ID bound as `DB`.
 - Production Rate Limiting namespace bound as `ORDER_RATE_LIMITER`.
-- `NOTIFICATION_PROVIDER=disabled` for the recommended initial release, or `NOTIFICATION_PROVIDER=line` only when both LINE values are configured and a real smoke is authorized.
-- For LINE-enabled releases, both `LINE_CHANNEL_ACCESS_TOKEN` and `LINE_MERCHANT_RECIPIENT_ID` are sensitive operational secrets. Keep them out of source, Wrangler vars, logs, URLs, API responses, screenshots, documentation values, shell history, and chat.
+- `NOTIFICATION_PROVIDER=disabled` for the current release, or `NOTIFICATION_PROVIDER=line` only after both LINE secrets and the D1 recipient pairing are ready and a real smoke is authorized.
+- For LINE-enabled releases, `LINE_CHANNEL_ACCESS_TOKEN` and `LINE_CHANNEL_SECRET` are sensitive Worker Secrets. The Merchant recipient is sensitive D1 state established only through signed webhook pairing. Keep all three out of source, Wrangler vars, logs, URLs, API responses, screenshots, documentation values, shell history, and chat.
 - Exact `MERCHANT_HOSTNAME` for the Access-protected hostname.
 - Exact `CF_ACCESS_TEAM_DOMAIN` and `CF_ACCESS_AUD` for the Merchant Access application.
 
@@ -66,7 +66,7 @@ The first staging release uses `workers_dev=true`, `preview_urls=false`, `MERCHA
 
 Mode A (recommended first deployment) sets `NOTIFICATION_PROVIDER=disabled`. The Worker starts normally, Orders remain durable, Merchant polling remains authoritative, and each new Order's notification intent records a sanitized `NOTIFICATION_DISABLED` failure. Fake delivery is accepted only alongside the explicit development bypass; do not configure `fake` or either development bypass in production.
 
-Mode B sets `NOTIFICATION_PROVIDER=line` and supplies both `LINE_CHANNEL_ACCESS_TOKEN` and `LINE_MERCHANT_RECIPIENT_ID` as version-managed Cloudflare secrets. Missing or invalid LINE configuration selects the disabled provider; it does not fail Worker startup or Order creation.
+Mode B sets `NOTIFICATION_PROVIDER=line`, supplies `LINE_CHANNEL_ACCESS_TOKEN` and `LINE_CHANNEL_SECRET` as version-managed Cloudflare secrets, and resolves the recipient exclusively from the singleton D1 pairing. Missing token/secret configuration disables the provider; a missing pairing records `LINE_RECIPIENT_NOT_PAIRED`. Neither case fails Worker startup or rolls back Order creation.
 
 Do not commit either value, put either value on a command line, or expose them in logs or responses. `wrangler secret put` creates a new Worker version and deploys it immediately, so it is prohibited for the staged version workflow. After explicit approval, create an access-restricted temporary JSON or `.dev.vars` file outside the repository containing both values, then create one non-deployed Worker version using:
 
@@ -76,7 +76,7 @@ npm.cmd exec wrangler -- versions secret bulk <temporary-secret-file> --name chi
 
 The temporary file must never be committed and must be removed after its contents are confirmed in the created version metadata without reading values back. This command creates a version containing the secrets but does not shift traffic. Capture its version ID and stop before the separately approved `npm.cmd exec wrangler -- versions deploy <VERSION_ID>@100%`. Confirm both values are absent from logs, API responses, notification errors, source, `.env`, build output, documentation, shell history, and chat.
 
-The current repository has no LINE webhook, webhook signature validation, or automatic Merchant recipient-ID capture. Obtain the recipient ID from an actual, signature-validated LINE webhook event after the Merchant interacts with the Official Account, or from another verified LINE Official Account administrative source. Do not invent, derive, or request the value in chat. Adding a webhook capture flow requires a separate scoped change and security review.
+After migration `0008` and the two secrets are separately approved and deployed, the Access-authenticated Merchant generates one ten-minute pairing code. The Merchant sends `綁定 <code>` to the Official Account. `/api/line/webhook` verifies the exact raw body with `LINE_CHANNEL_SECRET`, then conditionally binds the valid LINE user ID and consumes the challenge atomically. Never copy the recipient through configuration, chat, Git, or shell history.
 
 ## Cloudflare Access
 
@@ -127,14 +127,15 @@ The remaining controlled mutation smoke requires separate explicit approval:
 
 Requires separate explicit authorization:
 
-1. Confirm the Official Account/channel and acquire the Merchant recipient through a legitimate verified source.
-2. Configure both secrets through the approved version-only bulk flow without exposing their values; do not deploy that version yet.
-3. Prefer a controlled, non-public provider-level diagnostic using the actual LINE transport. Do not create a fake Order, resume the store, or add a temporary public endpoint.
-4. Send exactly one harmless text message after a separate explicit external-send approval: `吃炸的系統測試通知`, `店家通知功能連線成功。`, `此訊息為上線前測試，無須處理。`
-5. Confirm no full phone, public token, internal ID, recipient ID, or credential appears in output or logs.
-6. Confirm the Merchant receives exactly one message and no duplicate send occurs.
-7. Treat a timeout/network failure as delivery-ambiguous: D1 guards one logical intent and concurrent claims, but the current LINE request has no provider retry key and cannot guarantee external exactly-once delivery if LINE accepted the request before the response was lost.
-8. Keep the Order-coupled delivery/retry scenario for a later separately approved controlled Order test; provider failure must never change Order durability.
+1. Confirm the Official Account/channel, record a D1 recovery bookmark, and apply/verify migration `0008` only after explicit approval.
+2. Configure `LINE_CHANNEL_ACCESS_TOKEN` and `LINE_CHANNEL_SECRET` through the approved version-only bulk flow without exposing their values; do not deploy that version yet.
+3. After a separately approved version deployment and LINE webhook configuration, authenticate through Merchant Access, generate one pairing code, and send only `綁定 <code>` from the intended Merchant LINE account. Confirm status becomes paired without exposing the recipient ID.
+4. Prefer a controlled, non-public provider-level diagnostic using the actual LINE transport. Do not create a fake Order, resume the store, or add a temporary public endpoint.
+5. Send exactly one harmless text message after a separate explicit external-send approval: `吃炸的系統測試通知`, `店家通知功能連線成功。`, `此訊息為上線前測試，無須處理。`
+6. Confirm no full phone, public token, internal ID, recipient ID, or credential appears in output or logs.
+7. Confirm the Merchant receives exactly one message and no duplicate send occurs.
+8. Treat a timeout/network failure as delivery-ambiguous: D1 guards one logical intent and concurrent claims, but the current LINE request has no provider retry key and cannot guarantee external exactly-once delivery if LINE accepted the request before the response was lost.
+9. Keep the Order-coupled delivery/retry scenario for a later separately approved controlled Order test; provider failure must never change Order durability.
 
 ## PWA verification
 

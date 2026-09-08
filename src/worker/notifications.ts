@@ -1,3 +1,5 @@
+import { getLineMerchantRecipientId } from "./line-pairing";
+
 const LINE_PUSH_ENDPOINT = "https://api.line.me/v2/bot/message/push";
 const LINE_REQUEST_TIMEOUT_MS = 5_000;
 const MAX_MESSAGE_ITEMS = 8;
@@ -8,7 +10,6 @@ const STALE_PENDING_AFTER_MS = 60_000;
 
 export type NotificationBindings = {
 	LINE_CHANNEL_ACCESS_TOKEN?: string;
-	LINE_MERCHANT_RECIPIENT_ID?: string;
 	MERCHANT_DEV_BYPASS?: string;
 	NOTIFICATION_PROVIDER?: string;
 };
@@ -152,13 +153,41 @@ export class LineNotificationProvider implements NotificationProvider {
 	}
 }
 
-export function createNotificationProvider(bindings: NotificationBindings): NotificationProvider {
+class BoundLineNotificationProvider implements NotificationProvider {
+	constructor(
+		private readonly db: D1Database,
+		private readonly channelAccessToken: string,
+		private readonly fetcher: Fetcher = fetch,
+	) {}
+
+	async notifyNewOrder(notification: NewOrderNotification) {
+		const recipientId = await getLineMerchantRecipientId(this.db);
+
+		if (!recipientId) {
+			throw new NotificationProviderError(
+				"LINE_RECIPIENT_NOT_PAIRED",
+				"Merchant LINE recipient is not paired",
+			);
+		}
+
+		await new LineNotificationProvider(
+			this.channelAccessToken,
+			recipientId,
+			this.fetcher,
+		).notifyNewOrder(notification);
+	}
+}
+
+export function createNotificationProvider(
+	bindings: NotificationBindings,
+	db: D1Database,
+	fetcher: Fetcher = fetch,
+): NotificationProvider {
 	if (bindings.NOTIFICATION_PROVIDER === "line") {
 		const token = bindings.LINE_CHANNEL_ACCESS_TOKEN?.trim();
-		const recipientId = bindings.LINE_MERCHANT_RECIPIENT_ID?.trim();
 
-		if (token && token.length <= 4_096 && recipientId && recipientId.length <= 128) {
-			return new LineNotificationProvider(token, recipientId);
+		if (token && token.length <= 4_096) {
+			return new BoundLineNotificationProvider(db, token, fetcher);
 		}
 
 		return new DisabledNotificationProvider();

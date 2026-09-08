@@ -18,7 +18,7 @@ The workers.dev staging Worker is deployed while the store remains paused. `[x]`
 
 - [x] Production D1 `chi-zha-de-db` created in APAC.
 - [x] Production D1 ID configured in the `DB` binding.
-- [x] All seven migrations reviewed for production.
+- [x] Migrations `0001`–`0007` reviewed and applied remotely; local migration `0008` is reviewed/tested but not remotely applied.
 - [x] Pre-migration D1 Time Travel recovery information recorded.
 - [x] All migrations applied and verified remotely.
 - [x] Human-approved Store/Menu configuration inserted; development seed not used; store remains paused.
@@ -38,8 +38,9 @@ The workers.dev staging Worker is deployed while the store remains paused. `[x]`
 - [ ] Service Worker static caching and live API boundary verified in production.
 - [ ] LINE Official Account and Messaging API channel configured.
 - [x] First-deployment notification mode explicitly set to `disabled`; `fake` is absent.
-- [ ] `LINE_CHANNEL_ACCESS_TOKEN` stored as a Cloudflare Secret when Mode B (`line`) is enabled.
-- [ ] Merchant LINE recipient stored as deployment-managed non-secret confidential configuration when Mode B is enabled.
+- [ ] `LINE_CHANNEL_ACCESS_TOKEN` and `LINE_CHANNEL_SECRET` stored as version-managed Cloudflare Secrets when Mode B (`line`) is enabled.
+- [ ] Migration `0008_create_line_merchant_pairing.sql` explicitly approved, recovery bookmark recorded, applied remotely, and verified.
+- [ ] Merchant LINE recipient securely paired into D1 through an Access-authenticated one-time challenge and signed LINE webhook.
 - [ ] LINE quota/pricing understood.
 - [ ] Real LINE smoke explicitly authorized and completed.
 - [ ] Notification failure and Merchant retry path verified against staging configuration.
@@ -48,7 +49,8 @@ The workers.dev staging Worker is deployed while the store remains paused. `[x]`
 - [ ] Mutating production runtime smoke complete under a separately approved controlled Order scenario.
 - [x] First-deployment recovery was reviewed before bootstrap; the current first version has no earlier rollback target, and later-version rollback procedures are documented.
 - [x] Gate 14 LINE provider, secret, recipient acquisition, and no-send verification plan reviewed; no real LINE action occurred.
-- [ ] Verified Merchant recipient ID acquired through a legitimate LINE webhook/Official Account source without exposing it in Git, chat, logs, or shell history.
+- [x] Gate 15A locally implements signature-verified, one-time-code Merchant pairing without exposing the recipient ID.
+- [ ] Merchant recipient paired in staging without exposing it in Git, chat, logs, shell history, or API responses.
 - [ ] Non-public provider-level diagnostic seam reviewed for the one controlled LINE send; no temporary public test endpoint added.
 - [ ] LINE ambiguous-response duplicate risk reviewed; D1 prevents duplicate intents but the current outbound push has no provider-level exactly-once guarantee.
-- [ ] Stale Merchant local-only/unauthenticated banner updated to reflect the Access plus Worker JWT boundary.
+- [x] Stale Merchant local-only/unauthenticated banner updated to reflect the authenticated management surface.
