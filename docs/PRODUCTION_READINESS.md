@@ -18,7 +18,7 @@ The workers.dev staging Worker is deployed while the store remains paused. `[x]`
 
 - [x] Production D1 `chi-zha-de-db` created in APAC.
 - [x] Production D1 ID configured in the `DB` binding.
-- [x] Migrations `0001`–`0007` reviewed and applied remotely; local migration `0008` is reviewed/tested but not remotely applied.
+- [x] Migrations `0001`–`0008` reviewed, applied remotely, and verified; pairing tables are initially empty.
 - [x] Pre-migration D1 Time Travel recovery information recorded.
 - [x] All migrations applied and verified remotely.
 - [x] Human-approved Store/Menu configuration inserted; development seed not used; store remains paused.
@@ -39,7 +39,7 @@ The workers.dev staging Worker is deployed while the store remains paused. `[x]`
 - [ ] LINE Official Account and Messaging API channel configured.
 - [x] First-deployment notification mode explicitly set to `disabled`; `fake` is absent.
 - [ ] `LINE_CHANNEL_ACCESS_TOKEN` and `LINE_CHANNEL_SECRET` stored as version-managed Cloudflare Secrets when Mode B (`line`) is enabled.
-- [ ] Migration `0008_create_line_merchant_pairing.sql` explicitly approved, recovery bookmark recorded, applied remotely, and verified.
+- [x] Migration `0008_create_line_merchant_pairing.sql` explicitly approved, recovery bookmarks recorded, applied remotely, and verified.
 - [ ] Merchant LINE recipient securely paired into D1 through an Access-authenticated one-time challenge and signed LINE webhook.
 - [ ] LINE quota/pricing understood.
 - [ ] Real LINE smoke explicitly authorized and completed.

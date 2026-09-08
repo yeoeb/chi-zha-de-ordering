@@ -45,7 +45,7 @@ npm.cmd exec wrangler -- d1 migrations list DB --remote
 npm.cmd exec wrangler -- d1 time-travel info DB
 ```
 
-Migrations `0001` through `0007` and the reviewed `production-data/initial-store-menu.sql` data write have already been applied. Migration `0008_create_line_merchant_pairing.sql` is locally verified but requires a separate remote migration approval and a fresh Time Travel bookmark. Never rerun the production data file against the populated database. Verify tables, indexes, constraints, `PRAGMA quick_check`, Store/Menu counts, and `is_accepting_orders = 0` read-only before deployment.
+Migrations `0001` through `0008` and the reviewed `production-data/initial-store-menu.sql` data write have been applied. Gate 15B1 applied only `0008_create_line_merchant_pairing.sql`; both pairing tables were verified empty afterward. Its pre-migration bookmark is `0000000c-00000000-000050e0-2853ec2898cc7fe3ca73d7cea2dd63c0` and post-migration bookmark is `0000000c-00000004-000050e0-31565a3e9f4ce234b542730e07475e60`. Never rerun the production data file against the populated database. Verify tables, indexes, constraints, `PRAGMA quick_check`, Store/Menu counts, and `is_accepting_orders = 0` read-only before deployment.
 
 ## Configuration
 

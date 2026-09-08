@@ -2,7 +2,7 @@
 
 ## Current phase
 
-CP8 Gate 15A — the secure LINE Merchant pairing foundation is implemented and verified locally. Migration `0008`, the new Worker code, and secrets have not been applied or deployed remotely; the workers.dev store remains paused.
+CP8 Gate 15B1 — the secure LINE Merchant pairing schema migration is applied and verified remotely. The Gate 15A Worker code and secrets are not deployed; the workers.dev store remains paused.
 
 - CP0 — Initial Local Baseline: complete.
 - CP1 — Menu + Modifier + Client Cart: complete and verified.
@@ -23,12 +23,13 @@ CP8 Gate 15A — the secure LINE Merchant pairing foundation is implemented and 
 - CP8 Gate 13 — Access-authenticated Merchant read-only smoke verification: complete.
 - CP8 Gate 14 — real LINE verification preparation: complete; external delivery remains separately gated.
 - CP8 Gate 15A — secure LINE Merchant pairing foundation: implemented and verified locally only.
+- CP8 Gate 15B1 — remote D1 LINE pairing migration: complete and verified.
 
 ## Implemented features
 
 - React SPA served by Vite with the Cloudflare Vite plugin.
 - Hono Worker API with explicit Worker-first routing for `/api/*`.
-- D1 binding `DB` targets the production `chi-zha-de-db` database. All seven migrations and the human-approved Store/Menu configuration are applied remotely; the store remains paused.
+- D1 binding `DB` targets the production `chi-zha-de-db` database. All eight migrations and the human-approved Store/Menu configuration are applied remotely; the store remains paused.
 - Single-store settings stored in D1 and exposed through the API.
 - Active menu categories, items, modifier groups, and modifier options are grouped and deterministically sorted by the backend.
 - Mobile-first menu with sold-out handling and required single-choice item configuration.
@@ -199,7 +200,7 @@ SQLite boolean fields use constrained `0`/`1` values. No inventory, stock quanti
 ## Deployment readiness verification
 
 - `npm run verify:fresh-d1` creates isolated temporary local persistence, applies migrations `0001` through `0008` from an empty state, applies only the replaceable development seed in that isolated database, and verifies the Store/Menu, Order/notification constraints, retry timestamp, and LINE pairing tables. Temporary persistence is validated and removed afterward.
-- Schema/data classification: migration `0001` includes the required single-store `吃炸的` configuration; migrations `0002`–`0008` are reusable schema/evolution; `seeds/development.sql` is destructive, replaceable local Menu fixture data and must never run in production. Migration `0008` remains unapplied remotely pending an explicit migration gate.
+- Schema/data classification: migration `0001` includes the required single-store `吃炸的` configuration; migrations `0002`–`0008` are reusable schema/evolution; `seeds/development.sql` is destructive, replaceable local Menu fixture data and must never run in production. Migration `0008` was applied remotely in Gate 15B1 without fixture data.
 - `npm run verify:deploy-dry-run` executes installed Wrangler with `deploy --dry-run --outdir` into a validated temporary directory, checks the emitted Worker bundle and source deployment configuration, checks built PWA assets, and removes dry-run output. No upload or remote resource operation occurs.
 - Production design uses a public Customer hostname and a separate Merchant hostname covered by a self-hosted Cloudflare Access application. The existing application guard additionally requires the exact Merchant hostname and cryptographically validates the Access assertion issuer, audience, and signature.
 - The Access-looking request header alone is never trusted. `workers.dev`, previews, old routes, alternate Custom Domains, and `/merchant` on the Customer hostname must be disabled, Access-protected, or explicitly blocked/redirected and tested before launch.
@@ -240,7 +241,18 @@ SQLite boolean fields use constrained `0`/`1` values. No inventory, stock quanti
 - Rebinding is allowed only after an authenticated Merchant issues a fresh challenge. Normal webhook traffic and a valid LINE signature alone cannot overwrite the singleton recipient.
 - LINE delivery resolves the recipient exclusively from D1. Missing binding produces bounded `LINE_RECIPIENT_NOT_PAIRED`; `LINE_MERCHANT_RECIPIENT_ID` is no longer a binding or fallback.
 - The Merchant security notice now says `店家管理頁已啟用身分驗證。` without exposing Access implementation details.
-- Local verification passes 14 Vitest files and 117 tests, `npm run check`, the production build/PWA checks, and an isolated empty-D1 application of all eight migrations. No remote migration, deployment, secret, LINE message, Order, Access change, or store resume occurred.
+- Local verification passes 14 Vitest files and 117 tests, `npm run check`, the production build/PWA checks, and an isolated empty-D1 application of all eight migrations. Gate 15B1 subsequently applied only migration `0008`; no deployment, secret, LINE message, Order, Access change, or store resume occurred.
+
+## Gate 15B1 remote migration evidence
+
+- Target: D1 binding `DB`, database `chi-zha-de-db`, ID `d104f4b2-1be3-4d4b-b781-008807206dd3`.
+- Source commit: `d19dc4ecbd4cd6c223445b7d124f64b4c3f7fdc3`; working tree was clean and the 14-file/117-test suite, check, and explicit build passed before mutation.
+- `0008_create_line_merchant_pairing.sql` was the sole pending migration and was applied once at D1 tracker time `2026-09-08 22:47:50` UTC.
+- Pre-migration bookmark: `0000000c-00000000-000050e0-2853ec2898cc7fe3ca73d7cea2dd63c0`, captured at `2026-09-08T22:47:23.8946196Z`.
+- Post-migration bookmark: `0000000c-00000004-000050e0-31565a3e9f4ce234b542730e07475e60`.
+- Post-apply migration tracker reports no pending migrations. `line_merchant_binding` and `line_merchant_pairing_challenge` exist with singleton, recipient-format, code-hash, and timestamp constraints; both contain zero rows.
+- `PRAGMA quick_check` is `ok`. Store remains `吃炸的`, paused, with `15/5/10` timing; Menu remains 3 categories/43 items; Orders and notification deliveries remain zero.
+- No recipient, pairing challenge, fake fixture, Worker version, deployment, secret, LINE action, Access change, Order, or store-resume mutation occurred. A Time Travel restore remains a separately gated destructive operation.
 
 ## Production security foundation
 
@@ -274,4 +286,4 @@ SQLite boolean fields use constrained `0`/`1` values. No inventory, stock quanti
 
 ## Next feature
 
-CP8 Gate 15B — review migration `0008` and the two-secret deployment boundary, then prepare (without executing) the remote migration, version-only secret upload, and staging pairing verification sequence. Any remote D1 migration, secret version, deployment, webhook configuration, or LINE action requires its own explicit approval.
+CP8 Gate 15B2 — prepare and separately approve one non-active upload of the Gate 15A Worker source from a clean, reverified commit using `wrangler versions upload`. Capture the new version ID and confirm no traffic shift before any later version-secret or deployment gate.
