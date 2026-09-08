@@ -2,7 +2,7 @@
 
 ## Current phase
 
-CP8 Gate 11 — Final Pre-Deploy Verification is complete. The first workers.dev staging deployment is prepared but has not been executed.
+CP8 Gate 14 — real LINE verification preparation is complete. No LINE message or secret mutation has occurred; the workers.dev store remains paused.
 
 - CP0 — Initial Local Baseline: complete.
 - CP1 — Menu + Modifier + Client Cart: complete and verified.
@@ -19,7 +19,9 @@ CP8 Gate 11 — Final Pre-Deploy Verification is complete. The first workers.dev
 - CP6 — PWA + Merchant Notification Foundation: complete and verified.
 - CP7 — Notification Reliability + Deployment Readiness Verification: complete and verified.
 - CP8 Gates 0–11 — production data, Access boundary, staging configuration, and final pre-deploy verification: complete.
-- CP8 Gate 12 — first Worker deployment: not executed; separate approval is required.
+- CP8 Gate 12F — first Worker bootstrap deployment and public/unauthenticated smoke verification: complete.
+- CP8 Gate 13 — Access-authenticated Merchant read-only smoke verification: complete.
+- CP8 Gate 14 — real LINE verification preparation: complete; external delivery remains separately gated.
 
 ## Implemented features
 
@@ -198,6 +200,30 @@ SQLite boolean fields use constrained `0`/`1` values. No inventory, stock quanti
 - PWA production verification must occur over HTTPS and cover manifest/icons, installation, Merchant start-up, live API behavior, and proof that offline Order submission remains impossible.
 - Application rollback uses a recorded prior Worker version and `wrangler rollback` only after D1-schema compatibility review. Worker rollback does not revert D1. D1 recovery is separately approved and bookmark-aware; forward corrective migrations are preferred.
 
+## CP8 staging release evidence
+
+- Deployed candidate Git SHA: `20bc8f2d21f0fb2c9956571da5e1e3a7fcd54919`.
+- Worker version: `89762920-85ab-42f4-8ef9-e693a1d80180`.
+- Deployment: `4e04d117-0ef0-4c8d-901a-467eddb4779f`, active at 100% on the workers.dev staging surface.
+- Staging URL: `https://chi-zha-de-ordering.yeoeb55688.workers.dev`.
+- Gate 12F verified the public Customer shell, health, paused Store, approved 3-category/43-item Menu, manifest, Service Worker, and 192/512 icons over HTTPS. Unauthenticated Merchant UI/API requests were intercepted by Cloudflare Access.
+- Gate 13 manually authenticated through Cloudflare Access with the approved Merchant identity. The Merchant UI loaded and `GET /api/merchant/orders` returned `200`; the UI also loads `GET /api/merchant/notifications` through the same protected Worker middleware boundary.
+- A successful Merchant API response requires both the path-scoped Access policy and the Worker guard: exact hostname match plus cryptographic validation of the signed `Cf-Access-Jwt-Assertion` against `https://yeoeb.cloudflareaccess.com` and audience `0b41555c46401f25d421053db77ca92f2ee8e57e91a32f647b2aa6fdd08928b4`.
+- `MERCHANT_DEV_BYPASS` and `PUBLIC_WRITE_RATE_LIMIT_DEV_BYPASS` are absent from deployed configuration. Notifications remain explicitly disabled; no LINE credential/action is configured.
+- Gate 13 made no Merchant mutation and created no Order. A read-only D1 check after the smoke confirmed `is_accepting_orders = 0`, zero Orders, and zero notification deliveries.
+
+## Gate 14 LINE verification preparation
+
+- LINE delivery is implemented in `src/worker/notifications.ts` behind `NotificationProvider.notifyNewOrder`. Order creation stores the unique `line`/`new_order` intent in the Order's atomic D1 batch, then invokes delivery through `waitUntil` only after durable creation. Provider failure records `failed` and never rolls back or changes the Order.
+- `NOTIFICATION_PROVIDER=line` selects the LINE provider only when both `LINE_CHANNEL_ACCESS_TOKEN` and `LINE_MERCHANT_RECIPIENT_ID` are present and bounded. Missing/invalid configuration selects the disabled provider. Fake delivery requires the explicit local development bypass and cannot silently report success in staging/production.
+- The provider posts one bounded text message to `https://api.line.me/v2/bot/message/push` with Bearer authorization, JSON content, a five-second timeout, and sanitized failure codes. Neither credential is returned or logged.
+- Both `LINE_CHANNEL_ACCESS_TOKEN` and `LINE_MERCHANT_RECIPIENT_ID` are treated as sensitive operational secrets. Neither may be committed, placed in Wrangler vars/docs/chat/shell history, or printed in logs. The installed Wrangler supports a future version-only bulk secret upload from an uncommitted temporary file; Gate 14 did not execute it.
+- The repository has no LINE webhook endpoint, signature validation, or recipient-ID capture flow. The Merchant recipient ID must be obtained from a legitimate signed webhook event or another verified LINE Official Account administrative source before a real send. Building a webhook capture flow is a separately reviewed task.
+- The planned one-send diagnostic text is: `吃炸的系統測試通知\n店家通知功能連線成功。\n此訊息為上線前測試，無須處理。` The current transport emits LINE text messages, but the public/application interface is intentionally new-Order-specific. A later source-change gate must expose a non-public provider-level diagnostic seam or use an equivalent controlled local invocation; no temporary public endpoint or fake Order should be created.
+- Notification status uses `pending`, `sent`, and `failed`. Claims increment `attempt_count` and set `last_attempt_at`; successful delivery sets `sent_at`, while sanitized failure remains retryable. Sent deliveries cannot be resent, and D1 uniqueness on `(order_id, channel, event_type)` prevents a second logical intent.
+- Retry is idempotently guarded at the D1 intent/claim boundary, but external exactly-once delivery is not guaranteed: the current LINE push request has no provider retry key, so an accepted request followed by a lost response could be retried and delivered twice. This must be considered during the controlled LINE verification and later reliability review.
+- The Merchant banner saying the page is local-only and unauthenticated is stale now that staging uses Cloudflare Access plus the Worker JWT guard. It is recorded for a later small UI source-change gate and was not changed during Gate 14 preparation.
+
 ## Production security foundation
 
 - Customer status lookup is possession-based through an immutable random 256-bit token. Internal Order IDs remain Merchant-side identifiers and are neither returned by public Order creation/status responses nor accepted by a public read route. This is not a Customer account system; anyone who obtains a token can read that Order's customer-safe status.
@@ -230,4 +256,4 @@ SQLite boolean fields use constrained `0`/`1` values. No inventory, stock quanti
 
 ## Next feature
 
-CP8 Gate 12 — explicitly authorized first Worker deployment with `npm.cmd exec wrangler -- deploy`, followed only by the separately scoped staging smoke gates. The store must remain paused, LINE remains disabled, and no Custom Domain is introduced.
+CP8 Gate 15 — perform HTTPS PWA verification on the deployed staging surface: supported-device installability, standalone launch, Merchant Access login/start-up, Service Worker scope/cache inspection, live API freshness, and confirmation that offline Order submission remains impossible. Keep the store paused and make no Order, LINE, D1, Access, or deployment mutation.
