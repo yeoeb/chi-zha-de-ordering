@@ -8,12 +8,16 @@
 	"vars": {
 		"MERCHANT_HOSTNAME": "chi-zha-de-ordering.yeoeb55688.workers.dev",
 		"CF_ACCESS_TEAM_DOMAIN": "https://yeoeb.cloudflareaccess.com",
-		"CF_ACCESS_AUD": "0b41555c46401f25d421053db77ca92f2ee8e57e91a32f647b2aa6fdd08928b4"
+		"CF_ACCESS_AUD": "0b41555c46401f25d421053db77ca92f2ee8e57e91a32f647b2aa6fdd08928b4",
+		"VAPID_PUBLIC_KEY": "BPlmIxWf_i8z4wAzjdPv5wGwx3l7V5OHAru3FexDmz-8OYqGYCqKTo0h7k-9S7rEP99256kfRcKxmfKKGOfSySg",
+		"VAPID_SUBJECT": "https://chi-zha-de-ordering.yeoeb55688.workers.dev"
 	},
 	"assets": {
 		"directory": "./dist/client",
 		"not_found_handling": "single-page-application",
-		"run_worker_first": ["/api/*"]
+		"run_worker_first": [
+			"/api/*"
+		]
 	},
 	"d1_databases": [
 		{
