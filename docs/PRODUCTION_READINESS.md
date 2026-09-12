@@ -20,7 +20,7 @@ This checklist separates verified infrastructure from pending Web Push rollout w
 
 - [x] Active source no longer contains a LINE provider, webhook, pairing API, or LINE runtime environment requirement.
 - [x] Historical migration `0008` remains unchanged; its deprecated tables are retained.
-- [x] Migration `0009` adds Merchant Push subscriptions and preserves historical notification rows.
+- [x] Migration `0009` is additive: it adds separate Web Push intent/subscription tables and leaves historical LINE notification structure and rows untouched.
 - [x] Merchant subscription routes remain behind Access/JWT middleware.
 - [x] Notification permission requires an explicit Merchant gesture.
 - [x] Foreground five-second polling remains active independently of Push.

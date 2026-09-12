@@ -48,6 +48,7 @@ beforeAll(async () => {
 beforeEach(async () => {
 	await env.DB.batch([
 		env.DB.prepare("DELETE FROM merchant_push_subscriptions"),
+		env.DB.prepare("DELETE FROM web_push_notification_deliveries"),
 		env.DB.prepare("DELETE FROM notification_deliveries"),
 		env.DB.prepare("DELETE FROM order_item_modifiers"),
 		env.DB.prepare("DELETE FROM order_items"),
@@ -78,7 +79,8 @@ describe("durable new Order notification intent", () => {
 		);
 		const stored = await env.DB
 			.prepare(
-				"SELECT channel, status, attempt_count, last_error FROM notification_deliveries WHERE order_id = ?",
+				`SELECT 'web_push' AS channel, status, attempt_count, last_error
+				FROM web_push_notification_deliveries WHERE order_id = ?`,
 			)
 			.bind(result.order.id)
 			.first();
@@ -117,7 +119,7 @@ describe("durable new Order notification intent", () => {
 		const retry = await createOrder(env.DB, orderRequest, "push-idempotent", fixedNow);
 		if (first.replayed) throw new Error("Expected a new Order");
 		const count = await env.DB
-			.prepare("SELECT COUNT(*) AS count FROM notification_deliveries WHERE order_id = ?")
+			.prepare("SELECT COUNT(*) AS count FROM web_push_notification_deliveries WHERE order_id = ?")
 			.bind(first.order.id)
 			.first<{ count: number }>();
 
@@ -172,6 +174,42 @@ describe("durable new Order notification intent", () => {
 		expect(deliveries[0]).not.toHaveProperty("publicLookupToken");
 		expect(deliveries[0]).not.toHaveProperty("endpoint");
 		expect(deliveries[0]).not.toHaveProperty("p256dh");
+	});
+
+	it("keeps historical LINE deliveries readable but retired from retry", async () => {
+		const result = await createOrder(env.DB, orderRequest, "historical-line-list", fixedNow);
+		if (result.replayed) throw new Error("Expected a new Order");
+		await env.DB
+			.prepare(
+				`INSERT INTO notification_deliveries (
+					id, order_id, channel, event_type, status, attempt_count,
+					last_error, created_at, sent_at, last_attempt_at
+				) VALUES (?, ?, 'line', 'new_order', 'failed', 1, ?, ?, NULL, ?)`,
+			)
+			.bind(
+				"historical-line-delivery",
+				result.order.id,
+				"LINE_RETIRED: Historical provider failure",
+				fixedNow.toISOString(),
+				fixedNow.toISOString(),
+			)
+			.run();
+
+		const deliveries = await listMerchantNotificationDeliveries(env.DB);
+		expect(deliveries).toEqual(
+			expect.arrayContaining([
+				expect.objectContaining({ id: result.notificationDeliveryId, channel: "web_push" }),
+				expect.objectContaining({ id: "historical-line-delivery", channel: "line" }),
+			]),
+		);
+		await expect(
+			retryNotificationDelivery(
+				env.DB,
+				"historical-line-delivery",
+				new FakeNotificationProvider(),
+				fixedNow,
+			),
+		).rejects.toMatchObject({ code: "NOTIFICATION_CHANNEL_RETIRED" });
 	});
 });
 
@@ -284,7 +322,7 @@ describe("Web Push provider", () => {
 		const storedDelivery = await env.DB
 			.prepare(
 				`SELECT status, attempt_count AS attemptCount, last_error AS lastError
-				FROM notification_deliveries WHERE id = ?`,
+				FROM web_push_notification_deliveries WHERE id = ?`,
 			)
 			.bind(result.notificationDeliveryId)
 			.first();

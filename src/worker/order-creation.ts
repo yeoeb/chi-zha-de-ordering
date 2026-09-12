@@ -419,15 +419,14 @@ export async function createOrder(
 			),
 		db
 			.prepare(
-				`INSERT INTO notification_deliveries (
+				`INSERT INTO web_push_notification_deliveries (
 					id,
 					order_id,
-					channel,
 					event_type,
 					status,
 					attempt_count,
 					created_at
-				) VALUES (?, ?, 'web_push', 'new_order', 'pending', 0, ?)`,
+				) VALUES (?, ?, 'new_order', 'pending', 0, ?)`,
 			)
 			.bind(notificationDeliveryId, orderId, createdAt),
 	];

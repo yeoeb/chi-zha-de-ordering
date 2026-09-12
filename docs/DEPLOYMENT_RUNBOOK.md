@@ -27,7 +27,7 @@ Read-only remote checks must confirm pending migrations, `PRAGMA quick_check`, s
 
 ## Production D1 migration
 
-The Web-only candidate requires additive/forward migration `0009_create_merchant_push_subscriptions.sql`. It also rebuilds `notification_deliveries` transactionally to preserve existing rows and allow `web_push` while retaining historical `line` values.
+The Web-only candidate requires additive/forward migration `0009_create_merchant_push_subscriptions.sql`. Because it has not been applied remotely, it was redesigned before rollout to leave the historical LINE-era `notification_deliveries` table untouched and create separate `web_push_notification_deliveries` and `merchant_push_subscriptions` tables. Migrations `0001` through `0008` remain unchanged.
 
 Future gated sequence:
 
@@ -38,7 +38,7 @@ npm.cmd exec wrangler -- d1 migrations apply DB --remote
 npm.cmd exec wrangler -- d1 migrations list DB --remote
 ```
 
-After apply, use read-only queries to verify migration 0009, the unique subscription endpoint, notification intent uniqueness/indexes, empty initial subscriptions, store pause, Menu counts, Orders, and `PRAGMA quick_check = ok`. Never apply a migration when an unexpected file appears in the pending list.
+After apply, use read-only queries to verify migration 0009, the untouched historical delivery table, Web Push intent/subscription uniqueness and indexes, empty initial Web Push tables, store pause, Menu counts, Orders, and `PRAGMA quick_check = ok`. Never apply a migration when an unexpected file appears in the pending list.
 
 ## Configuration and secrets
 

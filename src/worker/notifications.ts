@@ -79,6 +79,18 @@ type DeliveryNotificationRow = DeliveryRow & {
 	quantity: number | null;
 };
 
+const DELIVERY_SOURCE_CTE = `WITH deliveries AS (
+	SELECT
+		id, order_id, channel, event_type, status, attempt_count,
+		last_attempt_at, sent_at, last_error, created_at
+	FROM notification_deliveries
+	UNION ALL
+	SELECT
+		id, order_id, 'web_push' AS channel, event_type, status, attempt_count,
+		last_attempt_at, sent_at, last_error, created_at
+	FROM web_push_notification_deliveries
+)`;
+
 export class NotificationDeliveryError extends Error {
 	constructor(
 		readonly status: 404 | 409,
@@ -112,7 +124,8 @@ function toMerchantDelivery(row: DeliveryRow): MerchantNotificationDelivery {
 export async function listMerchantNotificationDeliveries(db: D1Database) {
 	const { results } = await db
 		.prepare(
-			`SELECT
+			`${DELIVERY_SOURCE_CTE}
+			SELECT
 				deliveries.id AS id,
 				orders.order_number AS orderNumber,
 				deliveries.channel AS channel,
@@ -123,7 +136,7 @@ export async function listMerchantNotificationDeliveries(db: D1Database) {
 				deliveries.sent_at AS sentAt,
 				deliveries.last_error AS lastError,
 				deliveries.created_at AS createdAt
-			FROM notification_deliveries AS deliveries
+			FROM deliveries
 			JOIN orders ON orders.id = deliveries.order_id
 			ORDER BY
 				CASE deliveries.status WHEN 'failed' THEN 0 WHEN 'pending' THEN 1 ELSE 2 END,
@@ -139,7 +152,8 @@ export async function listMerchantNotificationDeliveries(db: D1Database) {
 async function getMerchantNotificationDelivery(db: D1Database, deliveryId: string) {
 	const row = await db
 		.prepare(
-			`SELECT
+			`${DELIVERY_SOURCE_CTE}
+			SELECT
 				deliveries.id AS id,
 				orders.order_number AS orderNumber,
 				deliveries.channel AS channel,
@@ -150,7 +164,7 @@ async function getMerchantNotificationDelivery(db: D1Database, deliveryId: strin
 				deliveries.sent_at AS sentAt,
 				deliveries.last_error AS lastError,
 				deliveries.created_at AS createdAt
-			FROM notification_deliveries AS deliveries
+			FROM deliveries
 			JOIN orders ON orders.id = deliveries.order_id
 			WHERE deliveries.id = ?`,
 		)
@@ -163,7 +177,8 @@ async function getMerchantNotificationDelivery(db: D1Database, deliveryId: strin
 async function getDeliveryNotification(db: D1Database, deliveryId: string) {
 	const { results } = await db
 		.prepare(
-			`SELECT
+			`${DELIVERY_SOURCE_CTE}
+			SELECT
 				deliveries.id AS id,
 				orders.order_number AS orderNumber,
 				deliveries.channel AS channel,
@@ -179,7 +194,7 @@ async function getDeliveryNotification(db: D1Database, deliveryId: string) {
 				order_items.id AS orderItemId,
 				order_items.item_name AS itemName,
 				order_items.quantity AS quantity
-			FROM notification_deliveries AS deliveries
+			FROM deliveries
 			JOIN orders ON orders.id = deliveries.order_id
 			LEFT JOIN order_items ON order_items.order_id = orders.id
 			WHERE deliveries.id = ?
@@ -245,13 +260,13 @@ async function attemptNotificationDelivery(
 	const claimStatement =
 		mode === "initial"
 			? db.prepare(
-					`UPDATE notification_deliveries
+					`UPDATE web_push_notification_deliveries
 					SET status = 'pending', attempt_count = attempt_count + 1, last_attempt_at = ?
 					WHERE id = ? AND status = 'pending' AND attempt_count = 0
 					RETURNING attempt_count AS attemptCount`,
 				)
 			: db.prepare(
-					`UPDATE notification_deliveries
+					`UPDATE web_push_notification_deliveries
 					SET status = 'pending', attempt_count = attempt_count + 1, last_attempt_at = ?
 					WHERE id = ? AND (
 						status = 'failed'
@@ -283,7 +298,7 @@ async function attemptNotificationDelivery(
 		await provider.notifyNewOrder(order);
 		await db
 			.prepare(
-				`UPDATE notification_deliveries
+				`UPDATE web_push_notification_deliveries
 				SET status = 'sent', sent_at = ?, last_error = NULL
 				WHERE id = ? AND status = 'pending' AND attempt_count = ?`,
 			)
@@ -294,7 +309,7 @@ async function attemptNotificationDelivery(
 		const sanitizedError = sanitizeDeliveryError(error);
 		await db
 			.prepare(
-				`UPDATE notification_deliveries
+				`UPDATE web_push_notification_deliveries
 				SET status = 'failed', last_error = ?, sent_at = NULL
 				WHERE id = ? AND status = 'pending' AND attempt_count = ?`,
 			)

@@ -3,6 +3,7 @@ import {
 	existsSync,
 	mkdtempSync,
 	mkdirSync,
+	readFileSync,
 	realpathSync,
 	rmSync,
 	writeFileSync,
@@ -32,6 +33,8 @@ const migrationsThrough0008 = [
 	"0008_create_line_merchant_pairing.sql",
 ];
 const migration0009 = "0009_create_merchant_push_subscriptions.sql";
+const migration0009Path = join(root, "migrations", migration0009);
+const forbiddenMigrationPattern = /^\s*(?:DROP\s+(?:TABLE|COLUMN)|DELETE\s+FROM|ALTER\s+TABLE\s+\S+\s+RENAME|UPDATE\s+\S+|INSERT\s+INTO)\b/im;
 
 function spawnWrangler(arguments_) {
 	return spawnSync(
@@ -113,6 +116,11 @@ writeFileSync(
 );
 
 try {
+	const migrationSql = readFileSync(migration0009Path, "utf8");
+	if (forbiddenMigrationPattern.test(migrationSql)) {
+		throw new Error("Migration 0009 contains a forbidden destructive or data-mutating statement");
+	}
+
 	for (const migration of migrationsThrough0008) {
 		copyFileSync(join(root, "migrations", migration), join(migrationsDirectory, migration));
 	}
@@ -192,6 +200,9 @@ try {
 			last_error, created_at, sent_at, last_attempt_at
 		FROM notification_deliveries ORDER BY id`,
 	);
+	const legacyDeliverySchemaBefore = queryRows(
+		"SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'notification_deliveries'",
+	);
 
 	assertExact(
 		historicalTablesBefore,
@@ -205,7 +216,7 @@ try {
 		"Pre-upgrade historical table state",
 	);
 
-	copyFileSync(join(root, "migrations", migration0009), join(migrationsDirectory, migration0009));
+	copyFileSync(migration0009Path, join(migrationsDirectory, migration0009));
 	runWrangler(["d1", "migrations", "apply", database]);
 
 	const historyAfter = queryRows("SELECT id, name FROM d1_migrations ORDER BY id");
@@ -213,7 +224,7 @@ try {
 		throw new Error(`Migration 0009 was not recorded: ${JSON.stringify(historyAfter)}`);
 	}
 
-	const pushTableSql = firstResult(
+	const pushSubscriptionTableSql = firstResult(
 		runWrangler(
 			[
 				"d1",
@@ -226,10 +237,10 @@ try {
 			true,
 		),
 	)?.sql;
-	const pushColumns = queryRows("PRAGMA table_info(merchant_push_subscriptions)").map(
+	const pushSubscriptionColumns = queryRows("PRAGMA table_info(merchant_push_subscriptions)").map(
 		(column) => column.name,
 	);
-	const expectedPushColumns = [
+	const expectedPushSubscriptionColumns = [
 		"id",
 		"endpoint",
 		"p256dh",
@@ -239,7 +250,7 @@ try {
 		"last_success_at",
 		"last_failure_at",
 	];
-	const pushIndexCount = firstResult(
+	const pushSubscriptionIndexCount = firstResult(
 		runWrangler(
 			[
 				"d1",
@@ -253,16 +264,78 @@ try {
 			true,
 		),
 	)?.count;
+	const pushDeliveryTableSql = firstResult(
+		runWrangler(
+			[
+				"d1",
+				"execute",
+				database,
+				"--json",
+				"--command",
+				"SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'web_push_notification_deliveries'",
+			],
+			true,
+		),
+	)?.sql;
+	const pushDeliveryColumns = queryRows("PRAGMA table_info(web_push_notification_deliveries)").map(
+		(column) => column.name,
+	);
+	const expectedPushDeliveryColumns = [
+		"id",
+		"order_id",
+		"event_type",
+		"status",
+		"attempt_count",
+		"last_error",
+		"created_at",
+		"sent_at",
+		"last_attempt_at",
+	];
+	const pushDeliveryIndexCount = firstResult(
+		runWrangler(
+			[
+				"d1",
+				"execute",
+				database,
+				"--json",
+				"--command",
+				`SELECT COUNT(*) AS count FROM sqlite_master
+				WHERE type = 'index' AND name = 'web_push_notification_deliveries_status_idx'`,
+			],
+			true,
+		),
+	)?.count;
 
 	if (
-		!String(pushTableSql).includes("endpoint TEXT NOT NULL UNIQUE") ||
-		JSON.stringify(pushColumns) !== JSON.stringify(expectedPushColumns) ||
-		pushIndexCount !== 1
+		!String(pushSubscriptionTableSql).includes("endpoint TEXT NOT NULL UNIQUE") ||
+		JSON.stringify(pushSubscriptionColumns) !==
+			JSON.stringify(expectedPushSubscriptionColumns) ||
+		pushSubscriptionIndexCount !== 1 ||
+		!String(pushDeliveryTableSql).includes("UNIQUE (order_id, event_type)") ||
+		JSON.stringify(pushDeliveryColumns) !== JSON.stringify(expectedPushDeliveryColumns) ||
+		pushDeliveryIndexCount !== 1
 	) {
 		throw new Error(
-			`Migration 0009 Push schema is incomplete: ${JSON.stringify({ pushTableSql, pushColumns, pushIndexCount })}`,
+			`Migration 0009 additive Push schema is incomplete: ${JSON.stringify({ pushSubscriptionTableSql, pushSubscriptionColumns, pushSubscriptionIndexCount, pushDeliveryTableSql, pushDeliveryColumns, pushDeliveryIndexCount })}`,
 		);
 	}
+
+	const initialPushCounts = firstResult(
+		runWrangler(
+			[
+				"d1",
+				"execute",
+				database,
+				"--json",
+				"--command",
+				`SELECT
+					(SELECT COUNT(*) FROM web_push_notification_deliveries) AS deliveryCount,
+					(SELECT COUNT(*) FROM merchant_push_subscriptions) AS subscriptionCount`,
+			],
+			true,
+		),
+	);
+	assertExact(initialPushCounts, { deliveryCount: 0, subscriptionCount: 0 }, "Initial Push state");
 
 	runWrangler([
 		"d1",
@@ -291,6 +364,33 @@ try {
 		],
 		"UNIQUE constraint failed: merchant_push_subscriptions.endpoint",
 	);
+	runWrangler([
+		"d1",
+		"execute",
+		database,
+		"--command",
+		`INSERT INTO web_push_notification_deliveries (
+			id, order_id, event_type, status, attempt_count, created_at
+		) VALUES (
+			'push-delivery-one', 'historical-order', 'new_order', 'pending', 0,
+			'2026-09-01T13:00:00.000Z'
+		)`,
+	]);
+	expectWranglerFailure(
+		[
+			"d1",
+			"execute",
+			database,
+			"--command",
+			`INSERT INTO web_push_notification_deliveries (
+				id, order_id, event_type, status, attempt_count, created_at
+			) VALUES (
+				'push-delivery-two', 'historical-order', 'new_order', 'pending', 0,
+				'2026-09-01T13:01:00.000Z'
+			)`,
+		],
+		"UNIQUE constraint failed: web_push_notification_deliveries.order_id, web_push_notification_deliveries.event_type",
+	);
 
 	assertExact(
 		queryRows("SELECT id, recipient_user_id, paired_at, updated_at FROM line_merchant_binding ORDER BY id"),
@@ -313,6 +413,20 @@ try {
 		deliveryBefore,
 		"Historical LINE notification delivery",
 	);
+	assertExact(
+		queryRows(
+			"SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'notification_deliveries'",
+		),
+		legacyDeliverySchemaBefore,
+		"Historical notification_deliveries schema",
+	);
+
+	runWrangler(["d1", "migrations", "apply", database]);
+	assertExact(
+		queryRows("SELECT id, name FROM d1_migrations ORDER BY id"),
+		historyAfter,
+		"Second migration apply history",
+	);
 
 	const quickCheck = firstResult(
 		runWrangler(
@@ -325,7 +439,7 @@ try {
 	}
 
 	console.log(
-		"Migration 0009 upgrade PASS: real migrations stopped at 0008, historical LINE rows remained exact, Push columns/indexes exist, endpoint uniqueness is DB-backed, and migration history reached 0009.",
+		"Migration 0009 upgrade PASS: real migrations stopped at 0008, the historical LINE delivery schema/rows remained exact, additive Push intent/subscription tables and DB uniqueness exist without fixtures, and a second apply left migration history unchanged at 0009.",
 	);
 } finally {
 	const resolvedScenario = resolve(scenarioRoot);

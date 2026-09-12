@@ -105,8 +105,9 @@ Order commit and Push delivery remain separate: Order Creation commits first, th
 Migrations `0001` through `0008` remain unchanged. New migration:
 
 - `0009_create_merchant_push_subscriptions.sql`
-  - Rebuilds `notification_deliveries` without data loss so its channel constraint accepts historical `line` and active `web_push` rows.
-  - Preserves `(order_id, channel, event_type)` uniqueness, retry metadata, foreign keys, and the operational status index.
+  - Is additive because it has not been applied to Production: migrations `0001` through `0008` remain immutable.
+  - Leaves historical `notification_deliveries` structure and rows untouched.
+  - Creates `web_push_notification_deliveries` with `(order_id, event_type)` uniqueness, retry metadata, foreign keys, and an operational status index.
   - Creates `merchant_push_subscriptions` with unique endpoint, encrypted Push keys, timestamps, and success/failure timestamps.
 
 Deprecated but intentionally retained:
