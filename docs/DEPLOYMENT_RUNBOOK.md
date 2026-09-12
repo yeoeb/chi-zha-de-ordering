@@ -1,159 +1,136 @@
 # Deployment runbook
 
-Production deployment is not approved by this document. Run remote or mutating commands only during an explicitly authorized release task.
+Every remote mutation is separately gated. Never infer deployment, D1, secret, Access, LINE-cleanup, or store-resume authorization from this document.
 
 ## Prerequisites
 
-- Clean, reviewed Git checkpoint and an explicit release approval.
-- Cloudflare account/zone access, Zero Trust enabled, and permission to manage Workers, D1, Rate Limiting, domains, and Access.
-- For the first staging release, the registered workers.dev hostname with path-scoped Merchant Access already configured. Separate Customer/Merchant Custom Domains remain a later production gate.
-- For a LINE-enabled release: LINE Official Account, Messaging API channel, Merchant recipient ID, and reviewed quota/pricing. These are not prerequisites for an explicitly disabled initial release.
-- No `.dev.vars`, development bypass, credential, or secret value in Git or the build artifact. Reviewed non-secret resource identifiers belong in deployment configuration.
+- Clean reviewed Git commit and recorded candidate SHA.
+- `npm test`, `npm run check`, `npm run build`, fresh-D1 verification, and Wrangler dry-run pass.
+- Correct Cloudflare account and Worker `chi-zha-de-ordering` confirmed.
+- Production D1 remains healthy and the store remains paused.
+- Cloudflare Access still protects `/merchant*` and `/api/merchant/*` while Customer routes remain public.
+- VAPID material is created outside Git/chat only when separately authorized.
 
 ## Pre-deploy verification
 
 ```powershell
-npm ci
-npm test
-npm run check
-npm run build
-npm run verify:fresh-d1
-npm run verify:deploy-dry-run
-git status --short
+npm.cmd test
+npm.cmd run check
+npm.cmd run build
+npm.cmd run verify:fresh-d1
+npm.cmd run verify:deploy-dry-run
+git status --short --branch
 git rev-parse HEAD
 ```
 
-Record the release commit, current Worker deployment/version, current D1 Time Travel bookmark, configuration review, and smoke-test owner.
+Read-only remote checks must confirm pending migrations, `PRAGMA quick_check`, store pause, Menu counts, Orders, and current deployments/versions.
 
-## Production D1
+## Production D1 migration
 
-The approved remote database already exists:
+The Web-only candidate requires additive/forward migration `0009_create_merchant_push_subscriptions.sql`. It also rebuilds `notification_deliveries` transactionally to preserve existing rows and allow `web_push` while retaining historical `line` values.
 
-- Binding: `DB`
-- Name: `chi-zha-de-db`
-- ID: `d104f4b2-1be3-4d4b-b781-008807206dd3`
-- Location: APAC
-
-Do not create a second database. Before deployment, verify the binding and query the paused Store/Menu state read-only.
-
-## Migration procedure
-
-Migrations are sequential and forward-applied. Migration `0001` creates the required single-store `吃炸的` settings row. `seeds/development.sql` is disposable local Menu fixture data and must never run against production.
+Future gated sequence:
 
 ```powershell
 npm.cmd exec wrangler -- d1 migrations list DB --remote
 npm.cmd exec wrangler -- d1 time-travel info DB
+npm.cmd exec wrangler -- d1 migrations apply DB --remote
+npm.cmd exec wrangler -- d1 migrations list DB --remote
 ```
 
-Migrations `0001` through `0008` and the reviewed `production-data/initial-store-menu.sql` data write have been applied. Gate 15B1 applied only `0008_create_line_merchant_pairing.sql`; both pairing tables were verified empty afterward. Its pre-migration bookmark is `0000000c-00000000-000050e0-2853ec2898cc7fe3ca73d7cea2dd63c0` and post-migration bookmark is `0000000c-00000004-000050e0-31565a3e9f4ce234b542730e07475e60`. Never rerun the production data file against the populated database. Verify tables, indexes, constraints, `PRAGMA quick_check`, Store/Menu counts, and `is_accepting_orders = 0` read-only before deployment.
+After apply, use read-only queries to verify migration 0009, the unique subscription endpoint, notification intent uniqueness/indexes, empty initial subscriptions, store pause, Menu counts, Orders, and `PRAGMA quick_check = ok`. Never apply a migration when an unexpected file appears in the pending list.
 
-## Configuration
+## Configuration and secrets
 
-Production non-secret configuration must include:
+Non-secret Worker variables required to enable Web Push:
 
-- Real production D1 ID bound as `DB`.
-- Production Rate Limiting namespace bound as `ORDER_RATE_LIMITER`.
-- `NOTIFICATION_PROVIDER=disabled` for the current release, or `NOTIFICATION_PROVIDER=line` only after both LINE secrets and the D1 recipient pairing are ready and a real smoke is authorized.
-- For LINE-enabled releases, `LINE_CHANNEL_ACCESS_TOKEN` and `LINE_CHANNEL_SECRET` are sensitive Worker Secrets. The Merchant recipient is sensitive D1 state established only through signed webhook pairing. Keep all three out of source, Wrangler vars, logs, URLs, API responses, screenshots, documentation values, shell history, and chat.
-- Exact `MERCHANT_HOSTNAME` for the Access-protected hostname.
-- Exact `CF_ACCESS_TEAM_DOMAIN` and `CF_ACCESS_AUD` for the Merchant Access application.
+- `VAPID_PUBLIC_KEY`
+- `VAPID_SUBJECT` (`mailto:` or HTTPS URL)
 
-The first staging release uses `workers_dev=true`, `preview_urls=false`, `MERCHANT_HOSTNAME=chi-zha-de-ordering.yeoeb55688.workers.dev`, and `NOTIFICATION_PROVIDER=disabled`.
+Secret:
 
-`MERCHANT_DEV_BYPASS` and `PUBLIC_WRITE_RATE_LIMIT_DEV_BYPASS` must be absent. Review the generated Worker bundle/config before release.
+- `VAPID_PRIVATE_KEY`
 
-## Notification release modes and secrets
+Generate the key pair outside the repository. Never print or commit the private key. Prefer uploading code and the private Secret into the same non-active Worker version using a restricted temporary file and the current Wrangler `versions upload --secrets-file` workflow. Delete the explicit temporary file after successful version capture. Do not use a secret command that immediately shifts traffic.
 
-Mode A (recommended first deployment) sets `NOTIFICATION_PROVIDER=disabled`. The Worker starts normally, Orders remain durable, Merchant polling remains authoritative, and each new Order's notification intent records a sanitized `NOTIFICATION_DISABLED` failure. Fake delivery is accepted only alongside the explicit development bypass; do not configure `fake` or either development bypass in production.
+Missing VAPID configuration leaves Orders and Merchant polling operational; it only makes Push deliveries fail observably as unconfigured.
 
-Mode B sets `NOTIFICATION_PROVIDER=line`, supplies `LINE_CHANNEL_ACCESS_TOKEN` and `LINE_CHANNEL_SECRET` as version-managed Cloudflare secrets, and resolves the recipient exclusively from the singleton D1 pairing. Missing token/secret configuration disables the provider; a missing pairing records `LINE_RECIPIENT_NOT_PAIRED`. Neither case fails Worker startup or rolls back Order creation.
-
-Do not commit either value, put either value on a command line, or expose them in logs or responses. `wrangler secret put` creates a new Worker version and deploys it immediately, so it is prohibited for the staged version workflow. After explicit approval, create an access-restricted temporary JSON or `.dev.vars` file outside the repository containing both values, then create one non-deployed Worker version using:
-
-```powershell
-npm.cmd exec wrangler -- versions secret bulk <temporary-secret-file> --name chi-zha-de-ordering
-```
-
-The temporary file must never be committed and must be removed after its contents are confirmed in the created version metadata without reading values back. This command creates a version containing the secrets but does not shift traffic. Capture its version ID and stop before the separately approved `npm.cmd exec wrangler -- versions deploy <VERSION_ID>@100%`. Confirm both values are absent from logs, API responses, notification errors, source, `.env`, build output, documentation, shell history, and chat.
-
-After migration `0008` and the two secrets are separately approved and deployed, the Access-authenticated Merchant generates one ten-minute pairing code. The Merchant sends `綁定 <code>` to the Official Account. `/api/line/webhook` verifies the exact raw body with `LINE_CHANNEL_SECRET`, then conditionally binds the valid LINE user ID and consumes the challenge atomically. Never copy the recipient through configuration, chat, Git, or shell history.
+Obsolete remote LINE secrets must not be deleted until the Web-only Worker version is deployed and verified, and deletion must have a separate authorization.
 
 ## Cloudflare Access
 
-- Staging Customer routes remain public on `chi-zha-de-ordering.yeoeb55688.workers.dev`.
-- The self-hosted Access application protects only `/merchant*` and `/api/merchant/*` on that host.
-- The Worker guard is configured with that exact hostname, `https://yeoeb.cloudflareaccess.com`, and the manually verified application audience.
-- The guard accepts an Access assertion only after exact-hostname matching and cryptographic JWT signature/issuer/audience validation. An Access-looking header on another hostname is untrusted.
-- For the current shared workers.dev host, confirm only the two Merchant path patterns trigger Access and Customer paths remain public. On future separate Custom Domains, block or redirect `/merchant` on the Customer hostname as defense in depth.
-- Keep workers.dev enabled only for this staging phase and preview URLs disabled. After verified Custom Domains exist, disable workers.dev and keep previews disabled.
-- Test unauthenticated, authenticated, expired-token, forged-header, wrong-audience, Customer-host, `workers.dev`, and preview access before launch.
+- Public: Customer SPA and Customer APIs.
+- Private: `/merchant*` and `/api/merchant/*`.
+- The Worker guard must validate the expected hostname, Access issuer, audience, and signed `Cf-Access-Jwt-Assertion`.
+- No Production development bypass.
+- Do not protect the whole Worker and block Customer traffic.
+- Review workers.dev, preview, alternate routes, and eventual Custom Domains for bypass paths.
 
-Do not protect the entire shared Worker with a Worker-level Access policy because that would also require Customer authentication.
+## Candidate upload and deployment
 
-## Custom domain and alternate exposure
-
-Attach the same reviewed Worker release to the public Customer and Access-protected Merchant hostnames only. Inventory Domains & Routes after deployment. Confirm no old route, alternate Custom Domain, `workers.dev` URL, or preview deployment can bypass the Merchant hostname/Access boundary.
-
-## Deployment
-
-The first workers.dev staging deployment was explicitly approved and completed from Git SHA `20bc8f2d21f0fb2c9956571da5e1e3a7fcd54919`:
-
-- Worker version: `89762920-85ab-42f4-8ef9-e693a1d80180`
-- Deployment: `4e04d117-0ef0-4c8d-901a-467eddb4779f`
-- URL: `https://chi-zha-de-ordering.yeoeb55688.workers.dev`
-- Store state at and after verification: paused (`is_accepting_orders = 0`)
-
-Future deployments still require a clean reviewed checkpoint and explicit approval:
+1. Upload exactly one non-active version with reviewed source/config and VAPID Secret.
+2. Record candidate version ID and confirm current active traffic is unchanged.
+3. Use version overrides for read-only smoke while the store remains paused.
+4. Promote only the exact verified version through a separate approval:
 
 ```powershell
-npm.cmd exec wrangler -- deploy
-npm.cmd exec wrangler -- deployments list
+npm.cmd exec wrangler -- versions deploy <VERSION_ID>@100% -y
 ```
 
-Capture the new version/deployment ID and do not open Customer traffic until smoke verification passes.
+Never repeat an ambiguous upload or deploy automatically.
 
 ## Post-deploy smoke
 
-Gate 12F completed the public read-only Customer/PWA smoke and confirmed unauthenticated Merchant paths are intercepted by Access. Gate 13 completed an Access-authenticated read-only Merchant smoke: the Merchant UI loaded and the Merchant Orders API returned `200`. No Merchant mutation, Order creation, LINE action, D1 mutation, Access change, or opening of ordering occurred. The post-smoke D1 check showed zero Orders, zero notification deliveries, and the store still paused.
+While paused:
 
-The remaining controlled mutation smoke requires separate explicit approval:
+- Public `GET /`, `/api/health`, `/api/store`, `/api/menu`.
+- Manifest, icons, and Service Worker over HTTPS.
+- Unauthenticated Merchant surface is intercepted by Access.
+- Authenticated Merchant Orders and availability reads succeed through the Worker guard.
+- LINE webhook/pairing routes return Worker 404.
+- Push public-key and subscription routes require Merchant authorization.
+- No Order is created during read-only smoke.
 
-- Public: health, Store, Menu, Quote, one controlled Order, idempotent retry, token-based Customer status, and unknown API 404.
-- Merchant through Access: queue read, notification read, accept/complete, sold-out/restore, pause/resume, and retry action.
-- Security: public Merchant request denied, opaque lookup only, Rate Limiting binding active, no caching on Order/Merchant responses, and no development bypass.
-- Data: authoritative prices, snapshots, persisted ETA, one Order, and one notification intent.
+Then, under a separate controlled authorization:
 
-## LINE verification
-
-Requires separate explicit authorization:
-
-1. Confirm the Official Account/channel, record a D1 recovery bookmark, and apply/verify migration `0008` only after explicit approval.
-2. Configure `LINE_CHANNEL_ACCESS_TOKEN` and `LINE_CHANNEL_SECRET` through the approved version-only bulk flow without exposing their values; do not deploy that version yet.
-3. After a separately approved version deployment and LINE webhook configuration, authenticate through Merchant Access, generate one pairing code, and send only `綁定 <code>` from the intended Merchant LINE account. Confirm status becomes paired without exposing the recipient ID.
-4. Prefer a controlled, non-public provider-level diagnostic using the actual LINE transport. Do not create a fake Order, resume the store, or add a temporary public endpoint.
-5. Send exactly one harmless text message after a separate explicit external-send approval: `吃炸的系統測試通知`, `店家通知功能連線成功。`, `此訊息為上線前測試，無須處理。`
-6. Confirm no full phone, public token, internal ID, recipient ID, or credential appears in output or logs.
-7. Confirm the Merchant receives exactly one message and no duplicate send occurs.
-8. Treat a timeout/network failure as delivery-ambiguous: D1 guards one logical intent and concurrent claims, but the current LINE request has no provider retry key and cannot guarantee external exactly-once delivery if LINE accepted the request before the response was lost.
-9. Keep the Order-coupled delivery/retry scenario for a later separately approved controlled Order test; provider failure must never change Order durability.
+1. Merchant taps **Enable notifications** in the protected PWA.
+2. Browser permission prompt is accepted.
+3. Verify one idempotent D1 subscription row without selecting or logging credentials.
+4. Create one clearly identified test Order only if authorized.
+5. Verify one minimal Push, the Merchant opens `/merchant`, and authoritative data comes from the API.
+6. Verify polling remains available if Push is denied or fails.
 
 ## PWA verification
 
-Over HTTPS on the intended Merchant hostname, verify manifest, 192/512 icons, Service Worker registration, standalone installation, Merchant startup at `/merchant`, live five-second refresh, and controls. Verify the Customer app works normally. Inspect network/cache behavior to prove `/api/*` is never served by the Service Worker and offline Order submission fails visibly rather than being queued.
+- Manifest, 192/512 icons, and Service Worker load over HTTPS.
+- Installed Merchant PWA opens behind Access.
+- Push permission is never requested on page load.
+- Notification click focuses or opens `/merchant`.
+- `/api/*` is never served from Service Worker cache.
+- Offline Order submission remains impossible.
 
-## Rollback
+## Rollback and recovery
 
-### Application rollback
+Application rollback and D1 recovery are independent.
 
-The current first deployment has no earlier Worker version to roll back to. If it is unhealthy, keep the store paused, disable/remove Worker exposure if necessary, fix forward, and deploy a corrected version. Once a known-good earlier version exists and is compatible with the current D1 schema:
+Application rollback:
 
-```powershell
-npm.cmd exec wrangler -- deployments list
-npm.cmd exec wrangler -- rollback <previous-version-id>
-```
+- Keep the store paused.
+- Inspect deployments and versions.
+- Deploy the last known-good Worker version only with explicit approval.
+- Verify bindings and routes afterward.
 
-Re-run health, Customer read, and Access-authenticated Merchant smoke checks. Worker rollback does not revert D1, bindings, secrets, Access, routes, or data.
+D1 recovery:
 
-### Database recovery
+- Worker rollback does not undo migration 0009 or subscription rows.
+- Prefer a reviewed forward migration.
+- D1 Time Travel restore changes remote data and needs a separate destructive-recovery gate.
+- Never run a remote reset, wipe, blind rollback, or unreviewed DELETE.
 
-Prefer a reviewed forward corrective migration. Before any risky migration, record the D1 Time Travel bookmark. If data/schema restoration is necessary, stop writes, identify the precise pre-change bookmark, obtain separate destructive-operation approval, and use D1 Time Travel according to Cloudflare's current procedure. Restoring D1 overwrites database state and is independent of Worker rollback; never automate it as part of application rollback.
+Push cleanup:
+
+- Invalid endpoints are removed automatically only after push services return 404/410.
+- A Merchant can idempotently unsubscribe its own current browser endpoint.
+- Do not expose or manually copy stored subscription credentials.
+
+Store resume is always a separate final mutation after smoke verification; rollback never implies automatic resume.

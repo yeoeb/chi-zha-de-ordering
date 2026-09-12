@@ -66,17 +66,21 @@ try {
 				(SELECT COUNT(*) FROM menu_items) AS menuItemCount,
 				(SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' AND name = 'orders_public_lookup_token_unique') AS publicTokenIndexCount,
 				(SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' AND name = 'notification_deliveries_status_idx') AS notificationStatusIndexCount,
+				(SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'merchant_push_subscriptions') AS pushSubscriptionTableCount,
+				(SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' AND name = 'merchant_push_subscriptions_updated_idx') AS pushSubscriptionIndexCount,
 				(SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'line_merchant_binding') AS lineBindingTableCount,
 				(SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'line_merchant_pairing_challenge') AS lineChallengeTableCount`,
 		], true),
 	);
 
 	if (
-		summary.migrationCount !== 8 ||
+		summary.migrationCount !== 9 ||
 		summary.storeCount !== 1 ||
 		summary.menuItemCount !== 5 ||
 		summary.publicTokenIndexCount !== 1 ||
 		summary.notificationStatusIndexCount !== 1 ||
+		summary.pushSubscriptionTableCount !== 1 ||
+		summary.pushSubscriptionIndexCount !== 1 ||
 		summary.lineBindingTableCount !== 1 ||
 		summary.lineChallengeTableCount !== 1
 	) {
@@ -100,6 +104,9 @@ try {
 	}
 	if (!notificationsSql.includes("UNIQUE (order_id, channel, event_type)")) {
 		throw new Error("Fresh D1 is missing notification intent uniqueness");
+	}
+	if (!notificationsSql.includes("'web_push'")) {
+		throw new Error("Fresh D1 notification intent does not support Web Push");
 	}
 
 	const columns = runWrangler([
@@ -125,9 +132,16 @@ try {
 	) {
 		throw new Error("Migration 0008 content could not be verified");
 	}
+	const pushMigration = readFileSync(join(root, "migrations", "0009_create_merchant_push_subscriptions.sql"), "utf8");
+	if (
+		!pushMigration.includes("merchant_push_subscriptions") ||
+		!pushMigration.includes("channel IN ('line', 'web_push')")
+	) {
+		throw new Error("Migration 0009 Web Push schema could not be verified");
+	}
 
 	console.log(
-		"Fresh D1 PASS: 8 sequential migrations, required store row, replaceable 5-item development seed, Order/notification constraints, retry timestamp, and LINE pairing tables verified.",
+		"Fresh D1 PASS: 9 sequential migrations, required store row, replaceable 5-item development seed, Order/notification constraints, retained deprecated LINE pairing tables, and Web Push subscriptions verified.",
 	);
 } finally {
 	const resolvedPersistence = resolve(persistenceDirectory);

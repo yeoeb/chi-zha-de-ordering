@@ -427,7 +427,7 @@ export async function createOrder(
 					status,
 					attempt_count,
 					created_at
-				) VALUES (?, ?, 'line', 'new_order', 'pending', 0, ?)`,
+				) VALUES (?, ?, 'web_push', 'new_order', 'pending', 0, ?)`,
 			)
 			.bind(notificationDeliveryId, orderId, createdAt),
 	];

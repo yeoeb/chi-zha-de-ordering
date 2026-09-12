@@ -1,4 +1,5 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
+import { findNewPendingOrderIds } from "./merchant-polling";
 
 type MerchantOrder = {
 	id: string;
@@ -25,7 +26,7 @@ type MerchantOrdersResponse = {
 type MerchantNotification = {
 	id: string;
 	orderNumber: string;
-	channel: "line";
+	channel: "line" | "web_push";
 	eventType: "new_order";
 	status: "pending" | "sent" | "failed";
 	attemptCount: number;
@@ -58,6 +59,40 @@ type MerchantAction = "accept" | "reject" | "complete";
 
 const MERCHANT_REFRESH_INTERVAL_MS = 5_000;
 
+type PushState = "checking" | "unsupported" | "default" | "denied" | "enabled" | "disabled";
+
+function supportsWebPush() {
+	return "serviceWorker" in navigator && "PushManager" in window && "Notification" in window;
+}
+
+function base64UrlToUint8Array(value: string) {
+	const padding = "=".repeat((4 - (value.length % 4)) % 4);
+	const decoded = atob((value + padding).replace(/-/g, "+").replace(/_/g, "/"));
+	return Uint8Array.from(decoded, (character) => character.charCodeAt(0));
+}
+
+function playNewOrderAlert() {
+	if (!("AudioContext" in window)) return;
+
+	try {
+		const context = new AudioContext();
+		const oscillator = context.createOscillator();
+		const gain = context.createGain();
+		oscillator.frequency.value = 880;
+		gain.gain.setValueAtTime(0.0001, context.currentTime);
+		gain.gain.exponentialRampToValueAtTime(0.2, context.currentTime + 0.02);
+		gain.gain.exponentialRampToValueAtTime(0.0001, context.currentTime + 0.45);
+		oscillator.connect(gain);
+		gain.connect(context.destination);
+		oscillator.start();
+		oscillator.stop(context.currentTime + 0.45);
+		oscillator.addEventListener("ended", () => void context.close());
+		if (context.state === "suspended") void context.resume().catch(() => context.close());
+	} catch {
+		// Browser autoplay policy can block sound; polling and visual highlighting still continue.
+	}
+}
+
 function formatDateTime(timestamp: string) {
 	return new Intl.DateTimeFormat("zh-TW", {
 		month: "numeric",
@@ -76,6 +111,57 @@ export default function MerchantView() {
 	const [error, setError] = useState<string | null>(null);
 	const [processingControl, setProcessingControl] = useState<string | null>(null);
 	const [refreshVersion, setRefreshVersion] = useState(0);
+	const [isOnline, setIsOnline] = useState(() => navigator.onLine);
+	const [pushState, setPushState] = useState<PushState>("checking");
+	const [lastSyncAt, setLastSyncAt] = useState<Date | null>(null);
+	const [newOrderIds, setNewOrderIds] = useState<Set<string>>(() => new Set());
+	const seenOrderIds = useRef(new Set<string>());
+	const hasCompletedInitialLoad = useRef(false);
+
+	useEffect(() => {
+		const markOnline = () => setIsOnline(true);
+		const markOffline = () => setIsOnline(false);
+		window.addEventListener("online", markOnline);
+		window.addEventListener("offline", markOffline);
+		return () => {
+			window.removeEventListener("online", markOnline);
+			window.removeEventListener("offline", markOffline);
+		};
+	}, []);
+
+	useEffect(() => {
+		let active = true;
+		async function inspectPushState() {
+			if (!supportsWebPush()) {
+				setPushState("unsupported");
+				return;
+			}
+
+			if (Notification.permission === "denied") {
+				setPushState("denied");
+				return;
+			}
+
+			const registration = await navigator.serviceWorker.ready;
+			const subscription = await registration.pushManager.getSubscription();
+			if (active) {
+				setPushState(
+					subscription
+						? "enabled"
+						: Notification.permission === "default"
+							? "default"
+							: "disabled",
+				);
+			}
+		}
+
+		void inspectPushState().catch(() => {
+			if (active) setPushState("disabled");
+		});
+		return () => {
+			active = false;
+		};
+	}, []);
 
 	useEffect(() => {
 		const controller = new AbortController();
@@ -111,10 +197,22 @@ export default function MerchantView() {
 					menuResponse.json() as Promise<MenuResponse>,
 				]);
 
+				const discovered = findNewPendingOrderIds(
+					seenOrderIds.current,
+					ordersResult.orders,
+					hasCompletedInitialLoad.current,
+				);
+				for (const order of ordersResult.orders) seenOrderIds.current.add(order.id);
+				hasCompletedInitialLoad.current = true;
+				if (discovered.length > 0) {
+					setNewOrderIds((current) => new Set([...current, ...discovered]));
+					playNewOrderAlert();
+				}
 				setOrders(ordersResult.orders);
 				setNotifications(notificationsResult.deliveries);
 				setStore(storeResult);
 				setMenuItems(menuResult.categories.flatMap((category) => category.items));
+				setLastSyncAt(new Date());
 				setError(null);
 			} catch (requestError) {
 				if (!(requestError instanceof Error && requestError.name === "AbortError")) {
@@ -151,9 +249,82 @@ export default function MerchantView() {
 				throw new Error("Merchant Order action failed");
 			}
 
+			setNewOrderIds((current) => {
+				const next = new Set(current);
+				next.delete(orderId);
+				return next;
+			});
 			setRefreshVersion((current) => current + 1);
 		} catch {
 			setError("訂單狀態可能已被更新，請重新整理後再試。");
+		} finally {
+			setProcessingControl(null);
+		}
+	}
+
+	async function enablePushNotifications() {
+		setProcessingControl("push");
+		setError(null);
+		try {
+			if (!supportsWebPush()) {
+				setPushState("unsupported");
+				return;
+			}
+
+			const permission = await Notification.requestPermission();
+			if (permission !== "granted") {
+				setPushState(permission);
+				return;
+			}
+
+			const keyResponse = await fetch("/api/merchant/push/public-key", { cache: "no-store" });
+			if (!keyResponse.ok) throw new Error("Web Push public key unavailable");
+			const { publicKey } = (await keyResponse.json()) as { publicKey: string };
+			const registration = await navigator.serviceWorker.ready;
+			const existing = await registration.pushManager.getSubscription();
+			const subscription =
+				existing ??
+				(await registration.pushManager.subscribe({
+					userVisibleOnly: true,
+					applicationServerKey: base64UrlToUint8Array(publicKey),
+				}));
+			const saveResponse = await fetch("/api/merchant/push/subscriptions", {
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify(subscription.toJSON()),
+			});
+			if (!saveResponse.ok) {
+				if (!existing) await subscription.unsubscribe();
+				throw new Error("Web Push subscription could not be saved");
+			}
+			setPushState("enabled");
+		} catch {
+			setError("通知開啟失敗，請確認網路與瀏覽器設定後再試。");
+			setPushState("disabled");
+		} finally {
+			setProcessingControl(null);
+		}
+	}
+
+	async function disablePushNotifications() {
+		setProcessingControl("push");
+		setError(null);
+		try {
+			if (!supportsWebPush()) return;
+			const registration = await navigator.serviceWorker.ready;
+			const subscription = await registration.pushManager.getSubscription();
+			if (subscription) {
+				const response = await fetch("/api/merchant/push/subscriptions", {
+					method: "DELETE",
+					headers: { "Content-Type": "application/json" },
+					body: JSON.stringify({ endpoint: subscription.endpoint }),
+				});
+				if (!response.ok) throw new Error("Web Push subscription could not be removed");
+				await subscription.unsubscribe();
+			}
+			setPushState("disabled");
+		} catch {
+			setError("通知停用失敗，請稍後再試。");
 		} finally {
 			setProcessingControl(null);
 		}
@@ -209,6 +380,41 @@ export default function MerchantView() {
 			</header>
 
 			<p className="merchant-security-note">店家管理頁已啟用身分驗證。</p>
+
+			<section className="merchant-connection-status" aria-label="系統狀態">
+				<div>
+					<span className={isOnline ? "status-dot online" : "status-dot offline"} />
+					<strong>{isOnline ? "Online" : "Offline"}</strong>
+				</div>
+				<div>
+					<strong>
+						通知
+						{pushState === "enabled"
+							? "已開啟"
+							: pushState === "checking"
+								? "確認中"
+								: "未開啟"}
+					</strong>
+					<button
+						type="button"
+						disabled={processingControl !== null || pushState === "checking"}
+						onClick={() =>
+							pushState === "enabled"
+								? void disablePushNotifications()
+								: void enablePushNotifications()
+						}
+					>
+						{pushState === "enabled" ? "停用通知" : "開啟通知"}
+					</button>
+				</div>
+				<small>
+					上次同步：{lastSyncAt ? formatDateTime(lastSyncAt.toISOString()) : "尚未同步"}
+				</small>
+				{pushState === "unsupported" && (
+					<p>此開啟方式尚不支援通知。請先將店家頁加入主畫面，再從主畫面開啟。</p>
+				)}
+				{pushState === "denied" && <p>通知已被瀏覽器拒絕，請從系統設定重新允許。</p>}
+			</section>
 
 			{error && (
 				<p className="merchant-message merchant-error" role="alert">
@@ -297,11 +503,12 @@ export default function MerchantView() {
 									<div>
 										<strong>訂單 #{delivery.orderNumber}</strong>
 										<span>
-											LINE · {delivery.status === "sent" ? "已通知" : delivery.status === "failed" ? "傳送失敗" : "傳送中"}
+											{delivery.channel === "web_push" ? "Web Push" : "舊 LINE 紀錄"} ·{" "}
+											{delivery.status === "sent" ? "已通知" : delivery.status === "failed" ? "傳送失敗" : "傳送中"}
 										</span>
 										<small>已嘗試 {delivery.attemptCount} 次</small>
 									</div>
-									{canRetry && (
+									{delivery.channel === "web_push" && canRetry && (
 										<button
 											type="button"
 											disabled={processingControl !== null}
@@ -331,7 +538,10 @@ export default function MerchantView() {
 					const isProcessing = processingControl === `order-${order.id}`;
 
 					return (
-						<article className={`merchant-order ${order.specialOrder ? "special" : ""}`} key={order.id}>
+						<article
+							className={`merchant-order ${order.specialOrder ? "special" : ""} ${newOrderIds.has(order.id) ? "new-order" : ""}`}
+							key={order.id}
+						>
 							<div className="merchant-order-heading">
 								<div>
 									<p className="merchant-order-number">訂單 #{order.orderNumber}</p>

@@ -1,18 +1,5 @@
-import { getLineMerchantRecipientId } from "./line-pairing";
-
-const LINE_PUSH_ENDPOINT = "https://api.line.me/v2/bot/message/push";
-const LINE_REQUEST_TIMEOUT_MS = 5_000;
-const MAX_MESSAGE_ITEMS = 8;
-const MAX_ITEM_NAME_LENGTH = 40;
-const MAX_MESSAGE_LENGTH = 1_000;
 const MAX_RECORDED_ERROR_LENGTH = 200;
 const STALE_PENDING_AFTER_MS = 60_000;
-
-export type NotificationBindings = {
-	LINE_CHANNEL_ACCESS_TOKEN?: string;
-	MERCHANT_DEV_BYPASS?: string;
-	NOTIFICATION_PROVIDER?: string;
-};
 
 export type NewOrderNotification = {
 	orderNumber: string;
@@ -24,7 +11,7 @@ export type NewOrderNotification = {
 export type MerchantNotificationDelivery = {
 	id: string;
 	orderNumber: string;
-	channel: "line";
+	channel: "line" | "web_push";
 	eventType: "new_order";
 	status: "pending" | "sent" | "failed";
 	attemptCount: number;
@@ -62,148 +49,6 @@ export class FakeNotificationProvider implements NotificationProvider {
 	}
 }
 
-class DisabledNotificationProvider implements NotificationProvider {
-	async notifyNewOrder() {
-		throw new NotificationProviderError(
-			"NOTIFICATION_DISABLED",
-			"Merchant notification delivery is disabled",
-		);
-	}
-}
-
-function formatReadyTime(timestamp: string) {
-	return new Intl.DateTimeFormat("zh-TW", {
-		timeZone: "Asia/Taipei",
-		hour: "2-digit",
-		minute: "2-digit",
-		hour12: false,
-	}).format(new Date(timestamp));
-}
-
-export function buildLineNewOrderMessage(notification: NewOrderNotification) {
-	const visibleItems = notification.items.slice(0, MAX_MESSAGE_ITEMS);
-	const itemLines = visibleItems.map(
-		(item) => `${item.name.trim().slice(0, MAX_ITEM_NAME_LENGTH)} ×${item.quantity}`,
-	);
-
-	if (notification.items.length > visibleItems.length) {
-		itemLines.push(`另有 ${notification.items.length - visibleItems.length} 項`);
-	}
-
-	return [
-		"吃炸的｜新訂單",
-		"",
-		`訂單 #${notification.orderNumber}`,
-		...itemLines,
-		"",
-		`總計 $${notification.total}`,
-		`預計 ${formatReadyTime(notification.estimatedReadyAt)}`,
-		"",
-		"請開啟店家系統處理",
-	]
-		.join("\n")
-		.slice(0, MAX_MESSAGE_LENGTH);
-}
-
-type Fetcher = typeof fetch;
-
-export class LineNotificationProvider implements NotificationProvider {
-	constructor(
-		private readonly channelAccessToken: string,
-		private readonly recipientId: string,
-		private readonly fetcher: Fetcher = fetch,
-		private readonly timeoutMs = LINE_REQUEST_TIMEOUT_MS,
-	) {}
-
-	async notifyNewOrder(notification: NewOrderNotification) {
-		const controller = new AbortController();
-		const timeout = setTimeout(() => controller.abort(), this.timeoutMs);
-		let response: Response;
-
-		try {
-			response = await this.fetcher(LINE_PUSH_ENDPOINT, {
-				method: "POST",
-				headers: {
-					Authorization: `Bearer ${this.channelAccessToken}`,
-					"Content-Type": "application/json",
-				},
-				body: JSON.stringify({
-					to: this.recipientId,
-					messages: [{ type: "text", text: buildLineNewOrderMessage(notification) }],
-				}),
-				signal: controller.signal,
-			});
-		} catch {
-			throw new NotificationProviderError(
-				controller.signal.aborted ? "LINE_TIMEOUT" : "LINE_NETWORK_ERROR",
-				controller.signal.aborted
-					? "LINE notification request timed out"
-					: "LINE notification network request failed",
-			);
-		} finally {
-			clearTimeout(timeout);
-		}
-
-		if (!response.ok) {
-			throw new NotificationProviderError(
-				"LINE_HTTP_ERROR",
-				`LINE notification request failed with status ${response.status}`,
-			);
-		}
-	}
-}
-
-class BoundLineNotificationProvider implements NotificationProvider {
-	constructor(
-		private readonly db: D1Database,
-		private readonly channelAccessToken: string,
-		private readonly fetcher: Fetcher = fetch,
-	) {}
-
-	async notifyNewOrder(notification: NewOrderNotification) {
-		const recipientId = await getLineMerchantRecipientId(this.db);
-
-		if (!recipientId) {
-			throw new NotificationProviderError(
-				"LINE_RECIPIENT_NOT_PAIRED",
-				"Merchant LINE recipient is not paired",
-			);
-		}
-
-		await new LineNotificationProvider(
-			this.channelAccessToken,
-			recipientId,
-			this.fetcher,
-		).notifyNewOrder(notification);
-	}
-}
-
-export function createNotificationProvider(
-	bindings: NotificationBindings,
-	db: D1Database,
-	fetcher: Fetcher = fetch,
-): NotificationProvider {
-	if (bindings.NOTIFICATION_PROVIDER === "line") {
-		const token = bindings.LINE_CHANNEL_ACCESS_TOKEN?.trim();
-
-		if (token && token.length <= 4_096) {
-			return new BoundLineNotificationProvider(db, token, fetcher);
-		}
-
-		return new DisabledNotificationProvider();
-	}
-
-	if (
-		bindings.MERCHANT_DEV_BYPASS === "true" &&
-		(bindings.NOTIFICATION_PROVIDER === "fake" ||
-			bindings.NOTIFICATION_PROVIDER === undefined)
-	) {
-		return new FakeNotificationProvider();
-	}
-
-	return new DisabledNotificationProvider();
-}
-
 function sanitizeDeliveryError(error: unknown) {
 	const message =
 		error instanceof NotificationProviderError
@@ -216,7 +61,7 @@ function sanitizeDeliveryError(error: unknown) {
 type DeliveryRow = {
 	id: string;
 	orderNumber: string;
-	channel: "line";
+	channel: "line" | "web_push";
 	eventType: "new_order";
 	status: "pending" | "sent" | "failed";
 	attemptCount: number;
@@ -240,7 +85,8 @@ export class NotificationDeliveryError extends Error {
 		readonly code:
 			| "NOTIFICATION_DELIVERY_NOT_FOUND"
 			| "NOTIFICATION_ALREADY_SENT"
-			| "NOTIFICATION_DELIVERY_IN_PROGRESS",
+			| "NOTIFICATION_DELIVERY_IN_PROGRESS"
+			| "NOTIFICATION_CHANNEL_RETIRED",
 		message: string,
 	) {
 		super(message);
@@ -478,6 +324,13 @@ export async function retryNotificationDelivery(
 
 	if (!context) {
 		return throwCurrentDeliveryState(db, deliveryId);
+	}
+	if (context.delivery.channel !== "web_push") {
+		throw new NotificationDeliveryError(
+			409,
+			"NOTIFICATION_CHANNEL_RETIRED",
+			"This historical notification channel is retired",
+		);
 	}
 
 	const result = await attemptNotificationDelivery(

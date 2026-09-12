@@ -25,12 +25,10 @@ import {
 import { getStoreSettings } from "./store-settings";
 import { readBoundedJson, RequestBodyError } from "./request-body";
 import {
-	createNotificationProvider,
 	deliverNewOrderNotification,
 	listMerchantNotificationDeliveries,
 	NotificationDeliveryError,
 	retryNotificationDelivery,
-	type NotificationBindings,
 } from "./notifications";
 import {
 	isMerchantRequestAllowed,
@@ -38,16 +36,18 @@ import {
 	type SecurityBindings,
 } from "./security";
 import {
-	createLinePairingChallenge,
-	getLinePairingStatus,
-	LineWebhookError,
-	MAX_LINE_WEBHOOK_BODY_BYTES,
-	processLineWebhook,
-	type LinePairingBindings,
-} from "./line-pairing";
+	createNotificationProvider,
+	getVapidPublicKey,
+	parsePushSubscription,
+	parsePushUnsubscribeRequest,
+	PushSubscriptionRequestError,
+	removeMerchantPushSubscription,
+	saveMerchantPushSubscription,
+	type WebPushBindings,
+} from "./web-push";
 
 const app = new Hono<{
-	Bindings: Env & SecurityBindings & NotificationBindings & LinePairingBindings;
+	Bindings: Env & SecurityBindings & WebPushBindings;
 }>();
 
 type MenuRow = {
@@ -216,41 +216,6 @@ app.get("/api/menu", async (c) => {
 	}
 
 	return c.json({ categories });
-});
-
-app.post("/api/line/webhook", async (c) => {
-	const declaredLength = Number(c.req.header("content-length"));
-
-	if (Number.isFinite(declaredLength) && declaredLength > MAX_LINE_WEBHOOK_BODY_BYTES) {
-		return c.json(
-			{
-				error: {
-					code: "LINE_WEBHOOK_BODY_TOO_LARGE",
-					message: `LINE webhook body must not exceed ${MAX_LINE_WEBHOOK_BODY_BYTES} bytes`,
-				},
-			},
-			413,
-		);
-	}
-
-	const rawBody = new Uint8Array(await c.req.raw.arrayBuffer());
-
-	try {
-		await processLineWebhook(
-			c.env.DB,
-			rawBody,
-			c.req.header("x-line-signature"),
-			c.env.LINE_CHANNEL_SECRET,
-			new Date(),
-		);
-		return c.json({ ok: true });
-	} catch (error) {
-		if (error instanceof LineWebhookError) {
-			return c.json({ error: { code: error.code, message: error.message } }, error.status);
-		}
-
-		throw error;
-	}
 });
 
 app.post("/api/checkout/quote", async (c) => {
@@ -453,26 +418,54 @@ app.get("/api/merchant/notifications", async (c) => {
 	return c.json({ deliveries });
 });
 
-app.post("/api/merchant/line/pairing", async (c) => {
-	if (!c.env.LINE_CHANNEL_SECRET?.trim()) {
+app.get("/api/merchant/push/public-key", (c) => {
+	const publicKey = getVapidPublicKey(c.env);
+	if (!publicKey) {
 		return c.json(
-			{
-				error: {
-					code: "LINE_WEBHOOK_NOT_CONFIGURED",
-					message: "LINE webhook is not configured",
-				},
-			},
+			{ error: { code: "WEB_PUSH_NOT_CONFIGURED", message: "Web Push is not configured" } },
 			503,
 		);
 	}
 
-	const challenge = await createLinePairingChallenge(c.env.DB, new Date());
-	return c.json(challenge, 201);
+	return c.json({ publicKey });
 });
 
-app.get("/api/merchant/line/status", async (c) => {
-	const status = await getLinePairingStatus(c.env.DB);
-	return c.json(status);
+app.post("/api/merchant/push/subscriptions", async (c) => {
+	try {
+		const body = await readBoundedJson(c.req.raw);
+		const subscription = parsePushSubscription(body);
+		return c.json(await saveMerchantPushSubscription(c.env.DB, subscription), 201);
+	} catch (error) {
+		if (error instanceof RequestBodyError && error.status === 413) {
+			return c.json({ error: { code: error.code, message: error.message } }, 413);
+		}
+		if (error instanceof RequestBodyError || error instanceof PushSubscriptionRequestError) {
+			return c.json(
+				{ error: { code: "INVALID_PUSH_SUBSCRIPTION", message: error.message } },
+				400,
+			);
+		}
+		throw error;
+	}
+});
+
+app.delete("/api/merchant/push/subscriptions", async (c) => {
+	try {
+		const body = await readBoundedJson(c.req.raw);
+		const endpoint = parsePushUnsubscribeRequest(body);
+		return c.json(await removeMerchantPushSubscription(c.env.DB, endpoint));
+	} catch (error) {
+		if (error instanceof RequestBodyError && error.status === 413) {
+			return c.json({ error: { code: error.code, message: error.message } }, 413);
+		}
+		if (error instanceof RequestBodyError || error instanceof PushSubscriptionRequestError) {
+			return c.json(
+				{ error: { code: "INVALID_PUSH_SUBSCRIPTION", message: error.message } },
+				400,
+			);
+		}
+		throw error;
+	}
 });
 
 app.post("/api/merchant/notifications/:id/retry", async (c) => {

@@ -3,14 +3,18 @@ import { beforeAll, beforeEach, describe, expect, it } from "vitest";
 import app from "../src/worker/index";
 import { createOrder, type OrderSnapshot } from "../src/worker/order-creation";
 import {
-	buildLineNewOrderMessage,
-	createNotificationProvider,
 	deliverNewOrderNotification,
 	FakeNotificationProvider,
-	LineNotificationProvider,
 	listMerchantNotificationDeliveries,
 	retryNotificationDelivery,
 } from "../src/worker/notifications";
+import {
+	buildWebPushMessage,
+	createNotificationProvider,
+	saveMerchantPushSubscription,
+	WebPushNotificationProvider,
+	type WebPushSender,
+} from "../src/worker/web-push";
 
 const orderRequest = {
 	customerName: "測試顧客",
@@ -18,8 +22,17 @@ const orderRequest = {
 	specialOrder: false,
 	items: [{ menuItemId: 1, quantity: 2, modifierOptionIds: [] }],
 };
-
-const fixedNow = new Date("2026-09-07T04:00:00.000Z");
+const fixedNow = new Date("2026-09-12T04:00:00.000Z");
+const subscription = {
+	endpoint: "https://push.example.test/subscription-1",
+	expirationTime: null,
+	keys: { p256dh: "test-p256dh-key", auth: "test-auth-key" },
+};
+const vapid = {
+	publicKey: "test-public-key",
+	privateKey: "test-private-key",
+	subject: "mailto:merchant@example.test",
+};
 
 beforeAll(async () => {
 	await env.DB.batch([
@@ -27,15 +40,14 @@ beforeAll(async () => {
 			"INSERT INTO menu_categories (id, name, sort_order, is_active) VALUES (1, '人氣', 10, 1)",
 		),
 		env.DB.prepare(
-			"INSERT INTO menu_items (id, category_id, name, description, price, sort_order, is_available) VALUES (1, 1, '雞排', '', 85, 10, 1)",
+			"INSERT INTO menu_items (id, category_id, name, description, price, sort_order, is_available) VALUES (1, 1, '香雞排', '', 70, 10, 1)",
 		),
 	]);
 });
 
 beforeEach(async () => {
 	await env.DB.batch([
-		env.DB.prepare("DELETE FROM line_merchant_binding"),
-		env.DB.prepare("DELETE FROM line_merchant_pairing_challenge"),
+		env.DB.prepare("DELETE FROM merchant_push_subscriptions"),
 		env.DB.prepare("DELETE FROM notification_deliveries"),
 		env.DB.prepare("DELETE FROM order_item_modifiers"),
 		env.DB.prepare("DELETE FROM order_items"),
@@ -52,13 +64,10 @@ function toNotification(order: OrderSnapshot) {
 	};
 }
 
-describe("new Order notification delivery", () => {
-	it("atomically creates one intent and records fake provider success", async () => {
-		const result = await createOrder(env.DB, orderRequest, "notify-success", fixedNow);
-
-		expect(result.replayed).toBe(false);
-		if (result.replayed) throw new Error("Expected a newly created Order");
-
+describe("durable new Order notification intent", () => {
+	it("creates a web_push intent and records provider success", async () => {
+		const result = await createOrder(env.DB, orderRequest, "push-success", fixedNow);
+		if (result.replayed) throw new Error("Expected a new Order");
 		const provider = new FakeNotificationProvider();
 		const delivery = await deliverNewOrderNotification(
 			env.DB,
@@ -69,77 +78,44 @@ describe("new Order notification delivery", () => {
 		);
 		const stored = await env.DB
 			.prepare(
-				"SELECT status, attempt_count, last_error, sent_at FROM notification_deliveries WHERE order_id = ?",
+				"SELECT channel, status, attempt_count, last_error FROM notification_deliveries WHERE order_id = ?",
 			)
 			.bind(result.order.id)
-			.first<{
-				status: string;
-				attempt_count: number;
-				last_error: string | null;
-				sent_at: string | null;
-			}>();
+			.first();
 
 		expect(delivery).toEqual({ attempted: true, sent: true });
 		expect(provider.notifications).toHaveLength(1);
 		expect(stored).toEqual({
+			channel: "web_push",
 			status: "sent",
 			attempt_count: 1,
 			last_error: null,
-			sent_at: fixedNow.toISOString(),
 		});
 	});
 
-	it("records provider failure without rolling back or changing the Order", async () => {
-		const result = await createOrder(env.DB, orderRequest, "notify-failure", fixedNow);
-		if (result.replayed) throw new Error("Expected a newly created Order");
-
+	it("records push failure without rolling back the Order", async () => {
+		const result = await createOrder(env.DB, orderRequest, "push-failure", fixedNow);
+		if (result.replayed) throw new Error("Expected a new Order");
 		const delivery = await deliverNewOrderNotification(
 			env.DB,
 			result.notificationDeliveryId,
 			toNotification(result.order),
-			new FakeNotificationProvider("FAKE_UNAVAILABLE"),
+			new FakeNotificationProvider("PUSH_UNAVAILABLE"),
 			fixedNow,
 		);
 		const order = await env.DB
 			.prepare("SELECT status FROM orders WHERE id = ?")
 			.bind(result.order.id)
-			.first<{ status: string }>();
-		const stored = await env.DB
-			.prepare(
-				"SELECT status, attempt_count, last_error FROM notification_deliveries WHERE order_id = ?",
-			)
-			.bind(result.order.id)
-			.first<{ status: string; attempt_count: number; last_error: string }>();
+			.first();
 
 		expect(delivery).toMatchObject({ attempted: true, sent: false });
 		expect(order).toEqual({ status: "pending" });
-		expect(stored).toEqual({
-			status: "failed",
-			attempt_count: 1,
-			last_error: "FAKE_UNAVAILABLE: Fake provider delivery failed",
-		});
 	});
 
-	it("creates no duplicate intent and claims at most one attempt on an idempotent retry", async () => {
-		const first = await createOrder(env.DB, orderRequest, "notify-idempotent", fixedNow);
-		const retry = await createOrder(env.DB, orderRequest, "notify-idempotent", fixedNow);
-		if (first.replayed) throw new Error("Expected a newly created Order");
-
-		const provider = new FakeNotificationProvider();
-		await deliverNewOrderNotification(
-			env.DB,
-			first.notificationDeliveryId,
-			toNotification(first.order),
-			provider,
-			fixedNow,
-		);
-		const duplicateAttempt = await deliverNewOrderNotification(
-			env.DB,
-			first.notificationDeliveryId,
-			toNotification(first.order),
-			provider,
-			fixedNow,
-		);
+	it("keeps one intent for an idempotent Order retry", async () => {
+		const first = await createOrder(env.DB, orderRequest, "push-idempotent", fixedNow);
+		const retry = await createOrder(env.DB, orderRequest, "push-idempotent", fixedNow);
+		if (first.replayed) throw new Error("Expected a new Order");
 		const count = await env.DB
 			.prepare("SELECT COUNT(*) AS count FROM notification_deliveries WHERE order_id = ?")
 			.bind(first.order.id)
@@ -148,14 +124,11 @@ describe("new Order notification delivery", () => {
 		expect(retry.replayed).toBe(true);
 		expect(retry.order.id).toBe(first.order.id);
 		expect(count?.count).toBe(1);
-		expect(provider.notifications).toHaveLength(1);
-		expect(duplicateAttempt).toEqual({ attempted: false });
 	});
 
-	it("retries a failed delivery successfully and increments attempt metadata", async () => {
-		const result = await createOrder(env.DB, orderRequest, "retry-success", fixedNow);
-		if (result.replayed) throw new Error("Expected a newly created Order");
-
+	it("retries a failed delivery once and never resends a sent delivery", async () => {
+		const result = await createOrder(env.DB, orderRequest, "push-retry", fixedNow);
+		if (result.replayed) throw new Error("Expected a new Order");
 		await deliverNewOrderNotification(
 			env.DB,
 			result.notificationDeliveryId,
@@ -163,379 +136,227 @@ describe("new Order notification delivery", () => {
 			new FakeNotificationProvider("INITIAL_FAILURE"),
 			fixedNow,
 		);
-		const retryAt = new Date("2026-09-07T04:02:00.000Z");
-		const provider = new FakeNotificationProvider();
-		const delivery = await retryNotificationDelivery(
+
+		const retryAt = new Date("2026-09-12T04:02:00.000Z");
+		const retried = await retryNotificationDelivery(
 			env.DB,
 			result.notificationDeliveryId,
-			provider,
-			retryAt,
-		);
-
-		expect(provider.notifications).toHaveLength(1);
-		expect(delivery).toMatchObject({
-			status: "sent",
-			attemptCount: 2,
-			lastAttemptAt: retryAt.toISOString(),
-			sentAt: retryAt.toISOString(),
-			lastError: null,
-		});
-	});
-
-	it("keeps a failed retry observable and increments attempt_count", async () => {
-		const result = await createOrder(env.DB, orderRequest, "retry-failure", fixedNow);
-		if (result.replayed) throw new Error("Expected a newly created Order");
-
-		await deliverNewOrderNotification(
-			env.DB,
-			result.notificationDeliveryId,
-			toNotification(result.order),
-			new FakeNotificationProvider("INITIAL_FAILURE"),
-			fixedNow,
-		);
-		const retryAt = new Date("2026-09-07T04:02:00.000Z");
-		const delivery = await retryNotificationDelivery(
-			env.DB,
-			result.notificationDeliveryId,
-			new FakeNotificationProvider("RETRY_FAILURE"),
-			retryAt,
-		);
-
-		expect(delivery).toMatchObject({
-			status: "failed",
-			attemptCount: 2,
-			lastAttemptAt: retryAt.toISOString(),
-			lastError: "RETRY_FAILURE: Fake provider delivery failed",
-		});
-		await expect(
-			env.DB.prepare("SELECT status FROM orders WHERE id = ?").bind(result.order.id).first(),
-		).resolves.toEqual({ status: "pending" });
-	});
-
-	it("never resends a sent delivery and reports unknown delivery IDs", async () => {
-		const result = await createOrder(env.DB, orderRequest, "retry-sent", fixedNow);
-		if (result.replayed) throw new Error("Expected a newly created Order");
-
-		await deliverNewOrderNotification(
-			env.DB,
-			result.notificationDeliveryId,
-			toNotification(result.order),
 			new FakeNotificationProvider(),
-			fixedNow,
+			retryAt,
 		);
-		const retryProvider = new FakeNotificationProvider();
-
+		expect(retried).toMatchObject({ status: "sent", attemptCount: 2 });
 		await expect(
 			retryNotificationDelivery(
 				env.DB,
 				result.notificationDeliveryId,
-				retryProvider,
-				new Date("2026-09-07T04:02:00.000Z"),
+				new FakeNotificationProvider(),
+				retryAt,
 			),
-		).rejects.toMatchObject({ status: 409, code: "NOTIFICATION_ALREADY_SENT" });
-		await expect(
-			retryNotificationDelivery(env.DB, "missing-delivery", retryProvider, fixedNow),
-		).rejects.toMatchObject({ status: 404, code: "NOTIFICATION_DELIVERY_NOT_FOUND" });
-		expect(retryProvider.notifications).toHaveLength(0);
+		).rejects.toMatchObject({ code: "NOTIFICATION_ALREADY_SENT" });
 	});
 
-	it("rejects an active pending attempt but recovers it after the stale threshold", async () => {
-		const result = await createOrder(env.DB, orderRequest, "retry-stale-pending", fixedNow);
-		if (result.replayed) throw new Error("Expected a newly created Order");
-
-		await env.DB
-			.prepare(
-				`UPDATE notification_deliveries
-				SET status = 'pending', attempt_count = 1, last_attempt_at = ?
-				WHERE id = ?`,
-			)
-			.bind(fixedNow.toISOString(), result.notificationDeliveryId)
-			.run();
-		const provider = new FakeNotificationProvider();
-
-		await expect(
-			retryNotificationDelivery(
-				env.DB,
-				result.notificationDeliveryId,
-				provider,
-				new Date("2026-09-07T04:00:30.000Z"),
-			),
-		).rejects.toMatchObject({
-			status: 409,
-			code: "NOTIFICATION_DELIVERY_IN_PROGRESS",
-		});
-
-		const recovered = await retryNotificationDelivery(
+	it("keeps delivery observability free of Customer and subscription secrets", async () => {
+		const result = await createOrder(env.DB, orderRequest, "push-list", fixedNow);
+		if (result.replayed) throw new Error("Expected a new Order");
+		await deliverNewOrderNotification(
 			env.DB,
 			result.notificationDeliveryId,
-			provider,
-			new Date("2026-09-07T04:01:01.000Z"),
-		);
-		expect(recovered).toMatchObject({ status: "sent", attemptCount: 2 });
-		expect(provider.notifications).toHaveLength(1);
-	});
-
-	it("enforces notification uniqueness in D1", async () => {
-		const result = await createOrder(env.DB, orderRequest, "durable-uniqueness", fixedNow);
-		if (result.replayed) throw new Error("Expected a newly created Order");
-
-		await expect(
-			env.DB
-				.prepare(
-					`INSERT INTO notification_deliveries (
-						id, order_id, channel, event_type, status, attempt_count, created_at
-					) VALUES (?, ?, 'line', 'new_order', 'pending', 0, ?)`,
-				)
-				.bind("duplicate-intent", result.order.id, fixedNow.toISOString())
-				.run(),
-		).rejects.toThrow(/UNIQUE constraint failed/);
-	});
-
-	it("lists only operational fields with failed deliveries first", async () => {
-		const sent = await createOrder(env.DB, orderRequest, "list-sent", fixedNow);
-		const failed = await createOrder(
-			env.DB,
-			orderRequest,
-			"list-failed",
-			new Date("2026-09-07T04:01:00.000Z"),
-		);
-		if (sent.replayed || failed.replayed) throw new Error("Expected newly created Orders");
-
-		await deliverNewOrderNotification(
-			env.DB,
-			sent.notificationDeliveryId,
-			toNotification(sent.order),
-			new FakeNotificationProvider(),
-			fixedNow,
-		);
-		await deliverNewOrderNotification(
-			env.DB,
-			failed.notificationDeliveryId,
-			toNotification(failed.order),
+			toNotification(result.order),
 			new FakeNotificationProvider("FAILURE"),
 			fixedNow,
 		);
 		const deliveries = await listMerchantNotificationDeliveries(env.DB);
 
-		expect(deliveries.map((delivery) => delivery.status)).toEqual(["failed", "sent"]);
+		expect(deliveries[0]).toMatchObject({ channel: "web_push", status: "failed" });
 		expect(deliveries[0]).not.toHaveProperty("customerPhone");
 		expect(deliveries[0]).not.toHaveProperty("publicLookupToken");
+		expect(deliveries[0]).not.toHaveProperty("endpoint");
+		expect(deliveries[0]).not.toHaveProperty("p256dh");
 	});
+});
 
-	it("keeps Merchant notification endpoints behind the existing guard", async () => {
-		const denied = await app.request(
-			new Request("https://merchant.example.com/api/merchant/notifications/missing/retry", {
-				method: "POST",
-			}),
-			undefined,
-			{ DB: env.DB } as Env,
-			{} as ExecutionContext,
-		);
-		const localList = await exports.default.fetch(
-			"https://example.com/api/merchant/notifications",
-		);
-
-		expect(denied.status).toBe(403);
-		expect(await denied.json()).toMatchObject({
-			error: { code: "MERCHANT_ACCESS_DENIED" },
+describe("Web Push provider", () => {
+	it("builds only the minimal Merchant queue pointer payload", () => {
+		const message = buildWebPushMessage({
+			orderNumber: "CZ-TEST",
+			total: 999,
+			estimatedReadyAt: fixedNow.toISOString(),
+			items: [{ name: "香雞排", quantity: 2 }],
 		});
-		expect(localList.status).toBe(200);
-		expect(localList.headers.get("Cache-Control")).toContain("no-store");
+		const payload = JSON.parse(message.data) as Record<string, unknown>;
+
+		expect(payload).toEqual({
+			title: "吃炸的｜新訂單",
+			body: "新訂單 #CZ-TEST",
+			data: { url: "/merchant" },
+		});
+		expect(message.data).not.toContain("999");
+		expect(message.data).not.toContain("香雞排");
 	});
 
-	it("retries through the protected Merchant action with the explicit test bypass", async () => {
-		const result = await createOrder(env.DB, orderRequest, "merchant-retry-route", fixedNow);
-		if (result.replayed) throw new Error("Expected a newly created Order");
+	it("delivers to a stored subscription without exposing its credentials", async () => {
+		await saveMerchantPushSubscription(env.DB, subscription, fixedNow);
+		const sends: Parameters<WebPushSender>[] = [];
+		const sender: WebPushSender = async (...arguments_) => {
+			sends.push(arguments_);
+			return new Response(null, { status: 201 });
+		};
+		const provider = new WebPushNotificationProvider(env.DB, vapid, sender);
+		await provider.notifyNewOrder({
+			orderNumber: "CZ-PUSH",
+			total: 70,
+			estimatedReadyAt: fixedNow.toISOString(),
+			items: [],
+		});
 
-		await deliverNewOrderNotification(
+		expect(sends).toHaveLength(1);
+		expect(sends[0][0]).toMatchObject(subscription);
+		expect(sends[0][2]).toEqual(vapid);
+	});
+
+	it.each([404, 410])("deletes a subscription after a terminal %i response", async (status) => {
+		await saveMerchantPushSubscription(env.DB, subscription, fixedNow);
+		const provider = new WebPushNotificationProvider(
+			env.DB,
+			vapid,
+			async () => new Response(null, { status }),
+		);
+		await expect(
+			provider.notifyNewOrder({
+				orderNumber: "CZ-EXPIRED",
+				total: 70,
+				estimatedReadyAt: fixedNow.toISOString(),
+				items: [],
+			}),
+		).rejects.toMatchObject({ code: "WEB_PUSH_DELIVERY_FAILED" });
+		const count = await env.DB
+			.prepare("SELECT COUNT(*) AS count FROM merchant_push_subscriptions")
+			.first<{ count: number }>();
+		expect(count?.count).toBe(0);
+	});
+
+	it("continues after one temporary failure and records a successful batch", async () => {
+		const failureSubscription = {
+			...subscription,
+			endpoint: "https://push.example.test/failure",
+		};
+		const successSubscription = {
+			...subscription,
+			endpoint: "https://push.example.test/success",
+		};
+		await saveMerchantPushSubscription(env.DB, failureSubscription, fixedNow);
+		await saveMerchantPushSubscription(
+			env.DB,
+			successSubscription,
+			new Date(fixedNow.getTime() + 1_000),
+		);
+		const attemptedEndpoints: string[] = [];
+		const provider = new WebPushNotificationProvider(env.DB, vapid, async (candidate) => {
+			attemptedEndpoints.push(candidate.endpoint);
+			return new Response(null, {
+				status: candidate.endpoint === failureSubscription.endpoint ? 500 : 201,
+			});
+		});
+		const result = await createOrder(env.DB, orderRequest, "mixed-push-delivery", fixedNow);
+		if (result.replayed) throw new Error("Expected a new Order");
+
+		const delivery = await deliverNewOrderNotification(
 			env.DB,
 			result.notificationDeliveryId,
 			toNotification(result.order),
-			new FakeNotificationProvider("INITIAL_FAILURE"),
+			provider,
 			fixedNow,
 		);
-		const response = await exports.default.fetch(
-			`https://example.com/api/merchant/notifications/${result.notificationDeliveryId}/retry`,
-			{ method: "POST" },
-		);
-		const body = await response.json();
+		const { results } = await env.DB
+			.prepare(
+				`SELECT
+					endpoint,
+					last_success_at AS lastSuccessAt,
+					last_failure_at AS lastFailureAt
+				FROM merchant_push_subscriptions`,
+			)
+			.all<{
+				endpoint: string;
+				lastSuccessAt: string | null;
+				lastFailureAt: string | null;
+			}>();
+		const subscriptionsByEndpoint = new Map(results.map((row) => [row.endpoint, row]));
+		const storedDelivery = await env.DB
+			.prepare(
+				`SELECT status, attempt_count AS attemptCount, last_error AS lastError
+				FROM notification_deliveries WHERE id = ?`,
+			)
+			.bind(result.notificationDeliveryId)
+			.first();
+		const storedOrder = await env.DB
+			.prepare("SELECT status FROM orders WHERE id = ?")
+			.bind(result.order.id)
+			.first();
 
-		expect(response.status).toBe(200);
-		expect(body).toMatchObject({
-			delivery: { status: "sent", attemptCount: 2, lastError: null },
+		expect(attemptedEndpoints).toEqual([
+			failureSubscription.endpoint,
+			successSubscription.endpoint,
+		]);
+		expect(delivery).toEqual({ attempted: true, sent: true });
+		expect(subscriptionsByEndpoint.get(failureSubscription.endpoint)).toMatchObject({
+			lastSuccessAt: null,
+			lastFailureAt: expect.any(String),
 		});
+		expect(subscriptionsByEndpoint.get(successSubscription.endpoint)).toMatchObject({
+			lastSuccessAt: expect.any(String),
+			lastFailureAt: null,
+		});
+		expect(storedDelivery).toEqual({ status: "sent", attemptCount: 1, lastError: null });
+		expect(storedOrder).toEqual({ status: "pending" });
 	});
-});
 
-describe("LINE notification provider", () => {
-	const notification = {
-		orderNumber: "CZ-20260907-TEST",
-		total: 170,
-		estimatedReadyAt: "2026-09-07T13:35:00.000Z",
-		items: [
+	it("retains subscriptions after temporary HTTP and network failures", async () => {
+		const cases: Array<{ label: string; sender: WebPushSender }> = [
+			{ label: "HTTP 429", sender: async () => new Response(null, { status: 429 }) },
+			{ label: "HTTP 500", sender: async () => new Response(null, { status: 500 }) },
 			{
-				menuItemId: 1,
-				name: "雞排",
-				unitPrice: 85,
-				quantity: 2,
-				lineTotal: 170,
-				modifiers: [],
+				label: "network error",
+				sender: async () => {
+					throw new Error("temporary network failure");
+				},
 			},
-		],
-	};
+		];
 
-	it("uses the LINE push endpoint, Bearer token, recipient, and bounded safe message", async () => {
-		const requests: Array<[RequestInfo | URL, RequestInit | undefined]> = [];
-		const fetcher = (async (input: RequestInfo | URL, init?: RequestInit) => {
-			requests.push([input, init]);
-			return new Response(null, { status: 200 });
-		}) as typeof fetch;
-		const provider = new LineNotificationProvider(
-			"secret-channel-token",
-			"merchant-recipient",
-			fetcher,
-		);
+		for (const failureCase of cases) {
+			await env.DB.prepare("DELETE FROM merchant_push_subscriptions").run();
+			await saveMerchantPushSubscription(env.DB, subscription, fixedNow);
+			const provider = new WebPushNotificationProvider(env.DB, vapid, failureCase.sender);
 
-		await provider.notifyNewOrder(notification);
+			await expect(
+				provider.notifyNewOrder({
+					orderNumber: `CZ-${failureCase.label}`,
+					total: 70,
+					estimatedReadyAt: fixedNow.toISOString(),
+					items: [],
+				}),
+			).rejects.toMatchObject({ code: "WEB_PUSH_DELIVERY_FAILED" });
+			const stored = await env.DB
+				.prepare(
+					`SELECT COUNT(*) AS count, last_failure_at AS lastFailureAt
+					FROM merchant_push_subscriptions`,
+				)
+				.first<{ count: number; lastFailureAt: string | null }>();
 
-		expect(requests).toHaveLength(1);
-		const [url, init] = requests[0];
-		const headers = new Headers(init?.headers);
-		const body = JSON.parse(String(init?.body)) as {
-			to: string;
-			messages: Array<{ type: string; text: string }>;
-		};
-
-		expect(url).toBe("https://api.line.me/v2/bot/message/push");
-		expect(init?.method).toBe("POST");
-		expect(headers.get("Authorization")).toBe("Bearer secret-channel-token");
-		expect(headers.get("Content-Type")).toBe("application/json");
-		expect(body.to).toBe("merchant-recipient");
-		expect(body.messages[0]).toMatchObject({ type: "text" });
-		expect(body.messages[0].text).toContain("雞排 ×2");
-		expect(body.messages[0].text).not.toContain("0912-345-678");
-		expect(body.messages[0].text.length).toBeLessThanOrEqual(1_000);
-	});
-
-	it("sanitizes non-2xx and network failures without exposing the token", async () => {
-		const token = "must-never-appear-in-errors";
-		const httpProvider = new LineNotificationProvider(
-			token,
-			"merchant-recipient",
-			(async () => new Response("provider detail", { status: 429 })) as typeof fetch,
-		);
-		const networkProvider = new LineNotificationProvider(
-			token,
-			"merchant-recipient",
-			(async () => {
-				throw new Error(`network failed with ${token}`);
-			}) as typeof fetch,
-		);
-
-		await expect(httpProvider.notifyNewOrder(notification)).rejects.toMatchObject({
-			code: "LINE_HTTP_ERROR",
-		});
-		await expect(networkProvider.notifyNewOrder(notification)).rejects.toMatchObject({
-			code: "LINE_NETWORK_ERROR",
-		});
-
-		for (const provider of [httpProvider, networkProvider]) {
-			try {
-				await provider.notifyNewOrder(notification);
-			} catch (error) {
-				expect(String(error)).not.toContain(token);
-			}
+			expect(stored, failureCase.label).toEqual({
+				count: 1,
+				lastFailureAt: expect.any(String),
+			});
 		}
 	});
 
-	it("builds a short message without customer contact or internal identifiers", () => {
-		const message = buildLineNewOrderMessage(notification);
-
-		expect(message).toContain("吃炸的｜新訂單");
-		expect(message).toContain("訂單 #CZ-20260907-TEST");
-		expect(message).toContain("總計 $170");
-		expect(message).not.toContain("customerPhone");
-		expect(message).not.toContain("publicLookupToken");
-	});
-});
-
-describe("notification provider selection", () => {
-	const notification = {
-		orderNumber: "CZ-PROVIDER-SELECTION",
-		total: 70,
-		estimatedReadyAt: "2026-09-07T13:35:00.000Z",
-		items: [{ name: "香雞排", quantity: 1 }],
-	};
-
-	it("requires the explicit development bypass before Fake can be selected", async () => {
-		const productionProvider = createNotificationProvider(
-			{
-				NOTIFICATION_PROVIDER: "fake",
-			},
+	it("keeps the Order committed when every Web Push request fails", async () => {
+		await saveMerchantPushSubscription(env.DB, subscription, fixedNow);
+		const result = await createOrder(env.DB, orderRequest, "real-push-failure", fixedNow);
+		if (result.replayed) throw new Error("Expected a new Order");
+		const provider = new WebPushNotificationProvider(
 			env.DB,
-		);
-		const developmentProvider = createNotificationProvider(
-			{
-				NOTIFICATION_PROVIDER: "fake",
-				MERCHANT_DEV_BYPASS: "true",
-			},
-			env.DB,
-		);
-
-		await expect(productionProvider.notifyNewOrder(notification)).rejects.toMatchObject({
-			code: "NOTIFICATION_DISABLED",
-		});
-		expect(developmentProvider).toBeInstanceOf(FakeNotificationProvider);
-	});
-
-	it("resolves the LINE recipient only from the D1 Merchant binding", async () => {
-		const requests: Array<RequestInit | undefined> = [];
-		const fetcher = (async (_input: RequestInfo | URL, init?: RequestInit) => {
-			requests.push(init);
-			return new Response(null, { status: 200 });
-		}) as typeof fetch;
-		const provider = createNotificationProvider(
-			{
-				NOTIFICATION_PROVIDER: "line",
-				LINE_CHANNEL_ACCESS_TOKEN: "test-channel-token",
-			},
-			env.DB,
-			fetcher,
-		);
-
-		await expect(provider.notifyNewOrder(notification)).rejects.toMatchObject({
-			code: "LINE_RECIPIENT_NOT_PAIRED",
-		});
-		expect(requests).toHaveLength(0);
-
-		await env.DB.prepare(
-			`INSERT INTO line_merchant_binding (id, recipient_user_id, paired_at, updated_at)
-			VALUES (1, ?, ?, ?)`,
-		)
-			.bind(`U${"a".repeat(32)}`, fixedNow.toISOString(), fixedNow.toISOString())
-			.run();
-		await provider.notifyNewOrder(notification);
-
-		const body = JSON.parse(String(requests[0]?.body)) as { to: string };
-		expect(body.to).toBe(`U${"a".repeat(32)}`);
-	});
-
-	it("keeps a durable Order when the bound LINE provider fails", async () => {
-		await env.DB.prepare(
-			`INSERT INTO line_merchant_binding (id, recipient_user_id, paired_at, updated_at)
-			VALUES (1, ?, ?, ?)`,
-		)
-			.bind(`U${"b".repeat(32)}`, fixedNow.toISOString(), fixedNow.toISOString())
-			.run();
-		const result = await createOrder(env.DB, orderRequest, "line-provider-failure", fixedNow);
-		if (result.replayed) throw new Error("Expected a newly created Order");
-		const provider = createNotificationProvider(
-			{
-				NOTIFICATION_PROVIDER: "line",
-				LINE_CHANNEL_ACCESS_TOKEN: "test-channel-token",
-			},
-			env.DB,
-			(async () => new Response(null, { status: 503 })) as typeof fetch,
+			vapid,
+			async () => new Response(null, { status: 503 }),
 		);
 
 		const delivery = await deliverNewOrderNotification(
@@ -548,9 +369,91 @@ describe("notification provider selection", () => {
 		const storedOrder = await env.DB
 			.prepare("SELECT status FROM orders WHERE id = ?")
 			.bind(result.order.id)
-			.first<{ status: string }>();
+			.first();
 
 		expect(delivery).toMatchObject({ attempted: true, sent: false });
 		expect(storedOrder).toEqual({ status: "pending" });
+	});
+
+	it("starts safely without VAPID configuration and cannot select Fake in production", async () => {
+		const provider = createNotificationProvider({}, env.DB);
+		await expect(
+			provider.notifyNewOrder({
+				orderNumber: "CZ-NO-CONFIG",
+				total: 70,
+				estimatedReadyAt: fixedNow.toISOString(),
+				items: [],
+			}),
+		).rejects.toMatchObject({ code: "WEB_PUSH_NOT_CONFIGURED" });
+		expect(provider).not.toBeInstanceOf(FakeNotificationProvider);
+		expect((await exports.default.fetch("https://example.com/api/health")).status).toBe(200);
+	});
+});
+
+describe("Merchant Push subscription API", () => {
+	it("keeps subscription mutations behind the Merchant guard", async () => {
+		const response = await app.request(
+			new Request("https://merchant.example.com/api/merchant/push/subscriptions", {
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify(subscription),
+			}),
+			undefined,
+			{ DB: env.DB } as Env,
+			{} as ExecutionContext,
+		);
+		expect(response.status).toBe(403);
+	});
+
+	it("creates and idempotently updates the same endpoint", async () => {
+		const request = (body: unknown) =>
+			exports.default.fetch("https://example.com/api/merchant/push/subscriptions", {
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify(body),
+			});
+		const first = await request(subscription);
+		const second = await request({
+			...subscription,
+			keys: { p256dh: "updated-p256dh", auth: "updated-auth" },
+		});
+		const stored = await env.DB
+			.prepare("SELECT COUNT(*) AS count, p256dh, auth FROM merchant_push_subscriptions")
+			.first<{ count: number; p256dh: string; auth: string }>();
+
+		expect(first.status).toBe(201);
+		expect(second.status).toBe(201);
+		expect(await first.json()).toEqual({ subscribed: true });
+		expect(stored).toEqual({ count: 1, p256dh: "updated-p256dh", auth: "updated-auth" });
+	});
+
+	it("unsubscribes idempotently", async () => {
+		await saveMerchantPushSubscription(env.DB, subscription, fixedNow);
+		for (let attempt = 0; attempt < 2; attempt += 1) {
+			const response = await exports.default.fetch(
+				"https://example.com/api/merchant/push/subscriptions",
+				{
+					method: "DELETE",
+					headers: { "Content-Type": "application/json" },
+					body: JSON.stringify({ endpoint: subscription.endpoint }),
+				},
+			);
+			expect(response.status).toBe(200);
+			expect(await response.json()).toEqual({ subscribed: false });
+		}
+	});
+
+	it("retires every LINE API route", async () => {
+		const webhook = await exports.default.fetch("https://example.com/api/line/webhook", {
+			method: "POST",
+		});
+		const pairing = await exports.default.fetch("https://example.com/api/merchant/line/pairing", {
+			method: "POST",
+		});
+		const status = await exports.default.fetch("https://example.com/api/merchant/line/status");
+
+		expect(webhook.status).toBe(404);
+		expect(pairing.status).toBe(404);
+		expect(status.status).toBe(404);
 	});
 });

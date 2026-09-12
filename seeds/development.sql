@@ -1,5 +1,6 @@
 -- Replaceable local development fixtures. SQLite booleans use 0 = false, 1 = true.
 UPDATE store_settings SET is_accepting_orders = 1 WHERE id = 1;
+DELETE FROM merchant_push_subscriptions;
 DELETE FROM notification_deliveries;
 DELETE FROM order_item_modifiers;
 DELETE FROM order_items;

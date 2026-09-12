@@ -2,6 +2,7 @@
 	"name": "chi-zha-de-ordering",
 	"description": "Local-first ordering system for the single-store chicken shop 吃炸的",
 	"dependencies": {
+		"@block65/webcrypto-web-push": "^2.0.0",
 		"hono": "^4.13.7",
 		"jose": "^6.2.12",
 		"react": "19.2.1",
@@ -38,6 +39,7 @@
 		"test": "vitest run",
 		"verify:deploy-dry-run": "node scripts/verify-deployment-dry-run.mjs",
 		"verify:fresh-d1": "node scripts/verify-fresh-d1.mjs",
+		"verify:upgrade-d1": "node scripts/verify-migration-0009-upgrade.mjs",
 		"verify:pwa": "node scripts/verify-pwa.mjs"
 	},
 	"type": "module"

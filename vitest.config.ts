@@ -13,7 +13,6 @@ export default defineConfig(async () => {
 					bindings: {
 						TEST_MIGRATIONS: migrations,
 						MERCHANT_DEV_BYPASS: "true",
-						NOTIFICATION_PROVIDER: "fake",
 						PUBLIC_WRITE_RATE_LIMIT_DEV_BYPASS: "true",
 					},
 				},

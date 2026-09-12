@@ -8,8 +8,7 @@
 	"vars": {
 		"MERCHANT_HOSTNAME": "chi-zha-de-ordering.yeoeb55688.workers.dev",
 		"CF_ACCESS_TEAM_DOMAIN": "https://yeoeb.cloudflareaccess.com",
-		"CF_ACCESS_AUD": "0b41555c46401f25d421053db77ca92f2ee8e57e91a32f647b2aa6fdd08928b4",
-		"NOTIFICATION_PROVIDER": "line"
+		"CF_ACCESS_AUD": "0b41555c46401f25d421053db77ca92f2ee8e57e91a32f647b2aa6fdd08928b4"
 	},
 	"assets": {
 		"directory": "./dist/client",

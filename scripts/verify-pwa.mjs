@@ -1,6 +1,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { runInNewContext } from "node:vm";
 
 const root = dirname(dirname(fileURLToPath(import.meta.url)));
 const manifestPath = join(root, "public", "manifest.webmanifest");
@@ -26,10 +27,96 @@ const serviceWorker = readFileSync(join(root, "public", "service-worker.js"), "u
 if (!serviceWorker.includes('url.pathname.startsWith("/api/")')) {
 	throw new Error("Service Worker must bypass every API request");
 }
+if (
+	!serviceWorker.includes('addEventListener("push"') ||
+	!serviceWorker.includes('addEventListener("notificationclick"')
+) {
+	throw new Error("Service Worker Web Push handlers are missing");
+}
+
+function createServiceWorkerHarness(windowClients = []) {
+	const listeners = new Map();
+	const openedUrls = [];
+	const origin = "https://merchant.example.test";
+	const self = {
+		location: { origin },
+		clients: {
+			matchAll: async () => windowClients,
+			openWindow: async (url) => {
+				openedUrls.push(url);
+				return null;
+			},
+		},
+		registration: { showNotification: async () => undefined },
+		skipWaiting: () => undefined,
+		addEventListener: (type, listener) => listeners.set(type, listener),
+	};
+
+	runInNewContext(serviceWorker, { self, URL, Promise });
+	const notificationClick = listeners.get("notificationclick");
+	if (typeof notificationClick !== "function") {
+		throw new Error("Service Worker notificationclick handler was not registered");
+	}
+
+	return {
+		origin,
+		openedUrls,
+		async click(data) {
+			let work;
+			notificationClick({
+				notification: { data, close: () => undefined },
+				waitUntil: (promise) => {
+					work = promise;
+				},
+			});
+			if (!work) throw new Error("notificationclick did not register asynchronous work");
+			await work;
+		},
+	};
+}
+
+for (const unsafeData of [
+	{ url: "https://evil.example/phishing" },
+	undefined,
+	{ url: { malformed: true } },
+]) {
+	const harness = createServiceWorkerHarness();
+	await harness.click(unsafeData);
+	if (harness.openedUrls.length !== 1 || harness.openedUrls[0] !== `${harness.origin}/merchant`) {
+		throw new Error("Service Worker notification clicks must open only same-origin /merchant");
+	}
+}
+
+let focusCount = 0;
+const existingMerchantClient = {
+	url: "https://merchant.example.test/merchant?source=push",
+	focus: async () => {
+		focusCount += 1;
+	},
+};
+const existingClientHarness = createServiceWorkerHarness([existingMerchantClient]);
+await existingClientHarness.click({ url: "https://evil.example/phishing" });
+if (focusCount !== 1 || existingClientHarness.openedUrls.length !== 0) {
+	throw new Error("Service Worker must focus an existing same-origin Merchant window");
+}
+
+const ineligibleClientHarness = createServiceWorkerHarness([
+	{ url: "https://merchant.example.test/merchant-phishing", focus: async () => undefined },
+	{ url: "https://evil.example/merchant", focus: async () => undefined },
+]);
+await ineligibleClientHarness.click({ url: "/merchant" });
+if (
+	ineligibleClientHarness.openedUrls.length !== 1 ||
+	ineligibleClientHarness.openedUrls[0] !== `${ineligibleClientHarness.origin}/merchant`
+) {
+	throw new Error("Service Worker must ignore ineligible windows and open same-origin /merchant");
+}
 
 const registration = readFileSync(join(root, "src", "react-app", "main.tsx"), "utf8");
 if (!registration.includes('navigator.serviceWorker.register("/service-worker.js")')) {
 	throw new Error("Service Worker registration is missing");
 }
 
-console.log("PWA manifest, icons, API cache boundary, and registration verified.");
+console.log(
+	"PWA manifest, icons, API cache boundary, safe notification clicks, and registration verified.",
+);
