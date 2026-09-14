@@ -36,6 +36,10 @@ beforeAll(async () => {
 
 beforeEach(async () => {
 	await env.DB.batch([
+		env.DB.prepare("DELETE FROM store_state_events"),
+		env.DB.prepare(
+			"UPDATE store_settings SET is_accepting_orders = 0, state_version = 0 WHERE id = 1",
+		),
 		env.DB.prepare("DELETE FROM order_item_modifiers"),
 		env.DB.prepare("DELETE FROM order_items"),
 		env.DB.prepare("DELETE FROM orders"),
@@ -143,9 +147,17 @@ describe("Merchant Order state machine", () => {
 
 	it("rejects pending Orders and sets only rejected_at", async () => {
 		await insertOrder({ id: "reject-order", status: "pending" });
+		const storeBefore = await env.DB.prepare(
+			"SELECT is_accepting_orders, state_version FROM store_settings WHERE id = 1",
+		).first();
 
 		const order = await transitionMerchantOrder(env.DB, "reject-order", "reject", fixedNow);
 		const stored = await readStatus("reject-order");
+		const storeAfter = await env.DB.prepare(
+			`SELECT is_accepting_orders, state_version,
+				(SELECT COUNT(*) FROM store_state_events) AS event_count
+			FROM store_settings WHERE id = 1`,
+		).first<Record<string, unknown>>();
 
 		expect(order.status).toBe("rejected");
 		expect(stored).toEqual({
@@ -155,6 +167,7 @@ describe("Merchant Order state machine", () => {
 			rejected_at: fixedNowIso,
 			estimated_ready_at: fixedEta,
 		});
+		expect(storeAfter).toEqual({ ...storeBefore, event_count: 0 });
 	});
 
 	it("completes accepted Orders, preserves accepted_at, and sets only completed_at", async () => {
@@ -264,11 +277,17 @@ describe("Merchant Order API", () => {
 
 		const accepted = await exports.default.fetch(
 			"https://example.com/api/merchant/orders/route-order/accept",
-			{ method: "POST" },
+			{
+				method: "POST",
+				headers: { Origin: "https://example.com", "Sec-Fetch-Site": "same-origin" },
+			},
 		);
 		const illegalReject = await exports.default.fetch(
 			"https://example.com/api/merchant/orders/route-order/reject",
-			{ method: "POST" },
+			{
+				method: "POST",
+				headers: { Origin: "https://example.com", "Sec-Fetch-Site": "same-origin" },
+			},
 		);
 
 		expect(accepted.status).toBe(200);

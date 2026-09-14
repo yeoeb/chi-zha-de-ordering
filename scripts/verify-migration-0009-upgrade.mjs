@@ -34,6 +34,8 @@ const migrationsThrough0008 = [
 ];
 const migration0009 = "0009_create_merchant_push_subscriptions.sql";
 const migration0009Path = join(root, "migrations", migration0009);
+const migration0010 = "0010_add_store_state_audit.sql";
+const migration0010Path = join(root, "migrations", migration0010);
 const forbiddenMigrationPattern = /^\s*(?:DROP\s+(?:TABLE|COLUMN)|DELETE\s+FROM|ALTER\s+TABLE\s+\S+\s+RENAME|UPDATE\s+\S+|INSERT\s+INTO)\b/im;
 
 function spawnWrangler(arguments_) {
@@ -89,7 +91,7 @@ function queryRows(command) {
 
 function assertExact(actual, expected, label) {
 	if (JSON.stringify(actual) !== JSON.stringify(expected)) {
-		throw new Error(`${label} changed during migration 0009: ${JSON.stringify(actual)}`);
+		throw new Error(`${label} changed during migration upgrade: ${JSON.stringify(actual)}`);
 	}
 }
 
@@ -117,8 +119,9 @@ writeFileSync(
 
 try {
 	const migrationSql = readFileSync(migration0009Path, "utf8");
-	if (forbiddenMigrationPattern.test(migrationSql)) {
-		throw new Error("Migration 0009 contains a forbidden destructive or data-mutating statement");
+	const migration0010Sql = readFileSync(migration0010Path, "utf8");
+	if (forbiddenMigrationPattern.test(migrationSql) || forbiddenMigrationPattern.test(migration0010Sql)) {
+		throw new Error("Migration 0009 or 0010 contains a forbidden destructive or data-mutating statement");
 	}
 
 	for (const migration of migrationsThrough0008) {
@@ -139,7 +142,15 @@ try {
 		"execute",
 		database,
 		"--command",
-		`INSERT INTO orders (
+		`INSERT INTO menu_categories (id, name, sort_order, is_active)
+		VALUES (1, 'Historical Category', 1, 1);
+		INSERT INTO menu_items (id, category_id, name, description, price, sort_order, is_available)
+		VALUES (1, 1, 'Historical Item', '', 70, 1, 1);
+		INSERT INTO modifier_groups (id, menu_item_id, name, selection_type, is_required, sort_order, is_active)
+		VALUES (1, 1, 'Historical Group', 'single', 1, 1, 1);
+		INSERT INTO modifier_options (id, modifier_group_id, name, price_delta, sort_order, is_active)
+		VALUES (1, 1, 'Historical Option', 0, 1, 1);
+		INSERT INTO orders (
 			id, order_number, status, total_amount, estimated_ready_at, created_at,
 			customer_name, customer_phone, special_order, idempotency_key,
 			request_fingerprint, public_lookup_token
@@ -148,6 +159,16 @@ try {
 			'2026-09-01T12:15:00.000Z', '2026-09-01T12:00:00.000Z',
 			'Historical Customer', '0900000000', 0, 'historical-idempotency-key',
 			'${"a".repeat(64)}', '${"b".repeat(64)}'
+		);
+		INSERT INTO order_items (
+			id, order_id, menu_item_id, item_name, unit_price, quantity, line_total, sort_order
+		) VALUES ('historical-item', 'historical-order', 1, 'Historical Item', 70, 1, 70, 0);
+		INSERT INTO order_item_modifiers (
+			id, order_item_id, modifier_option_id, modifier_group_name,
+			modifier_option_name, price_delta, sort_order
+		) VALUES (
+			'historical-modifier', 'historical-item', 1, 'Historical Group',
+			'Historical Option', 0, 0
 		);
 		INSERT INTO notification_deliveries (
 			id, order_id, channel, event_type, status, attempt_count,
@@ -392,6 +413,182 @@ try {
 		"UNIQUE constraint failed: web_push_notification_deliveries.order_id, web_push_notification_deliveries.event_type",
 	);
 
+	const storeBefore0010 = queryRows(
+		`SELECT id, display_name, is_accepting_orders, base_prep_minutes,
+			normal_order_minutes, special_extra_minutes
+		FROM store_settings ORDER BY id`,
+	);
+	const categoriesBefore0010 = queryRows(
+		"SELECT id, name, sort_order, is_active FROM menu_categories ORDER BY id",
+	);
+	const menuItemsBefore0010 = queryRows(
+		`SELECT id, category_id, name, description, price, sort_order, is_available
+		FROM menu_items ORDER BY id`,
+	);
+	const groupsBefore0010 = queryRows(
+		`SELECT id, menu_item_id, name, selection_type, is_required, sort_order, is_active
+		FROM modifier_groups ORDER BY id`,
+	);
+	const optionsBefore0010 = queryRows(
+		`SELECT id, modifier_group_id, name, price_delta, sort_order, is_active
+		FROM modifier_options ORDER BY id`,
+	);
+	const ordersBefore0010 = queryRows(
+		`SELECT id, order_number, status, total_amount, estimated_ready_at, created_at,
+			accepted_at, completed_at, rejected_at, special_order, idempotency_key,
+			request_fingerprint
+		FROM orders ORDER BY id`,
+	);
+	const orderItemsBefore0010 = queryRows(
+		`SELECT id, order_id, menu_item_id, item_name, unit_price, quantity, line_total, sort_order
+		FROM order_items ORDER BY id`,
+	);
+	const orderModifiersBefore0010 = queryRows(
+		`SELECT id, order_item_id, modifier_option_id, modifier_group_name,
+			modifier_option_name, price_delta, sort_order
+		FROM order_item_modifiers ORDER BY id`,
+	);
+	const subscriptionBefore0010 = queryRows(
+		`SELECT id, length(endpoint) > 0 AS has_endpoint, length(p256dh) > 0 AS has_p256dh,
+			length(auth) > 0 AS has_auth, created_at, updated_at, last_success_at, last_failure_at
+		FROM merchant_push_subscriptions ORDER BY id`,
+	);
+	const pushDeliveryBefore0010 = queryRows(
+		`SELECT id, order_id, event_type, status, attempt_count, last_error,
+			created_at, sent_at, last_attempt_at
+		FROM web_push_notification_deliveries ORDER BY id`,
+	);
+
+	copyFileSync(migration0010Path, join(migrationsDirectory, migration0010));
+	runWrangler(["d1", "migrations", "apply", database]);
+
+	const historyAfter0010 = queryRows("SELECT id, name FROM d1_migrations ORDER BY id");
+	if (historyAfter0010.length !== 10 || historyAfter0010.at(-1)?.name !== migration0010) {
+		throw new Error(`Migration 0010 was not recorded: ${JSON.stringify(historyAfter0010)}`);
+	}
+
+	const storeColumns = queryRows("PRAGMA table_info(store_settings)").map((column) => column.name);
+	const storeEventSql = firstResult(
+		runWrangler(
+			[
+				"d1",
+				"execute",
+				database,
+				"--json",
+				"--command",
+				"SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'store_state_events'",
+			],
+			true,
+		),
+	)?.sql;
+	const storeEventIndexCount = firstResult(
+		runWrangler(
+			[
+				"d1",
+				"execute",
+				database,
+				"--json",
+				"--command",
+				`SELECT COUNT(*) AS count FROM sqlite_master
+				WHERE type = 'index' AND name = 'store_state_events_created_idx'`,
+			],
+			true,
+		),
+	)?.count;
+	const storeAfter0010 = queryRows(
+		`SELECT id, display_name, is_accepting_orders, base_prep_minutes,
+			normal_order_minutes, special_extra_minutes, state_version
+		FROM store_settings ORDER BY id`,
+	);
+	if (
+		!storeColumns.includes("state_version") ||
+		!String(storeEventSql).includes("operation_id TEXT NOT NULL UNIQUE") ||
+		!String(storeEventSql).includes("outcome IN ('applied', 'already_target', 'stale')") ||
+		storeEventIndexCount !== 1
+	) {
+		throw new Error("Migration 0010 Store state version or audit constraints are incomplete");
+	}
+	assertExact(
+		storeAfter0010,
+		storeBefore0010.map((row) => ({ ...row, state_version: 0 })),
+		"Store settings",
+	);
+	assertExact(
+		queryRows("SELECT id, name, sort_order, is_active FROM menu_categories ORDER BY id"),
+		categoriesBefore0010,
+		"Menu categories",
+	);
+	assertExact(
+		queryRows(
+			`SELECT id, category_id, name, description, price, sort_order, is_available
+			FROM menu_items ORDER BY id`,
+		),
+		menuItemsBefore0010,
+		"Menu items",
+	);
+	assertExact(
+		queryRows(
+			`SELECT id, menu_item_id, name, selection_type, is_required, sort_order, is_active
+			FROM modifier_groups ORDER BY id`,
+		),
+		groupsBefore0010,
+		"Modifier groups",
+	);
+	assertExact(
+		queryRows(
+			`SELECT id, modifier_group_id, name, price_delta, sort_order, is_active
+			FROM modifier_options ORDER BY id`,
+		),
+		optionsBefore0010,
+		"Modifier options",
+	);
+	assertExact(
+		queryRows(
+			`SELECT id, order_number, status, total_amount, estimated_ready_at, created_at,
+				accepted_at, completed_at, rejected_at, special_order, idempotency_key,
+				request_fingerprint
+			FROM orders ORDER BY id`,
+		),
+		ordersBefore0010,
+		"Historical Orders",
+	);
+	assertExact(
+		queryRows(
+			`SELECT id, order_id, menu_item_id, item_name, unit_price, quantity, line_total, sort_order
+			FROM order_items ORDER BY id`,
+		),
+		orderItemsBefore0010,
+		"Historical Order items",
+	);
+	assertExact(
+		queryRows(
+			`SELECT id, order_item_id, modifier_option_id, modifier_group_name,
+				modifier_option_name, price_delta, sort_order
+			FROM order_item_modifiers ORDER BY id`,
+		),
+		orderModifiersBefore0010,
+		"Historical Order modifiers",
+	);
+	assertExact(
+		queryRows(
+			`SELECT id, length(endpoint) > 0 AS has_endpoint, length(p256dh) > 0 AS has_p256dh,
+				length(auth) > 0 AS has_auth, created_at, updated_at, last_success_at, last_failure_at
+			FROM merchant_push_subscriptions ORDER BY id`,
+		),
+		subscriptionBefore0010,
+		"Historical Push subscriptions",
+	);
+	assertExact(
+		queryRows(
+			`SELECT id, order_id, event_type, status, attempt_count, last_error,
+				created_at, sent_at, last_attempt_at
+			FROM web_push_notification_deliveries ORDER BY id`,
+		),
+		pushDeliveryBefore0010,
+		"Historical Web Push deliveries",
+	);
+	assertExact(queryRows("SELECT COUNT(*) AS count FROM store_state_events"), [{ count: 0 }], "Store audit fixtures");
+
 	assertExact(
 		queryRows("SELECT id, recipient_user_id, paired_at, updated_at FROM line_merchant_binding ORDER BY id"),
 		bindingBefore,
@@ -424,7 +621,7 @@ try {
 	runWrangler(["d1", "migrations", "apply", database]);
 	assertExact(
 		queryRows("SELECT id, name FROM d1_migrations ORDER BY id"),
-		historyAfter,
+		historyAfter0010,
 		"Second migration apply history",
 	);
 
@@ -439,7 +636,7 @@ try {
 	}
 
 	console.log(
-		"Migration 0009 upgrade PASS: real migrations stopped at 0008, the historical LINE delivery schema/rows remained exact, additive Push intent/subscription tables and DB uniqueness exist without fixtures, and a second apply left migration history unchanged at 0009.",
+		"Migration 0009 to 0010 upgrade PASS: Store state_version defaulted to zero, the additive audit schema has no fixtures, historical Store/Menu/Order/LINE/Web Push data remained exact, a second apply left migration history unchanged at 0010, and quick_check passed.",
 	);
 } finally {
 	const resolvedScenario = resolve(scenarioRoot);

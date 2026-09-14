@@ -165,14 +165,20 @@ describe("GET /api/orders/by-token/:token", () => {
 		);
 		await exports.default.fetch(
 			"https://example.com/api/merchant/orders/transition-order/accept",
-			{ method: "POST" },
+			{
+				method: "POST",
+				headers: { Origin: "https://example.com", "Sec-Fetch-Site": "same-origin" },
+			},
 		);
 		const accepted = await exports.default.fetch(
 			`https://example.com/api/orders/by-token/${lookupToken("transition-order")}`,
 		);
 		await exports.default.fetch(
 			"https://example.com/api/merchant/orders/transition-order/complete",
-			{ method: "POST" },
+			{
+				method: "POST",
+				headers: { Origin: "https://example.com", "Sec-Fetch-Site": "same-origin" },
+			},
 		);
 		const completed = await exports.default.fetch(
 			`https://example.com/api/orders/by-token/${lookupToken("transition-order")}`,

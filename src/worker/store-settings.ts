@@ -5,6 +5,7 @@ export type StoreSettingsRow = {
 	base_prep_minutes: number;
 	normal_order_minutes: number;
 	special_extra_minutes: number;
+	state_version: number;
 };
 
 export async function getStoreSettings(db: D1Database) {
@@ -16,7 +17,8 @@ export async function getStoreSettings(db: D1Database) {
 				is_accepting_orders,
 				base_prep_minutes,
 				normal_order_minutes,
-				special_extra_minutes
+				special_extra_minutes,
+				state_version
 			FROM store_settings
 			WHERE id = 1`,
 		)

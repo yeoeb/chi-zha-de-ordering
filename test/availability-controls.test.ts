@@ -26,6 +26,8 @@ beforeEach(async () => {
 		env.DB.prepare("DELETE FROM order_items"),
 		env.DB.prepare("DELETE FROM orders"),
 		env.DB.prepare("UPDATE store_settings SET is_accepting_orders = 1 WHERE id = 1"),
+		env.DB.prepare("UPDATE store_settings SET state_version = 0 WHERE id = 1"),
+		env.DB.prepare("DELETE FROM store_state_events"),
 		env.DB.prepare("UPDATE menu_items SET is_available = 1 WHERE id = 1"),
 		env.DB.prepare("UPDATE menu_items SET is_available = 0 WHERE id = 2"),
 	]);
@@ -55,7 +57,27 @@ function postOrder(idempotencyKey: string) {
 }
 
 function postAction(path: string) {
-	return exports.default.fetch(`https://example.com${path}`, { method: "POST" });
+	return exports.default.fetch(`https://example.com${path}`, {
+		method: "POST",
+		headers: { Origin: "https://example.com", "Sec-Fetch-Site": "same-origin" },
+	});
+}
+
+function postStore(
+	action: "pause" | "resume",
+	operationId: string,
+	expectedIsAcceptingOrders: boolean,
+	expectedStateVersion: number,
+) {
+	return exports.default.fetch(`https://example.com/api/merchant/store/${action}`, {
+		method: "POST",
+		headers: {
+			"content-type": "application/json",
+			Origin: "https://example.com",
+			"Sec-Fetch-Site": "same-origin",
+		},
+		body: JSON.stringify({ operationId, expectedIsAcceptingOrders, expectedStateVersion }),
+	});
 }
 
 async function getMenuItem(itemId: number) {
@@ -150,11 +172,17 @@ describe("Merchant store availability", () => {
 		const initialStore = await exports.default.fetch("https://example.com/api/store");
 		expect(await initialStore.json()).toMatchObject({ is_accepting_orders: true });
 
-		const pause = await postAction("/api/merchant/store/pause");
-		const repeatedPause = await postAction("/api/merchant/store/pause");
+		const pause = await postStore("pause", "00000000-0000-4000-8000-000000000001", true, 0);
+		const repeatedPause = await postStore(
+			"pause",
+			"00000000-0000-4000-8000-000000000001",
+			true,
+			0,
+		);
 		expect(pause.status).toBe(200);
 		expect(repeatedPause.status).toBe(200);
-		expect(await pause.json()).toMatchObject({ store: { is_accepting_orders: false } });
+		expect(await pause.json()).toMatchObject({ outcome: "APPLIED", store: { is_accepting_orders: false } });
+		expect(await repeatedPause.json()).toMatchObject({ outcome: "IDEMPOTENT_REPLAY" });
 		const pausedStore = await exports.default.fetch("https://example.com/api/store");
 		expect(await pausedStore.json()).toMatchObject({ is_accepting_orders: false });
 		expect((await getMenuItem(1)).response.status).toBe(200);
@@ -180,11 +208,17 @@ describe("Merchant store availability", () => {
 		expect(await customerOrder.json()).toMatchObject({ order: { status: "completed" } });
 
 		await postAction("/api/merchant/menu-items/1/sold-out");
-		const resume = await postAction("/api/merchant/store/resume");
-		const repeatedResume = await postAction("/api/merchant/store/resume");
+		const resume = await postStore("resume", "00000000-0000-4000-8000-000000000002", false, 1);
+		const repeatedResume = await postStore(
+			"resume",
+			"00000000-0000-4000-8000-000000000002",
+			false,
+			1,
+		);
 		expect(resume.status).toBe(200);
 		expect(repeatedResume.status).toBe(200);
-		expect(await resume.json()).toMatchObject({ store: { is_accepting_orders: true } });
+		expect(await resume.json()).toMatchObject({ outcome: "APPLIED", store: { is_accepting_orders: true } });
+		expect(await repeatedResume.json()).toMatchObject({ outcome: "IDEMPOTENT_REPLAY" });
 		expect((await getMenuItem(1)).item?.isAvailable).toBe(false);
 		expect((await postQuote()).status).toBe(422);
 
@@ -206,7 +240,7 @@ describe("Stale customer revalidation", () => {
 
 	it("rejects Order creation when the store pauses after Quote", async () => {
 		expect((await postQuote()).status).toBe(200);
-		await postAction("/api/merchant/store/pause");
+		await postStore("pause", "00000000-0000-4000-8000-000000000003", true, 0);
 
 		const response = await postOrder("stale-paused-store");
 		expect(response.status).toBe(409);

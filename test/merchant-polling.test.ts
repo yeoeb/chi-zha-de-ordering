@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { findNewPendingOrderIds } from "../src/react-app/merchant-polling";
+import {
+	findNewPendingOrderIds,
+	selectNewestStoreSnapshot,
+} from "../src/react-app/merchant-polling";
 
 describe("Merchant Order polling discovery", () => {
 	it("seeds the seen set without alerting on the initial load", () => {
@@ -18,5 +21,17 @@ describe("Merchant Order polling discovery", () => {
 		expect(findNewPendingOrderIds(seen, orders, true)).toEqual(["new"]);
 		seen.add("new");
 		expect(findNewPendingOrderIds(seen, orders, true)).toEqual([]);
+	});
+});
+
+describe("Merchant Store polling revision", () => {
+	it("keeps the newest authoritative state version", () => {
+		const current = { is_accepting_orders: false, stateVersion: 3 };
+		expect(
+			selectNewestStoreSnapshot(current, { is_accepting_orders: true, stateVersion: 2 }),
+		).toBe(current);
+		expect(
+			selectNewestStoreSnapshot(current, { is_accepting_orders: true, stateVersion: 4 }),
+		).toEqual({ is_accepting_orders: true, stateVersion: 4 });
 	});
 });

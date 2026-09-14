@@ -1,6 +1,4 @@
-import { getStoreSettings } from "./store-settings";
-
-type AvailabilityControlErrorCode = "MENU_ITEM_NOT_FOUND" | "STORE_SETTINGS_NOT_FOUND";
+type AvailabilityControlErrorCode = "MENU_ITEM_NOT_FOUND";
 
 export class AvailabilityControlError extends Error {
 	constructor(
@@ -46,26 +44,5 @@ export async function setMenuItemAvailability(
 		id: item.id,
 		name: item.name,
 		isAvailable: Boolean(item.isAvailable),
-	};
-}
-
-export async function setStoreAcceptingOrders(db: D1Database, isAcceptingOrders: boolean) {
-	await db
-		.prepare("UPDATE store_settings SET is_accepting_orders = ? WHERE id = 1")
-		.bind(isAcceptingOrders ? 1 : 0)
-		.run();
-	const store = await getStoreSettings(db);
-
-	if (!store) {
-		throw new AvailabilityControlError(
-			404,
-			"STORE_SETTINGS_NOT_FOUND",
-			"Store settings not found",
-		);
-	}
-
-	return {
-		...store,
-		is_accepting_orders: Boolean(store.is_accepting_orders),
 	};
 }

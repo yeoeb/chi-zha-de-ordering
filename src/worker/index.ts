@@ -1,4 +1,4 @@
-import { Hono } from "hono";
+import { Hono, type Context } from "hono";
 import {
 	CheckoutQuoteError,
 	parseCheckoutQuoteRequest,
@@ -20,7 +20,6 @@ import {
 import {
 	AvailabilityControlError,
 	setMenuItemAvailability,
-	setStoreAcceptingOrders,
 } from "./merchant-availability";
 import { getStoreSettings } from "./store-settings";
 import { readBoundedJson, RequestBodyError } from "./request-body";
@@ -31,10 +30,19 @@ import {
 	retryNotificationDelivery,
 } from "./notifications";
 import {
-	isMerchantRequestAllowed,
+	authenticateMerchantRequest,
+	isMerchantMutationRequestAllowed,
 	isRateLimitAllowed,
 	type SecurityBindings,
 } from "./security";
+import {
+	getStoreOperationResult,
+	parseStoreOperationRequest,
+	performStoreOperation,
+	StoreOperationError,
+	type StoreAction,
+	type StoreOperationBindings,
+} from "./store-operations";
 import {
 	createNotificationProvider,
 	getVapidPublicKey,
@@ -46,9 +54,12 @@ import {
 	type WebPushBindings,
 } from "./web-push";
 
-const app = new Hono<{
-	Bindings: Env & SecurityBindings & WebPushBindings;
-}>();
+type AppEnvironment = {
+	Bindings: Env & SecurityBindings & WebPushBindings & StoreOperationBindings;
+	Variables: { merchantActorSubject: string };
+};
+
+const app = new Hono<AppEnvironment>();
 
 type MenuRow = {
 	categoryId: number;
@@ -104,8 +115,13 @@ app.get("/api/store", async (c) => {
 	}
 
 	return c.json({
-		...store,
+		id: store.id,
+		display_name: store.display_name,
 		is_accepting_orders: Boolean(store.is_accepting_orders),
+		base_prep_minutes: store.base_prep_minutes,
+		normal_order_minutes: store.normal_order_minutes,
+		special_extra_minutes: store.special_extra_minutes,
+		stateVersion: store.state_version,
 	});
 });
 
@@ -384,8 +400,9 @@ app.get("/api/orders/by-token/:token", async (c) => {
 
 app.use("/api/merchant/*", async (c, next) => {
 	c.header("Cache-Control", "no-store");
-	const allowed = await isMerchantRequestAllowed({
+	const identity = await authenticateMerchantRequest({
 		devBypass: c.env.MERCHANT_DEV_BYPASS,
+		devActorSubject: c.env.MERCHANT_DEV_ACTOR_SUBJECT,
 		expectedHostname: c.env.MERCHANT_HOSTNAME,
 		requestUrl: c.req.url,
 		accessAudience: c.env.CF_ACCESS_AUD,
@@ -393,14 +410,29 @@ app.use("/api/merchant/*", async (c, next) => {
 		accessToken: c.req.header("Cf-Access-Jwt-Assertion"),
 	});
 
-	if (!allowed) {
+	if (!identity) {
 		return c.json(
 			{
 				error: {
-					code: "MERCHANT_ACCESS_DENIED",
+					code: "AUTH_DENIED",
 					message: "Merchant access is not authorized",
 				},
 			},
+			403,
+		);
+	}
+	c.set("merchantActorSubject", identity.subject);
+
+	if (
+		!isMerchantMutationRequestAllowed({
+			method: c.req.method,
+			expectedHostname: c.env.MERCHANT_HOSTNAME,
+			origin: c.req.header("Origin"),
+			secFetchSite: c.req.header("Sec-Fetch-Site"),
+		})
+	) {
+		return c.json(
+			{ error: { code: "ORIGIN_DENIED", message: "Merchant mutation is not authorized" } },
 			403,
 		);
 	}
@@ -512,30 +544,63 @@ app.post("/api/merchant/menu-items/:id/restore", async (c) => {
 	}
 });
 
-app.post("/api/merchant/store/pause", async (c) => {
+async function executeStoreOperation(
+	c: Context<AppEnvironment>,
+	action: StoreAction,
+) {
 	try {
-		const store = await setStoreAcceptingOrders(c.env.DB, false);
-		return c.json({ store });
+		const body = await readBoundedJson(c.req.raw);
+		const request = parseStoreOperationRequest(body, action);
+		const result = await performStoreOperation({
+			db: c.env.DB,
+			action,
+			request,
+			actorSubject: c.get("merchantActorSubject"),
+			auditActorHashKey: c.env.AUDIT_ACTOR_HASH_KEY,
+			cfRay: c.req.header("CF-Ray"),
+			workerVersion: c.env.CF_VERSION_METADATA?.id,
+		});
+		return c.json(result, result.outcome === "STALE_STATE" ? 409 : 200);
 	} catch (error) {
-		if (error instanceof AvailabilityControlError) {
+		if (error instanceof RequestBodyError || error instanceof StoreOperationError) {
+			const status = error instanceof StoreOperationError ? error.status : 400;
+			const code = error instanceof StoreOperationError ? error.code : "INVALID_REQUEST";
+			return c.json({ error: { code, message: error.message } }, status);
+		}
+		return c.json(
+			{ error: { code: "INTERNAL_ERROR", message: "Store operation failed" } },
+			500,
+		);
+	}
+}
+
+app.get("/api/merchant/store/operations/:operationId", async (c) => {
+	try {
+		const result = await getStoreOperationResult(c.env.DB, c.req.param("operationId"));
+		if (!result) {
+			return c.json(
+				{ error: { code: "OPERATION_NOT_FOUND", message: "Store operation not found" } },
+				404,
+			);
+		}
+		return c.json(result);
+	} catch (error) {
+		if (error instanceof StoreOperationError) {
 			return c.json({ error: { code: error.code, message: error.message } }, error.status);
 		}
-
-		throw error;
+		return c.json(
+			{ error: { code: "INTERNAL_ERROR", message: "Store operation lookup failed" } },
+			500,
+		);
 	}
 });
 
-app.post("/api/merchant/store/resume", async (c) => {
-	try {
-		const store = await setStoreAcceptingOrders(c.env.DB, true);
-		return c.json({ store });
-	} catch (error) {
-		if (error instanceof AvailabilityControlError) {
-			return c.json({ error: { code: error.code, message: error.message } }, error.status);
-		}
+app.post("/api/merchant/store/pause", (c) => {
+	return executeStoreOperation(c, "pause");
+});
 
-		throw error;
-	}
+app.post("/api/merchant/store/resume", (c) => {
+	return executeStoreOperation(c, "resume");
 });
 
 app.post("/api/merchant/orders/:id/accept", async (c) => {

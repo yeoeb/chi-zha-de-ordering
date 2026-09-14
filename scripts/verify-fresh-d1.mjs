@@ -62,7 +62,7 @@ try {
 			"--command",
 			`SELECT
 				(SELECT COUNT(*) FROM d1_migrations) AS migrationCount,
-				(SELECT COUNT(*) FROM store_settings WHERE id = 1 AND display_name = '吃炸的') AS storeCount,
+				(SELECT COUNT(*) FROM store_settings WHERE id = 1 AND display_name = '吃炸的' AND state_version = 0) AS storeCount,
 				(SELECT COUNT(*) FROM menu_items) AS menuItemCount,
 				(SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' AND name = 'orders_public_lookup_token_unique') AS publicTokenIndexCount,
 				(SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' AND name = 'notification_deliveries_status_idx') AS notificationStatusIndexCount,
@@ -70,13 +70,15 @@ try {
 				(SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' AND name = 'web_push_notification_deliveries_status_idx') AS pushDeliveryIndexCount,
 				(SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'merchant_push_subscriptions') AS pushSubscriptionTableCount,
 				(SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' AND name = 'merchant_push_subscriptions_updated_idx') AS pushSubscriptionIndexCount,
+				(SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'store_state_events') AS storeEventTableCount,
+				(SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' AND name = 'store_state_events_created_idx') AS storeEventIndexCount,
 				(SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'line_merchant_binding') AS lineBindingTableCount,
 				(SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'line_merchant_pairing_challenge') AS lineChallengeTableCount`,
 		], true),
 	);
 
 	if (
-		summary.migrationCount !== 9 ||
+		summary.migrationCount !== 10 ||
 		summary.storeCount !== 1 ||
 		summary.menuItemCount !== 5 ||
 		summary.publicTokenIndexCount !== 1 ||
@@ -85,6 +87,8 @@ try {
 		summary.pushDeliveryIndexCount !== 1 ||
 		summary.pushSubscriptionTableCount !== 1 ||
 		summary.pushSubscriptionIndexCount !== 1 ||
+		summary.storeEventTableCount !== 1 ||
+		summary.storeEventIndexCount !== 1 ||
 		summary.lineBindingTableCount !== 1 ||
 		summary.lineChallengeTableCount !== 1
 	) {
@@ -97,13 +101,14 @@ try {
 		database,
 		"--json",
 		"--command",
-		"SELECT name, sql FROM sqlite_master WHERE type = 'table' AND name IN ('orders', 'notification_deliveries', 'web_push_notification_deliveries') ORDER BY name",
+		"SELECT name, sql FROM sqlite_master WHERE type = 'table' AND name IN ('orders', 'notification_deliveries', 'store_state_events', 'web_push_notification_deliveries') ORDER BY name",
 	], true)?.[0]?.results;
 	const ordersSql = schemaRows?.find((row) => row.name === "orders")?.sql ?? "";
 	const notificationsSql =
 		schemaRows?.find((row) => row.name === "notification_deliveries")?.sql ?? "";
 	const pushNotificationsSql =
 		schemaRows?.find((row) => row.name === "web_push_notification_deliveries")?.sql ?? "";
+	const storeEventsSql = schemaRows?.find((row) => row.name === "store_state_events")?.sql ?? "";
 
 	if (!ordersSql.includes("idempotency_key TEXT NOT NULL UNIQUE")) {
 		throw new Error("Fresh D1 is missing the Order idempotency uniqueness constraint");
@@ -116,6 +121,9 @@ try {
 	}
 	if (!pushNotificationsSql.includes("UNIQUE (order_id, event_type)")) {
 		throw new Error("Fresh D1 is missing Web Push notification intent uniqueness");
+	}
+	if (!storeEventsSql.includes("operation_id TEXT NOT NULL UNIQUE")) {
+		throw new Error("Fresh D1 is missing Store operation idempotency uniqueness");
 	}
 
 	const columns = runWrangler([
@@ -161,6 +169,17 @@ try {
 	) {
 		throw new Error("Migration 0009 is missing additive Web Push schema or contains a forbidden write");
 	}
+	const storeAuditMigration = readFileSync(
+		join(root, "migrations", "0010_add_store_state_audit.sql"),
+		"utf8",
+	);
+	if (
+		!storeAuditMigration.includes("ADD COLUMN state_version") ||
+		!storeAuditMigration.includes("CREATE TABLE store_state_events") ||
+		destructiveMigrationPattern.test(storeAuditMigration)
+	) {
+		throw new Error("Migration 0010 is missing additive Store audit schema or contains a forbidden write");
+	}
 	const pushFixtureCounts = firstResult(
 		runWrangler([
 			"d1",
@@ -170,15 +189,36 @@ try {
 			"--command",
 			`SELECT
 				(SELECT COUNT(*) FROM web_push_notification_deliveries) AS deliveryCount,
-				(SELECT COUNT(*) FROM merchant_push_subscriptions) AS subscriptionCount`,
+				(SELECT COUNT(*) FROM merchant_push_subscriptions) AS subscriptionCount,
+				(SELECT COUNT(*) FROM store_state_events) AS storeEventCount`,
 		], true),
 	);
-	if (pushFixtureCounts.deliveryCount !== 0 || pushFixtureCounts.subscriptionCount !== 0) {
+	if (
+		pushFixtureCounts.deliveryCount !== 0 ||
+		pushFixtureCounts.subscriptionCount !== 0 ||
+		pushFixtureCounts.storeEventCount !== 0
+	) {
 		throw new Error(`Fresh D1 contains unexpected Web Push fixtures: ${JSON.stringify(pushFixtureCounts)}`);
 	}
 
+	runWrangler(["d1", "migrations", "apply", database]);
+	const secondHistory = runWrangler([
+		"d1",
+		"execute",
+		database,
+		"--json",
+		"--command",
+		"SELECT COUNT(*) AS migrationCount FROM d1_migrations",
+	], true);
+	if (firstResult(secondHistory).migrationCount !== 10) {
+		throw new Error("Second fresh D1 migration apply changed migration history");
+	}
+	if (firstResult(runWrangler(["d1", "execute", database, "--json", "--command", "PRAGMA quick_check"], true)).quick_check !== "ok") {
+		throw new Error("Fresh D1 quick_check failed");
+	}
+
 	console.log(
-		"Fresh D1 PASS: 9 sequential migrations, required store row, replaceable 5-item development seed, untouched historical LINE delivery/pairing tables, additive Web Push intent/subscription tables, and no Push fixtures verified.",
+		"Fresh D1 PASS: 10 sequential migrations, Store state version/audit constraints, idempotent second apply, required store row, replaceable development seed, untouched historical LINE tables, additive Web Push tables, no Store/Push fixtures, and quick_check verified.",
 	);
 } finally {
 	const resolvedPersistence = resolve(persistenceDirectory);

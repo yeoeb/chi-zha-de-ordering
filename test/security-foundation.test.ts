@@ -3,7 +3,9 @@ import { beforeAll, beforeEach, describe, expect, it } from "vitest";
 import app from "../src/worker/index";
 import { MAX_PUBLIC_REQUEST_BODY_BYTES } from "../src/worker/request-body";
 import {
+	authenticateMerchantRequest,
 	isMerchantRequestAllowed,
+	isMerchantMutationRequestAllowed,
 	isRateLimitAllowed,
 	type SecurityBindings,
 } from "../src/worker/security";
@@ -168,7 +170,7 @@ describe("Merchant access boundary", () => {
 		expect(response.status).toBe(403);
 		expect(response.headers.get("Cache-Control")).toContain("no-store");
 		expect(await response.json()).toMatchObject({
-			error: { code: "MERCHANT_ACCESS_DENIED" },
+			error: { code: "AUTH_DENIED" },
 		});
 	});
 
@@ -215,6 +217,105 @@ describe("Merchant access boundary", () => {
 		expect(merchantResponse.status).toBe(200);
 		expect(merchantResponse.headers.get("Cache-Control")).toContain("no-store");
 		expect(customerResponse.status).toBe(200);
+	});
+
+	it("returns only an opaque verified Access subject for audit hashing", async () => {
+		await expect(
+			authenticateMerchantRequest({
+				expectedHostname: "merchant.example.com",
+				requestUrl: "https://merchant.example.com/api/merchant/orders",
+				accessAudience: "merchant-aud",
+				accessTeamDomain: "https://team.cloudflareaccess.com",
+				accessToken: "signed-token",
+				verifyAccessIdentity: async () => ({ subject: "opaque-subject" }),
+			}),
+		).resolves.toEqual({ subject: "opaque-subject" });
+	});
+});
+
+describe("Merchant mutation origin boundary", () => {
+	const body = JSON.stringify({
+		operationId: "00000000-0000-4000-8000-000000000100",
+		expectedIsAcceptingOrders: false,
+		expectedStateVersion: 0,
+	});
+
+	beforeEach(async () => {
+		await env.DB.batch([
+			env.DB.prepare("DELETE FROM store_state_events"),
+			env.DB.prepare(
+				"UPDATE store_settings SET is_accepting_orders = 0, state_version = 0 WHERE id = 1",
+			),
+		]);
+	});
+
+	it("allows read methods without mutation headers", () => {
+		for (const method of ["GET", "HEAD", "OPTIONS"]) {
+			expect(isMerchantMutationRequestAllowed({ method })).toBe(true);
+		}
+	});
+
+	it.each([
+		["missing Origin", { "Sec-Fetch-Site": "same-origin" }],
+		["null Origin", { Origin: "null", "Sec-Fetch-Site": "same-origin" }],
+		["malformed Origin", { Origin: "not a url", "Sec-Fetch-Site": "same-origin" }],
+		["cross origin", { Origin: "https://evil.example", "Sec-Fetch-Site": "same-origin" }],
+		["hostname suffix attack", { Origin: "https://example.com.evil.example", "Sec-Fetch-Site": "same-origin" }],
+		["insecure scheme", { Origin: "http://example.com", "Sec-Fetch-Site": "same-origin" }],
+		["missing Fetch Metadata", { Origin: "https://example.com" }],
+		["cross-site Fetch Metadata", { Origin: "https://example.com", "Sec-Fetch-Site": "cross-site" }],
+		[
+			"forged Referer",
+			{ Origin: "https://evil.example", Referer: "https://example.com/merchant", "Sec-Fetch-Site": "same-origin" },
+		],
+	])("rejects %s without a D1 side effect", async (_label, headers) => {
+		const response = await exports.default.fetch("https://example.com/api/merchant/store/resume", {
+			method: "POST",
+			headers: { "Content-Type": "application/json", ...headers },
+			body,
+		});
+		const state = await env.DB.prepare(
+			`SELECT is_accepting_orders, state_version,
+				(SELECT COUNT(*) FROM store_state_events) AS event_count
+			FROM store_settings WHERE id = 1`,
+		).first<Record<string, number>>();
+
+		expect(response.status).toBe(403);
+		expect(await response.json()).toMatchObject({ error: { code: "ORIGIN_DENIED" } });
+		expect(state).toEqual({ is_accepting_orders: 0, state_version: 0, event_count: 0 });
+	});
+
+	it("accepts only the exact configured HTTPS origin and same-origin Fetch Metadata", () => {
+		expect(
+			isMerchantMutationRequestAllowed({
+				method: "POST",
+				expectedHostname: "example.com",
+				origin: "https://example.com",
+				secFetchSite: "same-origin",
+			}),
+		).toBe(true);
+	});
+
+	it("does not let a valid Access identity bypass the mutation Origin boundary", async () => {
+		const identity = await authenticateMerchantRequest({
+			devBypass: "false",
+			expectedHostname: "merchant.example.com",
+			requestUrl: "https://merchant.example.com/api/merchant/store/resume",
+			accessAudience: "audience-id",
+			accessTeamDomain: "https://team.cloudflareaccess.com",
+			accessToken: "signed-token",
+			verifyAccessIdentity: async () => ({ subject: "opaque-subject" }),
+		});
+
+		expect(identity).toEqual({ subject: "opaque-subject" });
+		expect(
+			isMerchantMutationRequestAllowed({
+				method: "POST",
+				expectedHostname: "merchant.example.com",
+				origin: "https://evil.example",
+				secFetchSite: "same-origin",
+			}),
+		).toBe(false);
 	});
 });
 

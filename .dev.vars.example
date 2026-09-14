@@ -1,6 +1,10 @@
 # Copy to .dev.vars for local Merchant API/UI access. Never set this bypass in production.
 MERCHANT_DEV_BYPASS=true
+MERCHANT_DEV_ACTOR_SUBJECT=local-development-merchant
 PUBLIC_WRITE_RATE_LIMIT_DEV_BYPASS=true
+
+# Generate a local-only value of at least 32 bytes. Production uses a Worker secret binding.
+# AUDIT_ACTOR_HASH_KEY=replace-with-local-random-value-at-least-32-bytes
 
 # Optional local Web Push configuration. Generate development-only VAPID keys outside Git.
 # VAPID_PUBLIC_KEY=development-public-key

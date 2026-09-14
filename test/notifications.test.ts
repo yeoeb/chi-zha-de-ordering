@@ -47,6 +47,10 @@ beforeAll(async () => {
 
 beforeEach(async () => {
 	await env.DB.batch([
+		env.DB.prepare("DELETE FROM store_state_events"),
+		env.DB.prepare(
+			"UPDATE store_settings SET is_accepting_orders = 1, state_version = 0 WHERE id = 1",
+		),
 		env.DB.prepare("DELETE FROM merchant_push_subscriptions"),
 		env.DB.prepare("DELETE FROM web_push_notification_deliveries"),
 		env.DB.prepare("DELETE FROM notification_deliveries"),
@@ -67,6 +71,9 @@ function toNotification(order: OrderSnapshot) {
 
 describe("durable new Order notification intent", () => {
 	it("creates a web_push intent and records provider success", async () => {
+		const storeBefore = await env.DB.prepare(
+			"SELECT is_accepting_orders, state_version FROM store_settings WHERE id = 1",
+		).first();
 		const result = await createOrder(env.DB, orderRequest, "push-success", fixedNow);
 		if (result.replayed) throw new Error("Expected a new Order");
 		const provider = new FakeNotificationProvider();
@@ -84,6 +91,11 @@ describe("durable new Order notification intent", () => {
 			)
 			.bind(result.order.id)
 			.first();
+		const storeAfter = await env.DB.prepare(
+			`SELECT is_accepting_orders, state_version,
+				(SELECT COUNT(*) FROM store_state_events) AS event_count
+			FROM store_settings WHERE id = 1`,
+		).first<Record<string, unknown>>();
 
 		expect(delivery).toEqual({ attempted: true, sent: true });
 		expect(provider.notifications).toHaveLength(1);
@@ -93,6 +105,7 @@ describe("durable new Order notification intent", () => {
 			attempt_count: 1,
 			last_error: null,
 		});
+		expect(storeAfter).toEqual({ ...storeBefore, event_count: 0 });
 	});
 
 	it("records push failure without rolling back the Order", async () => {
@@ -447,7 +460,11 @@ describe("Merchant Push subscription API", () => {
 		const request = (body: unknown) =>
 			exports.default.fetch("https://example.com/api/merchant/push/subscriptions", {
 				method: "POST",
-				headers: { "Content-Type": "application/json" },
+				headers: {
+					"Content-Type": "application/json",
+					Origin: "https://example.com",
+					"Sec-Fetch-Site": "same-origin",
+				},
 				body: JSON.stringify(body),
 			});
 		const first = await request(subscription);
@@ -472,7 +489,11 @@ describe("Merchant Push subscription API", () => {
 				"https://example.com/api/merchant/push/subscriptions",
 				{
 					method: "DELETE",
-					headers: { "Content-Type": "application/json" },
+					headers: {
+						"Content-Type": "application/json",
+						Origin: "https://example.com",
+						"Sec-Fetch-Site": "same-origin",
+					},
 					body: JSON.stringify({ endpoint: subscription.endpoint }),
 				},
 			);
@@ -487,6 +508,7 @@ describe("Merchant Push subscription API", () => {
 		});
 		const pairing = await exports.default.fetch("https://example.com/api/merchant/line/pairing", {
 			method: "POST",
+			headers: { Origin: "https://example.com", "Sec-Fetch-Site": "same-origin" },
 		});
 		const status = await exports.default.fetch("https://example.com/api/merchant/line/status");
 

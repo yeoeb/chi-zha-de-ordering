@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { findNewPendingOrderIds } from "./merchant-polling";
+import { findNewPendingOrderIds, selectNewestStoreSnapshot } from "./merchant-polling";
 
 type MerchantOrder = {
 	id: string;
@@ -43,6 +43,16 @@ type MerchantNotificationsResponse = {
 type StoreSettings = {
 	display_name: string;
 	is_accepting_orders: boolean;
+	stateVersion: number;
+};
+
+type StoreOperationResult = {
+	operationId: string;
+	action: "pause" | "resume";
+	outcome: "APPLIED" | "IDEMPOTENT_REPLAY" | "ALREADY_IN_TARGET_STATE" | "STALE_STATE";
+	store: { is_accepting_orders: boolean };
+	stateVersion: number;
+	createdAt: string;
 };
 
 type MerchantMenuItem = {
@@ -58,6 +68,8 @@ type MenuResponse = {
 type MerchantAction = "accept" | "reject" | "complete";
 
 const MERCHANT_REFRESH_INTERVAL_MS = 5_000;
+
+class ConclusiveStoreOperationError extends Error {}
 
 type PushState = "checking" | "unsupported" | "default" | "denied" | "enabled" | "disabled";
 
@@ -110,6 +122,9 @@ export default function MerchantView() {
 	const [isLoading, setIsLoading] = useState(true);
 	const [error, setError] = useState<string | null>(null);
 	const [processingControl, setProcessingControl] = useState<string | null>(null);
+	const [storeMutationInFlight, setStoreMutationInFlight] = useState(false);
+	const [merchantAccessHealthy, setMerchantAccessHealthy] = useState(false);
+	const [lastStoreOperation, setLastStoreOperation] = useState<StoreOperationResult | null>(null);
 	const [refreshVersion, setRefreshVersion] = useState(0);
 	const [isOnline, setIsOnline] = useState(() => navigator.onLine);
 	const [pushState, setPushState] = useState<PushState>("checking");
@@ -117,6 +132,42 @@ export default function MerchantView() {
 	const [newOrderIds, setNewOrderIds] = useState<Set<string>>(() => new Set());
 	const seenOrderIds = useRef(new Set<string>());
 	const hasCompletedInitialLoad = useRef(false);
+	const storeMutationInFlightRef = useRef(false);
+	const storeEpoch = useRef(0);
+	const newestStoreVersion = useRef(-1);
+
+	function applyStoreSnapshot(candidate: StoreSettings, epoch = storeEpoch.current) {
+		if (epoch !== storeEpoch.current || candidate.stateVersion < newestStoreVersion.current) {
+			return false;
+		}
+		newestStoreVersion.current = candidate.stateVersion;
+		setStore((current) => selectNewestStoreSnapshot(current, candidate));
+		return true;
+	}
+
+	function parseStoreSettings(value: unknown): StoreSettings {
+		if (
+			typeof value !== "object" ||
+			value === null ||
+			!("display_name" in value) ||
+			typeof value.display_name !== "string" ||
+			!("is_accepting_orders" in value) ||
+			typeof value.is_accepting_orders !== "boolean" ||
+			!("stateVersion" in value) ||
+			typeof value.stateVersion !== "number" ||
+			!Number.isSafeInteger(value.stateVersion) ||
+			value.stateVersion < 0
+		) {
+			throw new Error("Store state response is invalid");
+		}
+		return value as StoreSettings;
+	}
+
+	async function fetchAuthoritativeStore() {
+		const response = await fetch("/api/store", { cache: "no-store" });
+		if (!response.ok) throw new Error("Store state request failed");
+		return parseStoreSettings(await response.json());
+	}
 
 	useEffect(() => {
 		const markOnline = () => setIsOnline(true);
@@ -170,6 +221,7 @@ export default function MerchantView() {
 		setError(null);
 
 		async function loadMerchantData() {
+			const requestEpoch = storeEpoch.current;
 			try {
 				const [ordersResponse, notificationsResponse, storeResponse, menuResponse] = await Promise.all([
 					fetch("/api/merchant/orders", { signal: controller.signal, cache: "no-store" }),
@@ -210,12 +262,14 @@ export default function MerchantView() {
 				}
 				setOrders(ordersResult.orders);
 				setNotifications(notificationsResult.deliveries);
-				setStore(storeResult);
+				applyStoreSnapshot(parseStoreSettings(storeResult), requestEpoch);
 				setMenuItems(menuResult.categories.flatMap((category) => category.items));
 				setLastSyncAt(new Date());
+				setMerchantAccessHealthy(true);
 				setError(null);
 			} catch (requestError) {
 				if (!(requestError instanceof Error && requestError.name === "AbortError")) {
+					setMerchantAccessHealthy(false);
 					setError("目前無法載入訂單，請稍後再試。");
 				}
 			} finally {
@@ -349,6 +403,173 @@ export default function MerchantView() {
 		}
 	}
 
+	async function readStoreOperation(operationId: string) {
+		const response = await fetch(
+			`/api/merchant/store/operations/${encodeURIComponent(operationId)}`,
+			{ cache: "no-store" },
+		);
+		if (response.status === 404) return null;
+		if (!response.ok) throw new Error("Store operation lookup failed");
+		return parseStoreOperationResult(await response.json(), operationId, "pause");
+	}
+
+	function parseStoreOperationResult(
+		value: unknown,
+		operationId: string,
+		action: "pause" | "resume",
+	): StoreOperationResult {
+		if (
+			typeof value !== "object" ||
+			value === null ||
+			!("operationId" in value) ||
+			value.operationId !== operationId ||
+			!("action" in value) ||
+			value.action !== action ||
+			!("outcome" in value) ||
+			!["APPLIED", "IDEMPOTENT_REPLAY", "ALREADY_IN_TARGET_STATE", "STALE_STATE"].includes(
+				String(value.outcome),
+			) ||
+			!("store" in value) ||
+			typeof value.store !== "object" ||
+			value.store === null ||
+			!("is_accepting_orders" in value.store) ||
+			typeof value.store.is_accepting_orders !== "boolean" ||
+			!("stateVersion" in value) ||
+			typeof value.stateVersion !== "number" ||
+			!Number.isSafeInteger(value.stateVersion) ||
+			value.stateVersion < 0 ||
+			!("createdAt" in value) ||
+			typeof value.createdAt !== "string"
+		) {
+			throw new Error("Store operation response was invalid");
+		}
+		return value as StoreOperationResult;
+	}
+
+	async function postStoreOperation(
+		action: "pause" | "resume",
+		operationId: string,
+		expected: StoreSettings,
+	) {
+		const response = await fetch(`/api/merchant/store/${action}`, {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({
+				operationId,
+				expectedIsAcceptingOrders: action === "pause",
+				expectedStateVersion: expected.stateVersion,
+			}),
+		});
+		let body: unknown;
+		try {
+			body = await response.json();
+		} catch {
+			throw new Error("Store operation response was not conclusive");
+		}
+		if ([400, 403].includes(response.status)) {
+			throw new ConclusiveStoreOperationError("Store operation was denied");
+		}
+		if (
+			response.status === 409 &&
+			typeof body === "object" &&
+			body !== null &&
+			"error" in body
+		) {
+			throw new ConclusiveStoreOperationError("Store operation conflicted");
+		}
+		if (![200, 409].includes(response.status)) {
+			throw new Error("Store operation response was not conclusive");
+		}
+		return parseStoreOperationResult(body, operationId, action);
+	}
+
+	function applyOperationResult(result: StoreOperationResult) {
+		setLastStoreOperation(result);
+	}
+
+	async function refreshStoreAfterOperation() {
+		const authoritative = await fetchAuthoritativeStore();
+		if (!applyStoreSnapshot(authoritative)) {
+			throw new Error("Store state response was stale");
+		}
+		setLastSyncAt(new Date());
+		return authoritative;
+	}
+
+	async function recoverAmbiguousPause(operationId: string, expected: StoreSettings) {
+		const existing = await readStoreOperation(operationId);
+		if (existing) {
+			if (existing.action !== "pause") throw new Error("Store operation ID conflict");
+			applyOperationResult(existing);
+			await refreshStoreAfterOperation();
+			return;
+		}
+
+		const authoritative = await refreshStoreAfterOperation();
+		if (!authoritative.is_accepting_orders) return;
+		const replay = await postStoreOperation("pause", operationId, expected);
+		applyOperationResult(replay);
+		await refreshStoreAfterOperation();
+	}
+
+	async function pauseStore() {
+		if (storeMutationInFlightRef.current || !store?.is_accepting_orders) return;
+		storeMutationInFlightRef.current = true;
+		setStoreMutationInFlight(true);
+		setError(null);
+		storeEpoch.current += 1;
+		const expected = store;
+		const operationId = crypto.randomUUID();
+
+		try {
+			try {
+				const result = await postStoreOperation("pause", operationId, expected);
+				applyOperationResult(result);
+				await refreshStoreAfterOperation();
+			} catch (operationError) {
+				if (operationError instanceof ConclusiveStoreOperationError) throw operationError;
+				await recoverAmbiguousPause(operationId, expected);
+			}
+		} catch {
+			setError("暫停接單結果不明，請查看最新店家狀態；系統不會建立新的操作編號。");
+		} finally {
+			storeMutationInFlightRef.current = false;
+			setStoreMutationInFlight(false);
+		}
+	}
+
+	async function resumeStore() {
+		if (storeMutationInFlightRef.current || !merchantAccessHealthy) return;
+		storeMutationInFlightRef.current = true;
+		setStoreMutationInFlight(true);
+		setError(null);
+		storeEpoch.current += 1;
+
+		try {
+			const fresh = await fetchAuthoritativeStore();
+			if (!applyStoreSnapshot(fresh)) throw new Error("Store state response was stale");
+			const freshSyncAt = new Date();
+			setLastSyncAt(freshSyncAt);
+			if (fresh.is_accepting_orders) return;
+			const lastSync = formatDateTime(freshSyncAt.toISOString());
+			const confirmed = window.confirm(
+				`即將公開接受真人訂單。\n目前狀態：暫停接單\n最後同步：${lastSync}\n需要停止時，請立即使用「暫停接單」。`,
+			);
+			if (!confirmed) return;
+
+			const operationId = crypto.randomUUID();
+			const result = await postStoreOperation("resume", operationId, fresh);
+			applyOperationResult(result);
+			await refreshStoreAfterOperation();
+		} catch {
+			setError("無法安全確認接單狀態，恢復接單已停止。請重新登入並重新同步。");
+			setMerchantAccessHealthy(false);
+		} finally {
+			storeMutationInFlightRef.current = false;
+			setStoreMutationInFlight(false);
+		}
+	}
+
 	async function retryNotification(deliveryId: string) {
 		setProcessingControl(`notification-${deliveryId}`);
 		setError(null);
@@ -426,28 +647,39 @@ export default function MerchantView() {
 				<section className="merchant-controls" aria-labelledby="operations-heading">
 					<h2 id="operations-heading">營運控制</h2>
 
-					<div className="store-control">
+					<div className="store-control" data-testid="store-control">
 						<div>
 							<h3>接單狀態</h3>
 							<strong className={store.is_accepting_orders ? "accepting" : "paused"}>
 								{store.is_accepting_orders ? "接單中" : "暫停接單"}
 							</strong>
 						</div>
-						<button
-							type="button"
-							disabled={processingControl !== null}
-							onClick={() =>
-								performAvailabilityAction(
-									"store",
-									store.is_accepting_orders
-										? "/api/merchant/store/pause"
-										: "/api/merchant/store/resume",
-								)
-							}
-						>
-							{store.is_accepting_orders ? "暫停接單" : "恢復接單"}
-						</button>
+						<div className="store-actions">
+							<button
+								type="button"
+								className="pause-store-button"
+								disabled={storeMutationInFlight || !store.is_accepting_orders}
+								onClick={() => void pauseStore()}
+							>
+								暫停接單
+							</button>
+							<button
+								type="button"
+								className="resume-store-button"
+								disabled={
+									storeMutationInFlight || store.is_accepting_orders || !merchantAccessHealthy
+								}
+								onClick={() => void resumeStore()}
+							>
+								恢復接單
+							</button>
+						</div>
 					</div>
+					<p className="store-sync-status">
+						權威狀態版本：{store.stateVersion}；最後同步：
+						{lastSyncAt ? formatDateTime(lastSyncAt.toISOString()) : "尚未同步"}
+						{lastStoreOperation ? `；最近操作：${lastStoreOperation.outcome}` : ""}
+					</p>
 
 					<h3 className="item-controls-heading">商品狀態</h3>
 					<ul className="item-controls">
