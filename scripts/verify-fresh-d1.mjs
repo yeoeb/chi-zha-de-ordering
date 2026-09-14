@@ -41,6 +41,30 @@ function runWrangler(arguments_, expectJson = false) {
 	return JSON.parse(result.stdout);
 }
 
+function expectWranglerFailure(arguments_, expectedMessage) {
+	const result = spawnSync(
+		process.execPath,
+		[
+			wranglerBin,
+			...arguments_,
+			"--local",
+			"--persist-to",
+			persistenceDirectory,
+			"--config",
+			join(root, "wrangler.json"),
+		],
+		{
+			cwd: root,
+			encoding: "utf8",
+			env: { ...process.env, CI: "true", NO_COLOR: "1" },
+		},
+	);
+	const output = `${result.stdout ?? ""}\n${result.stderr ?? ""}`;
+	if (result.status === 0 || !output.includes(expectedMessage)) {
+		throw new Error(`Expected Wrangler failure containing ${expectedMessage}:\n${output}`);
+	}
+}
+
 function firstResult(output) {
 	const row = output?.[0]?.results?.[0];
 	if (!row) {
@@ -199,6 +223,83 @@ try {
 		pushFixtureCounts.storeEventCount !== 0
 	) {
 		throw new Error(`Fresh D1 contains unexpected Web Push fixtures: ${JSON.stringify(pushFixtureCounts)}`);
+	}
+
+	for (const invalidVersion of ["0.5", "'not-a-version'", "-1", "9007199254740992"]) {
+		expectWranglerFailure(
+			[
+				"d1",
+				"execute",
+				database,
+				"--command",
+				`UPDATE store_settings SET state_version = ${invalidVersion} WHERE id = 1`,
+			],
+			"CHECK constraint failed",
+		);
+	}
+	runWrangler([
+		"d1",
+		"execute",
+		database,
+		"--command",
+		"UPDATE store_settings SET state_version = 9007199254740991 WHERE id = 1",
+	]);
+	const maximumVersion = firstResult(
+		runWrangler(
+			[
+				"d1",
+				"execute",
+				database,
+				"--json",
+				"--command",
+				"SELECT typeof(state_version) AS storageType, state_version AS stateVersion FROM store_settings WHERE id = 1",
+			],
+			true,
+		),
+	);
+	if (maximumVersion.storageType !== "integer" || maximumVersion.stateVersion !== Number.MAX_SAFE_INTEGER) {
+		throw new Error(`Maximum safe Store revision was not preserved: ${JSON.stringify(maximumVersion)}`);
+	}
+	runWrangler([
+		"d1",
+		"execute",
+		database,
+		"--command",
+		"UPDATE store_settings SET state_version = 0 WHERE id = 1",
+	]);
+
+	const auditBase = {
+		expected: "0",
+		from: "0",
+		to: "0",
+	};
+	for (const [column, value] of [
+		["expected_state_version", "0.5"],
+		["from_state_version", "'not-a-version'"],
+		["to_state_version", "9007199254740992"],
+	]) {
+		const versions = { ...auditBase };
+		versions[column === "expected_state_version" ? "expected" : column === "from_state_version" ? "from" : "to"] = value;
+		expectWranglerFailure(
+			[
+				"d1",
+				"execute",
+				database,
+				"--command",
+				`INSERT INTO store_state_events (
+					id, operation_id, request_fingerprint, action,
+					expected_accepting, expected_state_version,
+					from_accepting, to_accepting, from_state_version, to_state_version,
+					outcome, actor_subject_hash, created_at
+				) VALUES (
+					'probe-${column}', '00000000-0000-4000-8000-000000000001',
+					'${"a".repeat(64)}', 'resume', 0, ${versions.expected},
+					0, 0, ${versions.from}, ${versions.to}, 'stale', '${"b".repeat(64)}',
+					'2026-09-15T00:00:00.000Z'
+				)`,
+			],
+			"CHECK constraint failed",
+		);
 	}
 
 	runWrangler(["d1", "migrations", "apply", database]);

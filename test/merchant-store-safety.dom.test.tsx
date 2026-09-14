@@ -60,6 +60,12 @@ function createFetchMock(options: MockOptions = {}) {
 				operationId: body.operationId,
 				action: "resume",
 				outcome: "APPLIED",
+				operation: {
+					outcome: "APPLIED",
+					store: { is_accepting_orders: true },
+					stateVersion: store.stateVersion,
+					createdAt: "2026-09-14T01:00:00.000Z",
+				},
 				store: { is_accepting_orders: true },
 				stateVersion: store.stateVersion,
 				createdAt: "2026-09-14T01:00:00.000Z",
@@ -72,6 +78,12 @@ function createFetchMock(options: MockOptions = {}) {
 				operationId: body.operationId,
 				action: "pause",
 				outcome: "APPLIED",
+				operation: {
+					outcome: "APPLIED",
+					store: { is_accepting_orders: false },
+					stateVersion: store.stateVersion,
+					createdAt: "2026-09-14T01:00:00.000Z",
+				},
 				store: { is_accepting_orders: false },
 				stateVersion: store.stateVersion,
 				createdAt: "2026-09-14T01:00:00.000Z",
@@ -187,6 +199,12 @@ describe("Merchant Store safety DOM", () => {
 					operationId: operation,
 					action: "pause",
 					outcome: "APPLIED",
+					operation: {
+						outcome: "APPLIED",
+						store: { is_accepting_orders: false },
+						stateVersion: 10,
+						createdAt: "2026-09-14T01:00:00.000Z",
+					},
 					store: { is_accepting_orders: false },
 					stateVersion: 10,
 					createdAt: "2026-09-14T01:00:00.000Z",
@@ -207,6 +225,158 @@ describe("Merchant Store safety DOM", () => {
 		expect(bodies).toEqual([
 			{ operationId: operation, expectedIsAcceptingOrders: true, expectedStateVersion: 9 },
 			{ operationId: operation, expectedIsAcceptingOrders: true, expectedStateVersion: 9 },
+		]);
+		expect(crypto.randomUUID).toHaveBeenCalledOnce();
+	});
+
+	it("accepts an existing ambiguous Pause operation only after the Store is authoritatively paused", async () => {
+		const operation = "20000000-0000-4000-8000-000000000010";
+		vi.mocked(crypto.randomUUID).mockReturnValue(operation);
+		let store: StoreState = {
+			display_name: "吃炸的",
+			is_accepting_orders: true,
+			stateVersion: 10,
+		};
+		const mock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+			const url = requestUrl(input);
+			const method = requestMethod(input, init);
+			if (url === "/api/merchant/orders") return json({ orders: [] });
+			if (url === "/api/merchant/notifications") return json({ deliveries: [] });
+			if (url === "/api/menu") return json({ categories: [] });
+			if (url === "/api/store") return json(store);
+			if (url === `/api/merchant/store/operations/${operation}`) {
+				store = { ...store, is_accepting_orders: false, stateVersion: 11 };
+				return json({
+					operationId: operation,
+					action: "pause",
+					outcome: "IDEMPOTENT_REPLAY",
+					operation: {
+						outcome: "APPLIED",
+						store: { is_accepting_orders: false },
+						stateVersion: 11,
+						createdAt: "2026-09-14T01:00:00.000Z",
+					},
+					store: { is_accepting_orders: false },
+					stateVersion: 11,
+					createdAt: "2026-09-14T01:00:00.000Z",
+				});
+			}
+			if (url === "/api/merchant/store/pause" && method === "POST") {
+				throw new TypeError("connection interrupted");
+			}
+			throw new Error(`Unexpected request: ${method} ${url}`);
+		});
+		vi.stubGlobal("fetch", mock);
+		render(<MerchantView />);
+		await screen.findByTestId("store-control");
+
+		await userEvent.click(button(".pause-store-button"));
+
+		await waitFor(() => expect(button(".resume-store-button").disabled).toBe(false));
+		expect(callsTo(mock, "/api/merchant/store/pause", "POST")).toHaveLength(1);
+		expect(screen.queryByRole("alert")).toBeNull();
+		expect(crypto.randomUUID).toHaveBeenCalledOnce();
+	});
+
+	it("does not trust an existing Pause operation when the Store is currently accepting", async () => {
+		const operation = "20000000-0000-4000-8000-000000000011";
+		vi.mocked(crypto.randomUUID).mockReturnValue(operation);
+		const store: StoreState = {
+			display_name: "吃炸的",
+			is_accepting_orders: true,
+			stateVersion: 12,
+		};
+		const mock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+			const url = requestUrl(input);
+			const method = requestMethod(input, init);
+			if (url === "/api/merchant/orders") return json({ orders: [] });
+			if (url === "/api/merchant/notifications") return json({ deliveries: [] });
+			if (url === "/api/menu") return json({ categories: [] });
+			if (url === "/api/store") return json(store);
+			if (url === `/api/merchant/store/operations/${operation}`) {
+				return json({
+					operationId: operation,
+					action: "pause",
+					outcome: "IDEMPOTENT_REPLAY",
+					operation: {
+						outcome: "APPLIED",
+						store: { is_accepting_orders: false },
+						stateVersion: 11,
+						createdAt: "2026-09-14T01:00:00.000Z",
+					},
+					store: { is_accepting_orders: true },
+					stateVersion: 12,
+					createdAt: "2026-09-14T01:00:00.000Z",
+				});
+			}
+			if (url === "/api/merchant/store/pause" && method === "POST") {
+				throw new TypeError("connection interrupted");
+			}
+			throw new Error(`Unexpected request: ${method} ${url}`);
+		});
+		vi.stubGlobal("fetch", mock);
+		render(<MerchantView />);
+		await screen.findByTestId("store-control");
+
+		await userEvent.click(button(".pause-store-button"));
+
+		const alert = await screen.findByRole("alert");
+		expect(alert.textContent).toContain("緊急");
+		expect(callsTo(mock, "/api/merchant/store/pause", "POST")).toHaveLength(1);
+		expect(button(".pause-store-button").disabled).toBe(false);
+		expect(crypto.randomUUID).toHaveBeenCalledOnce();
+	});
+
+	it("reports a high-priority error when the one allowed Pause replay still leaves the Store accepting", async () => {
+		const operation = "20000000-0000-4000-8000-000000000012";
+		vi.mocked(crypto.randomUUID).mockReturnValue(operation);
+		const store: StoreState = {
+			display_name: "吃炸的",
+			is_accepting_orders: true,
+			stateVersion: 12,
+		};
+		let pauseAttempts = 0;
+		const mock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+			const url = requestUrl(input);
+			const method = requestMethod(input, init);
+			if (url === "/api/merchant/orders") return json({ orders: [] });
+			if (url === "/api/merchant/notifications") return json({ deliveries: [] });
+			if (url === "/api/menu") return json({ categories: [] });
+			if (url === "/api/store") return json(store);
+			if (url === `/api/merchant/store/operations/${operation}`) return json({}, 404);
+			if (url === "/api/merchant/store/pause" && method === "POST") {
+				pauseAttempts += 1;
+				if (pauseAttempts === 1) throw new TypeError("connection interrupted");
+				return json({
+					operationId: operation,
+					action: "pause",
+					outcome: "IDEMPOTENT_REPLAY",
+					operation: {
+						outcome: "APPLIED",
+						store: { is_accepting_orders: false },
+						stateVersion: 11,
+						createdAt: "2026-09-14T01:00:00.000Z",
+					},
+					store: { is_accepting_orders: true },
+					stateVersion: 12,
+					createdAt: "2026-09-14T01:00:00.000Z",
+				});
+			}
+			throw new Error(`Unexpected request: ${method} ${url}`);
+		});
+		vi.stubGlobal("fetch", mock);
+		render(<MerchantView />);
+		await screen.findByTestId("store-control");
+
+		await userEvent.click(button(".pause-store-button"));
+
+		const alert = await screen.findByRole("alert");
+		expect(alert.textContent).toContain("緊急");
+		const posts = callsTo(mock, "/api/merchant/store/pause", "POST");
+		expect(posts).toHaveLength(2);
+		expect(posts.map(([, init]) => JSON.parse(String((init as RequestInit).body)).operationId)).toEqual([
+			operation,
+			operation,
 		]);
 		expect(crypto.randomUUID).toHaveBeenCalledOnce();
 	});
@@ -296,6 +466,12 @@ describe("Merchant Store safety DOM", () => {
 					operationId: body.operationId,
 					action: "pause",
 					outcome: "APPLIED",
+					operation: {
+						outcome: "APPLIED",
+						store: { is_accepting_orders: false },
+						stateVersion: 3,
+						createdAt: "2026-09-14T01:00:00.000Z",
+					},
 					store: { is_accepting_orders: false },
 					stateVersion: 3,
 					createdAt: "2026-09-14T01:00:00.000Z",
@@ -325,6 +501,63 @@ describe("Merchant Store safety DOM", () => {
 		expect(button(".pause-store-button").disabled).toBe(true);
 		expect(button(".resume-store-button").disabled).toBe(false);
 		expect(document.querySelector(".store-sync-status")?.textContent).toContain("3");
+	});
+
+	it("does not let a stale poll update Last Sync, restore access health, or clear a Store error", async () => {
+		vi.useFakeTimers({ shouldAdvanceTime: true });
+		vi.setSystemTime(new Date("2026-09-14T01:00:00.000Z"));
+		let storeCalls = 0;
+		let resolveOldPoll: ((response: Response) => void) | undefined;
+		const store: StoreState = {
+			display_name: "吃炸的",
+			is_accepting_orders: false,
+			stateVersion: 3,
+		};
+		const mock = vi.fn(async (input: RequestInfo | URL) => {
+			const url = requestUrl(input);
+			if (url === "/api/merchant/orders") return json({ orders: [] });
+			if (url === "/api/merchant/notifications") return json({ deliveries: [] });
+			if (url === "/api/menu") return json({ categories: [] });
+			if (url === "/api/store") {
+				storeCalls += 1;
+				if (storeCalls === 2) {
+					return new Promise<Response>((resolve) => {
+						resolveOldPoll = resolve;
+					});
+				}
+				if (storeCalls === 3) return json({ error: "unavailable" }, 503);
+				return json(store);
+			}
+			throw new Error(`Unexpected request: GET ${url}`);
+		});
+		vi.stubGlobal("fetch", mock);
+		render(<MerchantView />);
+		await screen.findByTestId("store-control");
+		await waitFor(() => expect(button(".resume-store-button").disabled).toBe(false));
+
+		await vi.advanceTimersByTimeAsync(5_000);
+		await waitFor(() => expect(resolveOldPoll).toBeTypeOf("function"));
+		await userEvent.click(button(".resume-store-button"), {
+			advanceTimers: vi.advanceTimersByTime,
+		});
+		const errorBefore = (await screen.findByRole("alert")).textContent;
+		const syncBefore = document.querySelector(".store-sync-status")?.textContent;
+		expect(button(".resume-store-button").disabled).toBe(true);
+
+		vi.setSystemTime(new Date("2026-09-14T02:00:00.000Z"));
+		resolveOldPoll?.(
+			new Response(JSON.stringify(store), {
+				status: 200,
+				headers: { "content-type": "application/json" },
+			}),
+		);
+		await Promise.resolve();
+		await Promise.resolve();
+
+		expect(screen.getByRole("alert").textContent).toBe(errorBefore);
+		expect(document.querySelector(".store-sync-status")?.textContent).toBe(syncBefore);
+		expect(button(".resume-store-button").disabled).toBe(true);
+		expect(callsTo(mock, "/api/merchant/store/resume", "POST")).toHaveLength(0);
 	});
 
 	it("disables Resume after a Merchant access polling failure", async () => {

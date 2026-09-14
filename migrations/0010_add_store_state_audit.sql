@@ -1,5 +1,8 @@
 ALTER TABLE store_settings
-	ADD COLUMN state_version INTEGER NOT NULL DEFAULT 0 CHECK (state_version >= 0);
+	ADD COLUMN state_version INTEGER NOT NULL DEFAULT 0 CHECK (
+		typeof(state_version) = 'integer'
+		AND state_version BETWEEN 0 AND 9007199254740991
+	);
 
 CREATE TABLE store_state_events (
 	id TEXT PRIMARY KEY CHECK (length(trim(id)) > 0),
@@ -7,11 +10,20 @@ CREATE TABLE store_state_events (
 	request_fingerprint TEXT NOT NULL CHECK (length(request_fingerprint) = 64),
 	action TEXT NOT NULL CHECK (action IN ('pause', 'resume')),
 	expected_accepting INTEGER NOT NULL CHECK (expected_accepting IN (0, 1)),
-	expected_state_version INTEGER NOT NULL CHECK (expected_state_version >= 0),
+	expected_state_version INTEGER NOT NULL CHECK (
+		typeof(expected_state_version) = 'integer'
+		AND expected_state_version BETWEEN 0 AND 9007199254740991
+	),
 	from_accepting INTEGER NOT NULL CHECK (from_accepting IN (0, 1)),
 	to_accepting INTEGER NOT NULL CHECK (to_accepting IN (0, 1)),
-	from_state_version INTEGER NOT NULL CHECK (from_state_version >= 0),
-	to_state_version INTEGER NOT NULL CHECK (to_state_version >= 0),
+	from_state_version INTEGER NOT NULL CHECK (
+		typeof(from_state_version) = 'integer'
+		AND from_state_version BETWEEN 0 AND 9007199254740991
+	),
+	to_state_version INTEGER NOT NULL CHECK (
+		typeof(to_state_version) = 'integer'
+		AND to_state_version BETWEEN 0 AND 9007199254740991
+	),
 	outcome TEXT NOT NULL CHECK (outcome IN ('applied', 'already_target', 'stale')),
 	actor_subject_hash TEXT NOT NULL CHECK (length(actor_subject_hash) = 64),
 	cf_ray TEXT CHECK (cf_ray IS NULL OR length(trim(cf_ray)) BETWEEN 1 AND 128),

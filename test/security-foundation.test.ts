@@ -239,6 +239,57 @@ describe("Merchant mutation origin boundary", () => {
 		expectedIsAcceptingOrders: false,
 		expectedStateVersion: 0,
 	});
+	const merchantMutationRoutes = [
+		{
+			method: "POST",
+			path: "/api/merchant/push/subscriptions",
+			body: {
+				endpoint: "https://push.example.test/csrf-guard",
+				keys: { p256dh: "test-p256dh", auth: "test-auth" },
+			},
+		},
+		{
+			method: "DELETE",
+			path: "/api/merchant/push/subscriptions",
+			body: { endpoint: "https://push.example.test/csrf-guard" },
+		},
+		{ method: "POST", path: "/api/merchant/notifications/missing/retry", body: {} },
+		{ method: "POST", path: "/api/merchant/menu-items/1/sold-out", body: {} },
+		{ method: "POST", path: "/api/merchant/menu-items/1/restore", body: {} },
+		{
+			method: "POST",
+			path: "/api/merchant/store/pause",
+			body: {
+				operationId: "00000000-0000-4000-8000-000000000101",
+				expectedIsAcceptingOrders: true,
+				expectedStateVersion: 0,
+			},
+		},
+		{
+			method: "POST",
+			path: "/api/merchant/store/resume",
+			body: JSON.parse(body),
+		},
+		{ method: "POST", path: "/api/merchant/orders/missing/accept", body: {} },
+		{ method: "POST", path: "/api/merchant/orders/missing/reject", body: {} },
+		{ method: "POST", path: "/api/merchant/orders/missing/complete", body: {} },
+	] as const;
+
+	async function merchantMutationSnapshot() {
+		return env.DB.prepare(
+			`SELECT
+				(SELECT is_accepting_orders FROM store_settings WHERE id = 1) AS accepting,
+				(SELECT state_version FROM store_settings WHERE id = 1) AS stateVersion,
+				(SELECT COUNT(*) FROM store_state_events) AS storeEventCount,
+				(SELECT group_concat(id || ':' || is_available, ',') FROM menu_items) AS menuState,
+				(SELECT group_concat(id || ':' || status, ',') FROM orders) AS orderState,
+				(SELECT COUNT(*) FROM merchant_push_subscriptions) AS subscriptionCount,
+				(SELECT group_concat(id || ':' || status || ':' || attempt_count, ',')
+					FROM web_push_notification_deliveries) AS pushDeliveryState,
+				(SELECT group_concat(id || ':' || status || ':' || attempt_count, ',')
+					FROM notification_deliveries) AS historicalDeliveryState`,
+		).first<Record<string, unknown>>();
+	}
 
 	beforeEach(async () => {
 		await env.DB.batch([
@@ -316,6 +367,35 @@ describe("Merchant mutation origin boundary", () => {
 				secFetchSite: "same-origin",
 			}),
 		).toBe(false);
+	});
+
+	it.each(
+		merchantMutationRoutes.flatMap((route) => [
+			[
+				`${route.method} ${route.path}`,
+				"Origin",
+				route,
+				{ Origin: "https://evil.example", "Sec-Fetch-Site": "same-origin" },
+			],
+			[
+				`${route.method} ${route.path}`,
+				"Sec-Fetch-Site",
+				route,
+				{ Origin: "https://example.com", "Sec-Fetch-Site": "cross-site" },
+			],
+		] as const),
+	)("%s rejects an invalid %s boundary before any D1 side effect", async (_label, _boundary, route, headers) => {
+		const before = await merchantMutationSnapshot();
+		const response = await exports.default.fetch(`https://example.com${route.path}`, {
+			method: route.method,
+			headers: { "Content-Type": "application/json", ...headers },
+			body: JSON.stringify(route.body),
+		});
+		const after = await merchantMutationSnapshot();
+
+		expect(response.status).toBe(403);
+		expect(await response.json()).toMatchObject({ error: { code: "ORIGIN_DENIED" } });
+		expect(after).toEqual(before);
 	});
 });
 

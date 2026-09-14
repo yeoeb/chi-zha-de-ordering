@@ -78,6 +78,7 @@ describe("Merchant Store operation API", () => {
 		expect(Object.keys(appliedBody).sort()).toEqual([
 			"action",
 			"createdAt",
+			"operation",
 			"operationId",
 			"outcome",
 			"stateVersion",
@@ -91,6 +92,33 @@ describe("Merchant Store operation API", () => {
 		expect(await conflict.json()).toMatchObject({
 			error: { code: "OPERATION_ID_CONFLICT" },
 		});
+	});
+
+	it("returns the current authoritative Store on replay and lookup", async () => {
+		await postStore("resume", 8, false, 0);
+		await postStore("pause", 9, true, 1);
+		const replay = await postStore("resume", 8, false, 0);
+		const lookup = await exports.default.fetch(
+			`https://example.com/api/merchant/store/operations/${operationId(8)}`,
+		);
+
+		for (const response of [replay, lookup]) {
+			expect(response.status).toBe(200);
+			expect(await response.json()).toMatchObject({
+				store: { is_accepting_orders: false },
+				stateVersion: 2,
+				operation: {
+					outcome: "APPLIED",
+					store: { is_accepting_orders: true },
+					stateVersion: 1,
+				},
+			});
+		}
+		expect(
+			(await env.DB.prepare("SELECT COUNT(*) AS count FROM store_state_events").first<{
+				count: number;
+			}>())?.count,
+		).toBe(2);
 	});
 
 	it("rejects extra fields and action-incompatible expected state", async () => {

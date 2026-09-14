@@ -50,6 +50,12 @@ type StoreOperationResult = {
 	operationId: string;
 	action: "pause" | "resume";
 	outcome: "APPLIED" | "IDEMPOTENT_REPLAY" | "ALREADY_IN_TARGET_STATE" | "STALE_STATE";
+	operation: {
+		outcome: "APPLIED" | "ALREADY_IN_TARGET_STATE" | "STALE_STATE";
+		store: { is_accepting_orders: boolean };
+		stateVersion: number;
+		createdAt: string;
+	};
 	store: { is_accepting_orders: boolean };
 	stateVersion: number;
 	createdAt: string;
@@ -70,6 +76,7 @@ type MerchantAction = "accept" | "reject" | "complete";
 const MERCHANT_REFRESH_INTERVAL_MS = 5_000;
 
 class ConclusiveStoreOperationError extends Error {}
+class StoreStillAcceptingAfterPauseError extends Error {}
 
 type PushState = "checking" | "unsupported" | "default" | "denied" | "enabled" | "disabled";
 
@@ -262,11 +269,16 @@ export default function MerchantView() {
 				}
 				setOrders(ordersResult.orders);
 				setNotifications(notificationsResult.deliveries);
-				applyStoreSnapshot(parseStoreSettings(storeResult), requestEpoch);
+				const acceptedStoreSnapshot = applyStoreSnapshot(
+					parseStoreSettings(storeResult),
+					requestEpoch,
+				);
 				setMenuItems(menuResult.categories.flatMap((category) => category.items));
-				setLastSyncAt(new Date());
-				setMerchantAccessHealthy(true);
-				setError(null);
+				if (acceptedStoreSnapshot) {
+					setLastSyncAt(new Date());
+					setMerchantAccessHealthy(true);
+					setError(null);
+				}
 			} catch (requestError) {
 				if (!(requestError instanceof Error && requestError.name === "AbortError")) {
 					setMerchantAccessHealthy(false);
@@ -429,6 +441,24 @@ export default function MerchantView() {
 			!["APPLIED", "IDEMPOTENT_REPLAY", "ALREADY_IN_TARGET_STATE", "STALE_STATE"].includes(
 				String(value.outcome),
 			) ||
+			!("operation" in value) ||
+			typeof value.operation !== "object" ||
+			value.operation === null ||
+			!("outcome" in value.operation) ||
+			!["APPLIED", "ALREADY_IN_TARGET_STATE", "STALE_STATE"].includes(
+				String(value.operation.outcome),
+			) ||
+			!("store" in value.operation) ||
+			typeof value.operation.store !== "object" ||
+			value.operation.store === null ||
+			!("is_accepting_orders" in value.operation.store) ||
+			typeof value.operation.store.is_accepting_orders !== "boolean" ||
+			!("stateVersion" in value.operation) ||
+			typeof value.operation.stateVersion !== "number" ||
+			!Number.isSafeInteger(value.operation.stateVersion) ||
+			value.operation.stateVersion < 0 ||
+			!("createdAt" in value.operation) ||
+			typeof value.operation.createdAt !== "string" ||
 			!("store" in value) ||
 			typeof value.store !== "object" ||
 			value.store === null ||
@@ -501,7 +531,10 @@ export default function MerchantView() {
 		if (existing) {
 			if (existing.action !== "pause") throw new Error("Store operation ID conflict");
 			applyOperationResult(existing);
-			await refreshStoreAfterOperation();
+			const authoritative = await refreshStoreAfterOperation();
+			if (authoritative.is_accepting_orders) {
+				throw new StoreStillAcceptingAfterPauseError();
+			}
 			return;
 		}
 
@@ -509,7 +542,10 @@ export default function MerchantView() {
 		if (!authoritative.is_accepting_orders) return;
 		const replay = await postStoreOperation("pause", operationId, expected);
 		applyOperationResult(replay);
-		await refreshStoreAfterOperation();
+		const afterReplay = await refreshStoreAfterOperation();
+		if (afterReplay.is_accepting_orders) {
+			throw new StoreStillAcceptingAfterPauseError();
+		}
 	}
 
 	async function pauseStore() {
@@ -525,13 +561,20 @@ export default function MerchantView() {
 			try {
 				const result = await postStoreOperation("pause", operationId, expected);
 				applyOperationResult(result);
-				await refreshStoreAfterOperation();
+				const authoritative = await refreshStoreAfterOperation();
+				if (authoritative.is_accepting_orders) {
+					throw new StoreStillAcceptingAfterPauseError();
+				}
 			} catch (operationError) {
 				if (operationError instanceof ConclusiveStoreOperationError) throw operationError;
 				await recoverAmbiguousPause(operationId, expected);
 			}
-		} catch {
-			setError("暫停接單結果不明，請查看最新店家狀態；系統不會建立新的操作編號。");
+		} catch (operationError) {
+			setError(
+				operationError instanceof StoreStillAcceptingAfterPauseError
+					? "緊急：暫停接單尚未生效，店家目前仍在接單。請立即再次確認並手動暫停。"
+					: "暫停接單結果不明，請查看最新店家狀態；系統不會建立新的操作編號。",
+			);
 		} finally {
 			storeMutationInFlightRef.current = false;
 			setStoreMutationInFlight(false);

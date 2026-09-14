@@ -1,3 +1,8 @@
+import {
+	assertValidStoreState,
+	MAX_STORE_STATE_VERSION,
+} from "./store-settings";
+
 export type StoreAction = "pause" | "resume";
 type StoredOutcome = "applied" | "already_target" | "stale";
 export type StoreOperationOutcome =
@@ -16,6 +21,12 @@ export type StoreOperationResult = {
 	operationId: string;
 	action: StoreAction;
 	outcome: StoreOperationOutcome;
+	operation: {
+		outcome: Exclude<StoreOperationOutcome, "IDEMPOTENT_REPLAY">;
+		store: { is_accepting_orders: boolean };
+		stateVersion: number;
+		createdAt: string;
+	};
 	store: { is_accepting_orders: boolean };
 	stateVersion: number;
 	createdAt: string;
@@ -34,6 +45,11 @@ type StoreEventRow = {
 	toStateVersion: number;
 	outcome: StoredOutcome;
 	createdAt: string;
+};
+
+type StoreStateRow = {
+	is_accepting_orders: number;
+	state_version: number;
 };
 
 export class StoreOperationError extends Error {
@@ -110,9 +126,44 @@ async function requestFingerprint(action: StoreAction, request: StoreOperationRe
 	);
 }
 
-async function readStoredOperation(db: D1Database, operationId: string) {
-	return db
-		.prepare(
+function storedOutcome(event: StoreEventRow): Exclude<StoreOperationOutcome, "IDEMPOTENT_REPLAY"> {
+	return event.outcome === "applied"
+		? "APPLIED"
+		: event.outcome === "already_target"
+			? "ALREADY_IN_TARGET_STATE"
+			: "STALE_STATE";
+}
+
+function publicResult(
+	event: StoreEventRow,
+	authoritativeStore: StoreStateRow,
+	replayed = false,
+): StoreOperationResult {
+	assertValidStoreState({
+		is_accepting_orders: event.toAccepting,
+		state_version: event.toStateVersion,
+	});
+	assertValidStoreState(authoritativeStore);
+	const operationOutcome = storedOutcome(event);
+	return {
+		operationId: event.operationId,
+		action: event.action,
+		outcome: replayed ? "IDEMPOTENT_REPLAY" : operationOutcome,
+		operation: {
+			outcome: operationOutcome,
+			store: { is_accepting_orders: Boolean(event.toAccepting) },
+			stateVersion: event.toStateVersion,
+			createdAt: event.createdAt,
+		},
+		store: { is_accepting_orders: Boolean(authoritativeStore.is_accepting_orders) },
+		stateVersion: authoritativeStore.state_version,
+		createdAt: event.createdAt,
+	};
+}
+
+async function readStoredOperationAndStore(db: D1Database, operationId: string) {
+	const [eventResult, storeResult] = await db.batch([
+		db.prepare(
 			`SELECT
 				operation_id AS operationId,
 				request_fingerprint AS requestFingerprint,
@@ -123,35 +174,23 @@ async function readStoredOperation(db: D1Database, operationId: string) {
 				created_at AS createdAt
 			FROM store_state_events
 			WHERE operation_id = ?`,
-		)
-		.bind(operationId)
-		.first<StoreEventRow>();
-}
-
-function publicResult(event: StoreEventRow, replayed = false): StoreOperationResult {
-	const outcome: StoreOperationOutcome = replayed
-		? "IDEMPOTENT_REPLAY"
-		: event.outcome === "applied"
-			? "APPLIED"
-			: event.outcome === "already_target"
-				? "ALREADY_IN_TARGET_STATE"
-				: "STALE_STATE";
-	return {
-		operationId: event.operationId,
-		action: event.action,
-		outcome,
-		store: { is_accepting_orders: Boolean(event.toAccepting) },
-		stateVersion: event.toStateVersion,
-		createdAt: event.createdAt,
-	};
+		).bind(operationId),
+		db.prepare("SELECT is_accepting_orders, state_version FROM store_settings WHERE id = 1"),
+	]);
+	const event = eventResult.results[0] as StoreEventRow | undefined;
+	const store = storeResult.results[0] as StoreStateRow | undefined;
+	if (store) assertValidStoreState(store);
+	return { event, store };
 }
 
 export async function getStoreOperationResult(db: D1Database, operationId: string) {
 	if (!CANONICAL_UUID_V4.test(operationId)) {
 		throw new StoreOperationError(400, "INVALID_REQUEST", "Invalid store operation request");
 	}
-	const event = await readStoredOperation(db, operationId);
-	return event ? publicResult(event) : null;
+	const { event, store } = await readStoredOperationAndStore(db, operationId);
+	if (!event) return null;
+	if (!store) throw new StoreOperationError(500, "INTERNAL_ERROR", "Store operation failed");
+	return publicResult(event, store);
 }
 
 export async function performStoreOperation(input: {
@@ -214,6 +253,10 @@ export async function performStoreOperation(input: {
 							END AS outcome
 						FROM store_settings
 						WHERE id = 1
+							AND typeof(is_accepting_orders) = 'integer'
+							AND is_accepting_orders IN (0, 1)
+							AND typeof(state_version) = 'integer'
+							AND state_version BETWEEN 0 AND ?
 					)
 					RETURNING
 						operation_id AS operationId,
@@ -241,6 +284,7 @@ export async function performStoreOperation(input: {
 					expected,
 					target,
 					target,
+					MAX_STORE_STATE_VERSION - 1,
 				),
 			db
 				.prepare(
@@ -261,17 +305,21 @@ export async function performStoreOperation(input: {
 		]);
 
 		const event = results[0].results[0] as StoreEventRow | undefined;
-		const store = results[2].results[0] as
-			| { is_accepting_orders: number; state_version: number }
-			| undefined;
+		const store = results[2].results[0] as StoreStateRow | undefined;
+		if (store) assertValidStoreState(store);
+		const changes = results[1].meta.changes;
+		const expectedChanges = event?.outcome === "applied" ? 1 : 0;
 		if (!event || !store || store.is_accepting_orders !== event.toAccepting || store.state_version !== event.toStateVersion) {
 			throw new StoreOperationError(500, "INTERNAL_ERROR", "Store operation failed");
 		}
+		if (changes !== expectedChanges) {
+			throw new StoreOperationError(500, "INTERNAL_ERROR", "Store operation failed");
+		}
 
-		return publicResult(event);
+		return publicResult(event, store);
 	} catch (error) {
 		if (error instanceof StoreOperationError) throw error;
-		const existing = await readStoredOperation(db, request.operationId);
+		const { event: existing, store } = await readStoredOperationAndStore(db, request.operationId);
 		if (existing) {
 			if (existing.requestFingerprint !== fingerprint) {
 				throw new StoreOperationError(
@@ -280,7 +328,8 @@ export async function performStoreOperation(input: {
 					"Operation ID was already used for a different request",
 				);
 			}
-			return publicResult(existing, true);
+			if (!store) throw new StoreOperationError(500, "INTERNAL_ERROR", "Store operation failed");
+			return publicResult(existing, store, true);
 		}
 		throw new StoreOperationError(500, "INTERNAL_ERROR", "Store operation failed");
 	}

@@ -79,6 +79,16 @@ describe("Store operation request validation", () => {
 			expectedIsAcceptingOrders: false,
 			expectedStateVersion: 0,
 		});
+		expect(
+			parseStoreOperationRequest(
+				{
+					operationId: operationId(2),
+					expectedIsAcceptingOrders: false,
+					expectedStateVersion: Number.MAX_SAFE_INTEGER,
+				},
+				"resume",
+			),
+		).toMatchObject({ expectedStateVersion: Number.MAX_SAFE_INTEGER });
 
 		for (const body of [
 			{},
@@ -91,6 +101,12 @@ describe("Store operation request validation", () => {
 			{ operationId: operationId(1), expectedIsAcceptingOrders: true, expectedStateVersion: 0 },
 			{ operationId: operationId(1), expectedIsAcceptingOrders: false, expectedStateVersion: -1 },
 			{ operationId: operationId(1), expectedIsAcceptingOrders: false, expectedStateVersion: 0.5 },
+			{ operationId: operationId(1), expectedIsAcceptingOrders: false, expectedStateVersion: "0" },
+			{
+				operationId: operationId(1),
+				expectedIsAcceptingOrders: false,
+				expectedStateVersion: Number.MAX_SAFE_INTEGER + 1,
+			},
 		]) {
 			expect(() => parseStoreOperationRequest(body, "resume")).toThrow(StoreOperationError);
 		}
@@ -157,6 +173,29 @@ describe("Store CAS and immutable audit", () => {
 		expect(await eventCount()).toBe(1);
 	});
 
+	it("keeps historical operation state separate from the current authoritative Store", async () => {
+		const resume = await operate("resume", 16, false, 0);
+		const pause = await operate("pause", 17, true, 1);
+		const replay = await operate("resume", 16, false, 0);
+		const lookup = await getStoreOperationResult(env.DB, operationId(16));
+
+		expect(resume).toMatchObject({ outcome: "APPLIED", stateVersion: 1 });
+		expect(pause).toMatchObject({ outcome: "APPLIED", stateVersion: 2 });
+		for (const result of [replay, lookup]) {
+			expect(result).toMatchObject({
+				store: { is_accepting_orders: false },
+				stateVersion: 2,
+				operation: {
+					outcome: "APPLIED",
+					store: { is_accepting_orders: true },
+					stateVersion: 1,
+				},
+			});
+		}
+		expect(replay.outcome).toBe("IDEMPOTENT_REPLAY");
+		expect(await eventCount()).toBe(2);
+	});
+
 	it("allows only one concurrent Resume and one concurrent Pause to apply", async () => {
 		const resumes = await Promise.all([
 			operate("resume", 6, false, 0),
@@ -217,6 +256,21 @@ describe("Store CAS and immutable audit", () => {
 				actorSubject,
 			}),
 		).rejects.toMatchObject({ code: "INTERNAL_ERROR" });
+		expect(await eventCount()).toBe(0);
+	});
+
+	it("fails closed without an event when the Store version cannot be incremented safely", async () => {
+		await env.DB.prepare("UPDATE store_settings SET state_version = ? WHERE id = 1")
+			.bind(Number.MAX_SAFE_INTEGER)
+			.run();
+
+		await expect(
+			operate("resume", 18, false, Number.MAX_SAFE_INTEGER),
+		).rejects.toMatchObject({ code: "INTERNAL_ERROR" });
+		expect(await storeState()).toEqual({
+			is_accepting_orders: 0,
+			state_version: Number.MAX_SAFE_INTEGER,
+		});
 		expect(await eventCount()).toBe(0);
 	});
 

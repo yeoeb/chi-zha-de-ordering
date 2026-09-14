@@ -95,6 +95,69 @@ function assertExact(actual, expected, label) {
 	}
 }
 
+function verifyRevisionConstraints() {
+	for (const invalidVersion of ["0.5", "'not-a-version'", "-1", "9007199254740992"]) {
+		expectWranglerFailure(
+			[
+				"d1",
+				"execute",
+				database,
+				"--command",
+				`UPDATE store_settings SET state_version = ${invalidVersion} WHERE id = 1`,
+			],
+			"CHECK constraint failed",
+		);
+	}
+	runWrangler([
+		"d1",
+		"execute",
+		database,
+		"--command",
+		"UPDATE store_settings SET state_version = 9007199254740991 WHERE id = 1",
+	]);
+	assertExact(
+		queryRows(
+			"SELECT typeof(state_version) AS storageType, state_version AS stateVersion FROM store_settings WHERE id = 1",
+		),
+		[{ storageType: "integer", stateVersion: Number.MAX_SAFE_INTEGER }],
+		"Maximum safe Store revision",
+	);
+	runWrangler([
+		"d1",
+		"execute",
+		database,
+		"--command",
+		"UPDATE store_settings SET state_version = 0 WHERE id = 1",
+	]);
+
+	for (const [column, versions] of [
+		["expected", { expected: "0.5", from: "0", to: "0" }],
+		["from", { expected: "0", from: "'not-a-version'", to: "0" }],
+		["to", { expected: "0", from: "0", to: "9007199254740992" }],
+	]) {
+		expectWranglerFailure(
+			[
+				"d1",
+				"execute",
+				database,
+				"--command",
+				`INSERT INTO store_state_events (
+					id, operation_id, request_fingerprint, action,
+					expected_accepting, expected_state_version,
+					from_accepting, to_accepting, from_state_version, to_state_version,
+					outcome, actor_subject_hash, created_at
+				) VALUES (
+					'probe-${column}', '00000000-0000-4000-8000-000000000001',
+					'${"a".repeat(64)}', 'resume', 0, ${versions.expected},
+					0, 0, ${versions.from}, ${versions.to}, 'stale', '${"b".repeat(64)}',
+					'2026-09-15T00:00:00.000Z'
+				)`,
+			],
+			"CHECK constraint failed",
+		);
+	}
+}
+
 mkdirSync(migrationsDirectory);
 writeFileSync(
 	configPath,
@@ -508,6 +571,7 @@ try {
 	) {
 		throw new Error("Migration 0010 Store state version or audit constraints are incomplete");
 	}
+	verifyRevisionConstraints();
 	assertExact(
 		storeAfter0010,
 		storeBefore0010.map((row) => ({ ...row, state_version: 0 })),
