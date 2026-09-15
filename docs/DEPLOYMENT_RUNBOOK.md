@@ -1,136 +1,394 @@
-# Deployment runbook
+# Production deployment and Pilot runbook
 
-Every remote mutation is separately gated. Never infer deployment, D1, secret, Access, LINE-cleanup, or store-resume authorization from this document.
+Every remote mutation requires its own explicit Gate authorization. This runbook defines commands and evidence; it grants no authority to run them. Never infer migration, secret, upload, deployment, traffic, Store, Order, Push, Access, DNS, restore, or cleanup authority from this document.
 
-## Prerequisites
+Pilot status is **NO-GO** until every GO criterion is evidenced and the Business Owner explicitly authorizes Store Resume.
 
-- Clean reviewed Git commit and recorded candidate SHA.
-- `npm test`, `npm run check`, `npm run build`, fresh-D1 verification, and Wrangler dry-run pass.
-- Correct Cloudflare account and Worker `chi-zha-de-ordering` confirmed.
-- Production D1 remains healthy and the store remains paused.
-- Cloudflare Access still protects `/merchant*` and `/api/merchant/*` while Customer routes remain public.
-- VAPID material is created outside Git/chat only when separately authorized.
+## Identity and roles
 
-## Pre-deploy verification
+Store Safety reviewed application source:
+
+```text
+4027f0cb302ad24f4439a32a459db5f934af3005
+```
+
+The Production evidence must record two distinct commits:
+
+- **Git source commit:** the reviewed application source used to build/upload the Worker.
+- **Docs commit:** the docs-only commit containing this runbook.
+
+Never use `latest`, an unpinned branch, the docs commit, or a locally rebuilt unrecorded artifact as the Worker identity.
+
+Required named roles:
+
+- **Release Operator:** confirms candidate identity; executes only the exact authorized commands; captures PRE/POST evidence, timestamps, and IDs; operates the rollout/Pilot clock; executes an authorized rollback.
+- **Technical Reviewer:** independently accepts or blocks migration, binding, smoke, invariants, and rollback-readiness evidence.
+- **Business Owner / Store Owner:** confirms onsite capacity and business readiness; owns Pilot GO/NO-GO and the decision to Resume real ordering.
+
+One person may temporarily fill multiple roles, but each role and approval must be recorded separately. Technical success never authorizes the Release Operator to Resume the Store.
+
+## Production preflight contract
+
+Before the first Production mutation, capture a single timestamped PRE package. Stop if any value is missing, ambiguous, or unexpected.
+
+### Local release identity
+
+Confirm and record:
 
 ```powershell
-npm.cmd test
-npm.cmd run check
-npm.cmd run build
-npm.cmd run verify:fresh-d1
-npm.cmd run verify:deploy-dry-run
-git status --short --branch
+git branch --show-current
 git rev-parse HEAD
+git status --short
+git show --format=fuller --stat 4027f0cb302ad24f4439a32a459db5f934af3005
 ```
 
-Read-only remote checks must confirm pending migrations, `PRAGMA quick_check`, store pause, Menu counts, Orders, and current deployments/versions.
+The release process must prove that the upload artifact was built from reviewed source `4027f0cb302ad24f4439a32a459db5f934af3005`. If the docs commit is checked out instead, use an approved clean worktree/export of the reviewed source and record its path and artifact hash. Do not silently upload the docs commit as though it were the reviewed source.
 
-## Production D1 migration
+### Remote read-only baseline
 
-The Web-only candidate requires additive/forward migration `0009_create_merchant_push_subscriptions.sql`. Because it has not been applied remotely, it was redesigned before rollout to leave the historical LINE-era `notification_deliveries` table untouched and create separate `web_push_notification_deliveries` and `merchant_push_subscriptions` tables. Migrations `0001` through `0008` remain unchanged.
-
-Future gated sequence:
+Command shapes below are read-only but still belong in the authorized Production preflight Gate:
 
 ```powershell
-npm.cmd exec wrangler -- d1 migrations list DB --remote
-npm.cmd exec wrangler -- d1 time-travel info DB
-npm.cmd exec wrangler -- d1 migrations apply DB --remote
-npm.cmd exec wrangler -- d1 migrations list DB --remote
+npm.cmd exec wrangler -- versions list --json --config wrangler.json
+npm.cmd exec wrangler -- deployments list --json --config wrangler.json
+npm.cmd exec wrangler -- deployments status --json --config wrangler.json
+npm.cmd exec wrangler -- d1 migrations list DB --remote --config wrangler.json
+npm.cmd exec wrangler -- d1 time-travel info DB --remote --config wrangler.json
+npm.cmd exec wrangler -- d1 execute DB --remote --json --config wrangler.json --command "PRAGMA quick_check"
 ```
 
-After apply, use read-only queries to verify migration 0009, the untouched historical delivery table, Web Push intent/subscription uniqueness and indexes, empty initial Web Push tables, store pause, Menu counts, Orders, and `PRAGMA quick_check = ok`. Never apply a migration when an unexpected file appears in the pending list.
+Also use bounded read-only SELECT/PRAGMA statements to record:
 
-## Configuration and secrets
+- Production D1 identity and expected `DB` binding.
+- Store accepting state and current `state_version` if the column exists.
+- Store/Menu/Order counts and the known test Order status.
+- Push subscription, Web Push delivery, and historical delivery counts without selecting endpoint, `p256dh`, `auth`, payload, Customer phone, or lookup token.
+- Existing tables/indexes required by migrations 0001–0009.
 
-Non-secret Worker variables required to enable Web Push:
+Record current Worker version, version tag/message, Deployment ID, traffic allocation, and candidate-independent asset identity. The existing Worker must remain authoritative and the Store must be paused (`is_accepting_orders = false`).
 
-- `VAPID_PUBLIC_KEY`
-- `VAPID_SUBJECT` (`mailto:` or HTTPS URL)
+Confirm these boundaries without changing them:
 
-Secret:
+- Cloudflare Access still protects `/merchant*` and `/api/merchant/*`.
+- Public Customer routes remain public.
+- Production local-dev bypass is absent.
+- VAPID public/subject/private binding names are present and the public fingerprint matches the approved value; never read the private value.
+- A plan exists to prove `AUDIT_ACTOR_HASH_KEY` presence/runtime behavior after provisioning; never read its value.
 
-- `VAPID_PRIVATE_KEY`
+## Migration 0010 Production SOP
 
-Generate the key pair outside the repository. Never print or commit the private key. Prefer uploading code and the private Secret into the same non-active Worker version using a restricted temporary file and the current Wrangler `versions upload --secrets-file` workflow. Delete the explicit temporary file after successful version capture. Do not use a secret command that immediately shifts traffic.
+Migration 0010 is a prerequisite for the Store Safety Worker. Migration and Worker rollout must be separate evidence steps.
 
-Missing VAPID configuration leaves Orders and Merchant polling operational; it only makes Push deliveries fail observably as unconfigured.
+### PRE
 
-Obsolete remote LINE secrets must not be deleted until the Web-only Worker version is deployed and verified, and deletion must have a separate authorization.
+Capture before applying:
 
-## Cloudflare Access
+- D1 database identity and binding.
+- Full migration tracker result showing exactly the expected pending migration.
+- D1 Time Travel bookmark/recovery reference and timestamp.
+- `PRAGMA quick_check = ok`.
+- Store row, accepting state, and whether `state_version` is absent as expected before 0010.
+- Existence of Store, Orders, Order items/modifiers, Push subscription, Web Push delivery, and retained LINE-era tables.
+- Operational row counts and non-sensitive integrity summaries for comparison after apply.
 
-- Public: Customer SPA and Customer APIs.
-- Private: `/merchant*` and `/api/merchant/*`.
-- The Worker guard must validate the expected hostname, Access issuer, audience, and signed `Cf-Access-Jwt-Assertion`.
-- No Production development bypass.
-- Do not protect the whole Worker and block Customer traffic.
-- Review workers.dev, preview, alternate routes, and eventual Custom Domains for bypass paths.
+Do not apply if any unexpected migration is pending, the Store is accepting, quick check is not `ok`, or recovery evidence is unavailable.
 
-## Candidate upload and deployment
+### APPLY
 
-1. Upload exactly one non-active version with reviewed source/config and VAPID Secret.
-2. Record candidate version ID and confirm current active traffic is unchanged.
-3. Use version overrides for read-only smoke while the store remains paused.
-4. Promote only the exact verified version through a separate approval:
+Run exactly once only in the separately authorized migration Gate:
 
 ```powershell
-npm.cmd exec wrangler -- versions deploy <VERSION_ID>@100% -y
+npm.cmd exec wrangler -- d1 migrations apply DB --remote --config wrangler.json
 ```
 
-Never repeat an ambiguous upload or deploy automatically.
+Do not retry an ambiguous response. First read the migration tracker and schema to determine whether 0010 committed.
 
-## Post-deploy smoke
+Reviewed migration contract:
 
-While paused:
+- Additive-only.
+- DROP = 0.
+- RENAME = 0.
+- DELETE = 0.
+- UPDATE = 0.
+- Fixture INSERT = 0.
+- Existing Store row receives `state_version = 0` from the column default.
+- Historical migrations 0001–0009 remain byte-for-byte unchanged.
 
-- Public `GET /`, `/api/health`, `/api/store`, `/api/menu`.
-- Manifest, icons, and Service Worker over HTTPS.
-- Unauthenticated Merchant surface is intercepted by Access.
-- Authenticated Merchant Orders and availability reads succeed through the Worker guard.
-- LINE webhook/pairing routes return Worker 404.
-- Push public-key and subscription routes require Merchant authorization.
-- No Order is created during read-only smoke.
+### POST
 
-Then, under a separate controlled authorization:
+Before any Worker upload or rollout, verify and record:
 
-1. Merchant taps **Enable notifications** in the protected PWA.
-2. Browser permission prompt is accepted.
-3. Verify one idempotent D1 subscription row without selecting or logging credentials.
-4. Create one clearly identified test Order only if authorized.
-5. Verify one minimal Push, the Merchant opens `/merchant`, and authoritative data comes from the API.
-6. Verify polling remains available if Push is denied or fails.
+- Migration tracker shows 0010 applied exactly once and no pending migration.
+- `PRAGMA quick_check = ok`.
+- `store_settings.state_version` exists with expected constraints.
+- `typeof(state_version) = 'integer'` and the preserved Store row has `state_version = 0`.
+- `store_state_events` exists with its uniqueness, transition, revision, and created-at index constraints.
+- No migration-created `store_state_events` fixture exists.
+- Store display/settings and paused state are preserved.
+- Orders, item/modifier snapshots, Push subscriptions, Web Push deliveries, and historical delivery rows/counts are preserved.
+- Historical LINE-era tables intentionally retained by migrations remain present.
+- POST Time Travel bookmark and timestamp are captured.
+- Every verification SELECT/PRAGMA reports no write metadata where Wrangler exposes it.
 
-## PWA verification
+### Migration failure handling
 
-- Manifest, 192/512 icons, and Service Worker load over HTTPS.
-- Installed Merchant PWA opens behind Access.
-- Push permission is never requested on page load.
-- Notification click focuses or opens `/merchant`.
-- `/api/*` is never served from Service Worker cache.
-- Offline Order submission remains impossible.
+If POST verification fails:
 
-## Rollback and recovery
+1. STOP; do not upload or promote the Worker.
+2. Keep the Store paused and verify that state read-only.
+3. Preserve command output, timestamps, bookmark, migration tracker, and schema evidence.
+4. Do not issue corrective SQL, rerun the migration, or restore automatically.
+5. Obtain a separate recovery decision. Evaluate D1 Time Travel restore only against the PRE recovery reference and only with destructive-recovery authorization.
 
-Application rollback and D1 recovery are independent.
+## `AUDIT_ACTOR_HASH_KEY` SOP
 
-Application rollback:
+Secret name: `AUDIT_ACTOR_HASH_KEY`.
 
-- Keep the store paused.
-- Inspect deployments and versions.
-- Deploy the last known-good Worker version only with explicit approval.
-- Verify bindings and routes afterward.
+Generation and custody requirements:
 
-D1 recovery:
+- Generate with an approved cryptographically secure random source.
+- Keep the value outside Git, `.dev.vars.example`, docs, chat, D1, evidence, command history, and terminal output.
+- Never echo the value or pass it as a visible command-line argument.
+- Do not reuse `VAPID_PRIVATE_KEY`, an Access token, or any other key.
+- Treat rotation as an audit-identity continuity event: rotation changes future actor pseudonyms and therefore requires an explicit plan, evidence boundary, and approval.
 
-- Worker rollback does not undo migration 0009 or subscription rows.
-- Prefer a reviewed forward migration.
-- D1 Time Travel restore changes remote data and needs a separate destructive-recovery gate.
-- Never run a remote reset, wipe, blind rollback, or unreviewed DELETE.
+Preferred provisioning boundary is the single non-active candidate upload using an ACL-restricted external secrets file. That file must contain the complete intended version secret set, including `AUDIT_ACTOR_HASH_KEY` and the already-approved VAPID private secret, without being placed in the repository:
 
-Push cleanup:
+```powershell
+npm.cmd exec wrangler -- versions upload --strict --config wrangler.json --secrets-file "<ABSOLUTE_EXTERNAL_RESTRICTED_SECRETS_FILE>" --tag "<IMMUTABLE_TAG>" --message "Store Safety source 4027f0cb302ad24f4439a32a459db5f934af3005"
+```
 
-- Invalid endpoints are removed automatically only after push services return 404/410.
-- A Merchant can idempotently unsubscribe its own current browser endpoint.
-- Do not expose or manually copy stored subscription credentials.
+Wrangler `--secrets-file` is additive; omitted historical secret binding names may remain inherited. Do not delete inherited secrets in this rollout.
 
-Store resume is always a separate final mutation after smoke verification; rollback never implies automatic resume.
+If a separately approved secret-only workflow is selected, its command shape is:
+
+```powershell
+npm.cmd exec wrangler -- versions secret put AUDIT_ACTOR_HASH_KEY --config wrangler.json
+```
+
+Do not run both provisioning paths without a new plan, because each remote secret/version mutation needs unique evidence. Never use unversioned secret cleanup as part of this Gate.
+
+Verification must prove presence and runtime behavior rather than read back the value:
+
+- Candidate version view lists the secret binding name but no value.
+- A separately authorized same-origin Store operation succeeds only when the binding is usable.
+- Sanitized Audit verification may check `length(actor_subject_hash) = 64` without selecting the hash.
+- Public and Merchant responses contain no actor hash, raw subject, request fingerprint, or secret.
+- Missing/invalid binding must fail closed without Store or Audit writes.
+
+## Staged Worker rollout SOP
+
+### Phase A — Upload / candidate creation
+
+Preconditions: migration 0010 POST PASS, Store paused, Audit secret input ready, existing Worker/Deployment/traffic recorded, rollback version fixed, reviewed source/artifact identity proven.
+
+1. Execute exactly one authorized non-active version upload.
+2. Record source commit, artifact identity, version ID, tag, message, timestamp, and binding names.
+3. Confirm Production Deployment and traffic are unchanged.
+4. Confirm the candidate has the expected D1, rate limiter, Access, asset, VAPID, and `AUDIT_ACTOR_HASH_KEY` bindings without exposing secret values.
+5. Confirm no unknown bypass, route, version, or inherited configuration is active.
+
+An ambiguous upload must not be retried. Use read-only version list/view and the fixed tag/message/time to determine whether it committed.
+
+### Phase B — 0% and version-override verification
+
+Under a separate Deployment authorization, create one Deployment using explicit immutable IDs:
+
+```powershell
+npm.cmd exec wrangler -- versions deploy "<CURRENT_VERSION_ID>@100%" "<CANDIDATE_VERSION_ID>@0%" --yes --config wrangler.json --message "Stage Store Safety candidate at 0%"
+```
+
+Verify normal traffic remains on the old Worker. Then use the exact candidate version-override header only in the authorized smoke Gate.
+
+Required read-only candidate smoke:
+
+- `GET /` plus candidate-specific asset URL/hash.
+- `GET /api/health`.
+- `GET /api/store`, including a safe integer `stateVersion`.
+- `GET /api/menu`.
+- Manifest and Service Worker hash/behavior.
+- Authenticated Merchant PWA and read-only Orders/notification/public-key surfaces.
+- Store paused state and migration compatibility.
+- Access boundary for unauthenticated Merchant requests.
+
+HTTP 200 alone is not candidate identity evidence. Use asset/hash or another candidate-specific artifact identity.
+
+Store mutation smoke is not part of read-only override smoke. It requires separate explicit authorization and must prove CAS, immutable Audit, same-origin protection, sanitized response, operation lookup/replay, and authoritative post-state while returning the Store to paused.
+
+### Phase C — promotion
+
+Promotion requires all of the following:
+
+- Migration 0010 PASS.
+- Audit secret presence/runtime PASS.
+- Candidate binding and artifact identity PASS.
+- 0% candidate smoke PASS.
+- Normal-traffic control unchanged.
+- Rollback version and command reviewed.
+- Store authoritatively paused.
+- Technical Reviewer explicitly approves the exact candidate.
+
+Command shape:
+
+```powershell
+npm.cmd exec wrangler -- versions deploy "<CANDIDATE_VERSION_ID>@100%" --yes --config wrangler.json --message "Promote Store Safety source 4027f0cb302ad24f4439a32a459db5f934af3005"
+```
+
+After read-back, verify exact 100% allocation with no unknown split, public/Access smoke, candidate assets, Store paused, D1 health, and no unintended Store/Audit/Order/Push changes.
+
+```text
+NO AUTO-RESUME
+```
+
+Worker promotion must not Resume the Store. Store Resume is a later, explicit Business Owner decision within an approved Pilot gate.
+
+## Rollback matrix
+
+| Failure class | Required action | Prohibited shortcut | Exit condition |
+| --- | --- | --- | --- |
+| Worker problem; migration healthy | Keep Store paused; deploy the fixed last-known-good Worker version under rollback authorization; verify version/traffic/public state. Leave additive 0010 in place. | Do not restore D1 or reverse 0010 merely because application code rolled back. | Old Worker is exactly 100%, Store paused, D1 healthy. |
+| Migration verification fails before Worker rollout | STOP rollout; keep Store paused; preserve PRE/POST evidence; request a D1 recovery decision using the PRE reference. | Do not upload Worker, rerun migration, issue corrective SQL, or restore automatically. | Recovery gate explicitly decides forward repair or restore. |
+| Audit secret missing or invalid | STOP; keep current Worker authoritative and Store paused. Correct only through a separately authorized secret/version gate. | No unhashed/raw actor fallback and no unsafe candidate rollout. | Candidate proves binding presence and fail-closed/runtime behavior. |
+| Candidate HTTP/identity smoke fails | Keep existing Worker authoritative, candidate at 0%, Store paused, and preserve Ray/timestamp/version evidence. | No promotion based only on partial HTTP 200 results. | New candidate or evidence gate resolves the failure. |
+| Post-promotion application failure | Pause Store if state is uncertain; capture evidence; execute fixed Worker rollback once when authorized. | Do not Resume until authoritative state is verified; do not mutate D1 as an application rollback. | Rollback Worker 100%, Store paused, D1 healthy. |
+| Ambiguous Store mutation | Use the same operation ID lookup, authoritative Store read, and at most the bounded same-ID replay defined below. | Never create a new operation ID as a retry and never blind-repeat the action. | Authoritative state and operation outcome are uniquely determined, or Gate stops BLOCKED. |
+
+The preflight must replace `<FIXED_ROLLBACK_VERSION_ID>` with the recorded last-known-good immutable ID before approval. The authorized rollback command shape is:
+
+```powershell
+npm.cmd exec wrangler -- versions deploy "<FIXED_ROLLBACK_VERSION_ID>@100%" --yes --config wrangler.json --message "Rollback Store Safety candidate"
+```
+
+Never resolve the rollback target from `latest`, a tag that may move, or an unrecorded dashboard selection.
+
+Application rollback and D1 recovery are independent. Any D1 Time Travel restore is a destructive Production mutation requiring its own explicit recovery Gate.
+
+## Ambiguous Store mutation procedure
+
+For an ambiguous Pause/Resume response:
+
+1. Preserve the original operation ID, action, expected accepting state, expected revision, start time, and response/error evidence.
+2. Use authenticated `GET /api/merchant/store/operations/<SAME_OPERATION_ID>`.
+3. Read authoritative `GET /api/store`; an operation lookup alone does not prove current Store state.
+4. For emergency Pause only: if lookup is 404 and authoritative Store remains accepting, replay the exact original Pause body once with the same operation ID.
+5. Read authoritative Store again. Success requires `is_accepting_orders = false` and a valid safe revision.
+6. A 403 is conclusive denial and must not be replayed. A conflict, invalid revision, still-accepting result, or unknown state stops the Gate.
+
+Do not generate a new operation ID, perform a second replay, use direct SQL, or report success from historical operation state.
+
+## Pilot SOP
+
+### Default state
+
+Pilot is **NO-GO**. Tests, docs, migration success, secret provisioning, upload, and technical deployment do not independently change it to GO.
+
+### GO checklist
+
+The Pilot Gate must record all of these as PASS:
+
+- Migration 0010 Production verification.
+- `AUDIT_ACTOR_HASH_KEY` provisioned and verified without value disclosure.
+- Store Safety Worker candidate identity, staged smoke, and promotion.
+- Public read-only and authenticated Merchant smoke.
+- Cloudflare Access and Merchant mutation Origin guard.
+- Resume confirmation/fresh read, CAS, one immutable sanitized Audit event, operation lookup, and emergency Pause behavior.
+- Push health and five-second polling fallback.
+- Fixed rollback Worker version/command and D1 recovery reference.
+- Store initially paused and authoritative revision recorded.
+- Named Release Operator, Technical Reviewer, and Business Owner present.
+- Business Owner confirms onsite capacity and explicitly approves Resume.
+- Explicit maximum accepting window and maximum real Order count entered in evidence.
+- Abort procedure reviewed aloud by the active Operator and Business Owner.
+
+### Controlled Pilot operation
+
+1. Confirm Merchant device is authenticated, online, displaying the Order queue, polling successfully, and able to receive the expected notification path.
+2. Confirm Store paused and record its authoritative revision immediately before opening.
+3. Start a visible stopwatch before Resume.
+4. Business Owner authorizes Resume; Release Operator performs the confirmed Resume once and records operation ID/result.
+5. Verify authoritative Store accepting state/revision and the single applied Audit event without selecting actor identity.
+6. Continuously watch Merchant queue, Store status, polling health, Push behavior, elapsed time, and accepted Order count.
+7. Pause before either approved limit is reached; do not extend the window to wait for Push.
+8. Verify authoritative paused state/revision and Pause Audit event.
+9. Preserve evidence and obtain Technical Reviewer/Business Owner closeout.
+
+The Merchant UI must stay visible on the designated device. Polling is the source of truth when Push is delayed or unavailable.
+
+### Abort criteria
+
+Immediately abort on any one condition:
+
+- Store state cannot be determined authoritatively.
+- Revision is invalid or jumps unexpectedly.
+- Operation replay changes Store again or produces a duplicate Audit event.
+- Origin guard or Cloudflare Access protection regresses.
+- An unauthorized Merchant mutation succeeds.
+- D1 integrity/migration state fails.
+- Worker source/version/deployment identity is uncertain.
+- Push produces an unexpected duplicate or polling fallback fails.
+- Merchant UI shows success while authoritative Store state disagrees.
+- Rollback or emergency Pause path is unavailable.
+- Named operational coverage is lost.
+- Approved Order or time limit is reached.
+
+Abort procedure:
+
+1. Pause Store using one operation ID.
+2. Verify authoritative Store state and revision.
+3. Stop new Customer Orders and keep the Merchant queue visible.
+4. Preserve logs, operation IDs, timestamps, Worker versions, Deployment, and traffic evidence without credentials or PII.
+5. Do not issue a blind second mutation or new operation ID.
+6. Follow the rollback matrix and stop BLOCKED if state cannot be uniquely determined.
+
+## Production evidence template
+
+```text
+Gate:
+Date:
+Operator:
+Reviewer:
+Business Owner:
+Git source commit:
+Docs commit:
+Release artifact identity/hash:
+Migration:
+PRE bookmark:
+POST bookmark:
+Previous Worker Version:
+Candidate Worker Version:
+Previous Deployment:
+Candidate Deployment:
+Traffic before:
+Traffic after:
+Store state before:
+Store state after:
+Store state_version before:
+Store state_version after:
+D1 quick_check:
+Migration tracker:
+Audit verification:
+Access verification:
+Smoke results:
+Rollback readiness:
+Pilot maximum Orders:
+Pilot maximum accepting window:
+Pilot status:
+Findings:
+Final recommendation:
+```
+
+Never save JWT, Cookie, Cloudflare Access token, VAPID private key, `AUDIT_ACTOR_HASH_KEY`, raw Access subject, raw actor identifier/hash, Push endpoint/keys, Customer phone, or public lookup token in this evidence.
+
+## Post-gate closeout
+
+Every Production gate must finish by recording:
+
+- Exact mutations performed and their count.
+- Read-only verification and write metadata.
+- Final Store state and revision.
+- Final Worker/Deployment/traffic allocation.
+- Whether rollback ran.
+- Repository status and whether any push occurred.
+- Remaining unverified boundaries.
+
+If the evidence cannot prove a unique final state, classify the Gate BLOCKED. Do not repair or continue outside its authorization.
