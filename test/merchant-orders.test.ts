@@ -55,12 +55,16 @@ async function insertOrder({
 	id,
 	status,
 	createdAt = "2026-09-06T04:00:00.000Z",
+	estimatedReadyAt = fixedEta,
 	itemName = "雞排快照",
+	customerNote = null,
 }: {
 	id: string;
 	status: OrderStatus;
 	createdAt?: string;
+	estimatedReadyAt?: string;
 	itemName?: string;
+	customerNote?: string | null;
 }) {
 	const acceptedAt = status === "accepted" || status === "completed" ? "2026-09-06T04:10:00.000Z" : null;
 	const completedAt = status === "completed" ? "2026-09-06T04:30:00.000Z" : null;
@@ -72,19 +76,20 @@ async function insertOrder({
 				`INSERT INTO orders (
 					id, public_lookup_token, order_number, status, total_amount, estimated_ready_at, created_at,
 					accepted_at, completed_at, rejected_at, customer_name, customer_phone,
-					special_order, idempotency_key, request_fingerprint
-				) VALUES (?, ?, ?, ?, 90, ?, ?, ?, ?, ?, '王小明', '0912345678', 0, ?, ?)`,
+					customer_note, special_order, idempotency_key, request_fingerprint
+				) VALUES (?, ?, ?, ?, 90, ?, ?, ?, ?, ?, '王小明', '0912345678', ?, 0, ?, ?)`,
 			)
 			.bind(
 				id,
 				lookupToken(id),
 				`ORDER-${id}`,
 				status,
-				fixedEta,
+				estimatedReadyAt,
 				createdAt,
 				acceptedAt,
 				completedAt,
 				rejectedAt,
+				customerNote,
 				`key-${id}`,
 				"a".repeat(64),
 			),
@@ -237,10 +242,26 @@ describe("Merchant Order state machine", () => {
 });
 
 describe("Merchant Order API", () => {
-	it("returns active Orders oldest first using stored item and modifier snapshots", async () => {
-		await insertOrder({ id: "newer", status: "pending", createdAt: "2026-09-06T04:02:00.000Z" });
-		await insertOrder({ id: "oldest", status: "pending", createdAt: "2026-09-06T04:00:00.000Z" });
-		await insertOrder({ id: "accepted", status: "accepted", createdAt: "2026-09-06T04:01:00.000Z" });
+	it("returns active Orders by ready deadline using stored item and modifier snapshots", async () => {
+		await insertOrder({
+			id: "newer",
+			status: "pending",
+			createdAt: "2026-09-06T04:02:00.000Z",
+			estimatedReadyAt: "2026-09-06T05:30:00.000Z",
+		});
+		await insertOrder({
+			id: "oldest",
+			status: "pending",
+			createdAt: "2026-09-06T04:00:00.000Z",
+			estimatedReadyAt: "2026-09-06T06:30:00.000Z",
+			customerNote: "辣粉另包",
+		});
+		await insertOrder({
+			id: "accepted",
+			status: "accepted",
+			createdAt: "2026-09-06T04:01:00.000Z",
+			estimatedReadyAt: "2026-09-06T06:00:00.000Z",
+		});
 		await insertOrder({ id: "completed", status: "completed", createdAt: "2026-09-06T03:58:00.000Z" });
 		await insertOrder({ id: "rejected", status: "rejected", createdAt: "2026-09-06T03:59:00.000Z" });
 		await env.DB.batch([
@@ -255,6 +276,7 @@ describe("Merchant Order API", () => {
 		const result = (await response.json()) as {
 			orders: Array<{
 				id: string;
+				customerNote: string | null;
 				items: Array<{
 					name: string;
 					unitPrice: number;
@@ -264,8 +286,9 @@ describe("Merchant Order API", () => {
 		};
 
 		expect(response.status).toBe(200);
-		expect(result.orders.map((order) => order.id)).toEqual(["oldest", "accepted", "newer"]);
-		expect(result.orders[0].items[0]).toMatchObject({
+		expect(result.orders.map((order) => order.id)).toEqual(["newer", "accepted", "oldest"]);
+		expect(result.orders[2].customerNote).toBe("辣粉另包");
+		expect(result.orders[2].items[0]).toMatchObject({
 			name: "雞排快照",
 			unitPrice: 90,
 			modifiers: [{ groupName: "辣度快照", name: "小辣快照", priceDelta: 5 }],

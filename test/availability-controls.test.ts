@@ -128,6 +128,37 @@ describe("Merchant item availability", () => {
 		expect(await response.json()).toMatchObject({ error: { code: "MENU_ITEM_NOT_FOUND" } });
 	});
 
+	it("changes only availability and exposes no generic Merchant menu mutation", async () => {
+		const before = await env.DB
+			.prepare("SELECT category_id, name, description, price, sort_order, is_available FROM menu_items WHERE id = 1")
+			.first<Record<string, unknown>>();
+
+		const soldOut = await postAction("/api/merchant/menu-items/1/sold-out");
+		const after = await env.DB
+			.prepare("SELECT category_id, name, description, price, sort_order, is_available FROM menu_items WHERE id = 1")
+			.first<Record<string, unknown>>();
+		const genericPatch = await exports.default.fetch(
+			"https://example.com/api/merchant/menu-items/1",
+			{
+				method: "PATCH",
+				headers: {
+					"content-type": "application/json",
+					Origin: "https://example.com",
+					"Sec-Fetch-Site": "same-origin",
+				},
+				body: JSON.stringify({ price: 1, name: "竄改" }),
+			},
+		);
+
+		expect(soldOut.status).toBe(200);
+		expect(after).toEqual({ ...before, is_available: 0 });
+		expect(genericPatch.status).toBe(404);
+		const unchanged = await env.DB
+			.prepare("SELECT name, price FROM menu_items WHERE id = 1")
+			.first();
+		expect(unchanged).toEqual({ name: "雞排", price: 85 });
+	});
+
 	it("does not mutate an existing Order snapshot", async () => {
 		const creation = await postOrder("historical-order");
 		const created = (await creation.json()) as {

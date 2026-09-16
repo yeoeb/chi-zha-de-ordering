@@ -1,5 +1,21 @@
 import { Hono, type Context } from "hono";
 import {
+	AdminMenuError,
+	createAdminCategory,
+	createAdminMenuItem,
+	getOriginDisclosure,
+	listAdminCategories,
+	listAdminMenu,
+	parseAdminCategoryCreate,
+	parseAdminCategoryUpdate,
+	parseAdminMenuCreate,
+	parseAdminMenuUpdate,
+	parseOriginDisclosure,
+	updateAdminMenuItem,
+	updateAdminCategory,
+	updateOriginDisclosure,
+} from "./admin-menu";
+import {
 	CheckoutQuoteError,
 	parseCheckoutQuoteRequest,
 	validateAndPriceCart,
@@ -30,6 +46,7 @@ import {
 	retryNotificationDelivery,
 } from "./notifications";
 import {
+	authenticateAdminRequest,
 	authenticateMerchantRequest,
 	isMerchantMutationRequestAllowed,
 	isRateLimitAllowed,
@@ -56,7 +73,7 @@ import {
 
 type AppEnvironment = {
 	Bindings: Env & SecurityBindings & WebPushBindings & StoreOperationBindings;
-	Variables: { merchantActorSubject: string };
+	Variables: { adminActorSubject: string; merchantActorSubject: string };
 };
 
 const app = new Hono<AppEnvironment>();
@@ -69,6 +86,9 @@ type MenuRow = {
 	itemDescription: string | null;
 	itemPrice: number | null;
 	itemIsAvailable: number | null;
+	itemImageUrl: string | null;
+	itemIsPopular: number | null;
+	itemIsQuickSoldOut: number | null;
 	modifierGroupId: number | null;
 	modifierGroupName: string | null;
 	modifierGroupSelectionType: "single" | null;
@@ -96,6 +116,9 @@ type MenuItem = {
 	description: string;
 	price: number;
 	isAvailable: boolean;
+	imageUrl: string | null;
+	isPopular: boolean;
+	isQuickSoldOut: boolean;
 	modifierGroups: MenuModifierGroup[];
 };
 
@@ -122,6 +145,9 @@ app.get("/api/store", async (c) => {
 		normal_order_minutes: store.normal_order_minutes,
 		special_extra_minutes: store.special_extra_minutes,
 		stateVersion: store.state_version,
+		originDisclosure: store.origin_disclosure
+			? store.origin_disclosure.split("\n").filter(Boolean)
+			: [],
 	});
 });
 
@@ -135,6 +161,9 @@ app.get("/api/menu", async (c) => {
 			items.description AS itemDescription,
 			items.price AS itemPrice,
 			items.is_available AS itemIsAvailable,
+			items.image_url AS itemImageUrl,
+			items.is_popular AS itemIsPopular,
+			items.is_quick_sold_out AS itemIsQuickSoldOut,
 			modifier_groups.id AS modifierGroupId,
 			modifier_groups.name AS modifierGroupName,
 			modifier_groups.selection_type AS modifierGroupSelectionType,
@@ -143,7 +172,7 @@ app.get("/api/menu", async (c) => {
 			modifier_options.name AS modifierOptionName,
 			modifier_options.price_delta AS modifierOptionPriceDelta
 		FROM menu_categories AS categories
-		LEFT JOIN menu_items AS items ON items.category_id = categories.id
+		LEFT JOIN menu_items AS items ON items.category_id = categories.id AND items.is_archived = 0
 		LEFT JOIN modifier_groups ON
 			modifier_groups.menu_item_id = items.id
 			AND modifier_groups.is_active = 1
@@ -181,7 +210,9 @@ app.get("/api/menu", async (c) => {
 			row.itemName !== null &&
 			row.itemDescription !== null &&
 			row.itemPrice !== null &&
-			row.itemIsAvailable !== null
+			row.itemIsAvailable !== null &&
+			row.itemIsPopular !== null &&
+			row.itemIsQuickSoldOut !== null
 		) {
 			let item = category.items[category.items.length - 1];
 
@@ -192,6 +223,9 @@ app.get("/api/menu", async (c) => {
 					description: row.itemDescription,
 					price: row.itemPrice,
 					isAvailable: Boolean(row.itemIsAvailable),
+					imageUrl: row.itemImageUrl,
+					isPopular: Boolean(row.itemIsPopular),
+					isQuickSoldOut: Boolean(row.itemIsQuickSoldOut),
 					modifierGroups: [],
 				};
 				category.items.push(item);
@@ -396,6 +430,129 @@ app.get("/api/orders/by-token/:token", async (c) => {
 	}
 
 	return c.json({ order });
+});
+
+app.use("/api/admin/*", async (c, next) => {
+	c.header("Cache-Control", "no-store");
+	const identity = await authenticateAdminRequest({
+		devBypass: c.env.ADMIN_DEV_BYPASS,
+		devActorSubject: c.env.ADMIN_DEV_ACTOR_SUBJECT,
+		expectedHostname: c.env.ADMIN_HOSTNAME,
+		requestUrl: c.req.url,
+		accessAudience: c.env.ADMIN_ACCESS_AUD,
+		accessTeamDomain: c.env.ADMIN_ACCESS_TEAM_DOMAIN,
+		accessToken: c.req.header("Cf-Access-Jwt-Assertion"),
+	});
+
+	if (!identity) {
+		return c.json(
+			{ error: { code: "ADMIN_AUTH_DENIED", message: "Admin access is not authorized" } },
+			403,
+		);
+	}
+	c.set("adminActorSubject", identity.subject);
+
+	if (
+		!isMerchantMutationRequestAllowed({
+			method: c.req.method,
+			expectedHostname: c.env.ADMIN_HOSTNAME,
+			origin: c.req.header("Origin"),
+			secFetchSite: c.req.header("Sec-Fetch-Site"),
+		})
+	) {
+		return c.json(
+			{ error: { code: "ADMIN_ORIGIN_DENIED", message: "Admin mutation is not authorized" } },
+			403,
+		);
+	}
+
+	await next();
+});
+
+app.get("/api/admin/menu", async (c) => c.json(await listAdminMenu(c.env.DB)));
+
+app.post("/api/admin/menu-items", async (c) => {
+	try {
+		const body = await readBoundedJson(c.req.raw);
+		const item = await createAdminMenuItem(c.env.DB, parseAdminMenuCreate(body));
+		return c.json({ item }, 201);
+	} catch (error) {
+		if (error instanceof RequestBodyError || error instanceof AdminMenuError) {
+			const status = error instanceof AdminMenuError ? error.status : 400;
+			const code = error instanceof AdminMenuError ? error.code : "INVALID_ADMIN_UPDATE";
+			return c.json({ error: { code, message: error.message } }, status);
+		}
+		throw error;
+	}
+});
+
+app.patch("/api/admin/menu-items/:id", async (c) => {
+	try {
+		const body = await readBoundedJson(c.req.raw);
+		const request = parseAdminMenuUpdate(body);
+		const item = await updateAdminMenuItem(c.env.DB, Number(c.req.param("id")), request);
+		return c.json({ item });
+	} catch (error) {
+		if (error instanceof RequestBodyError || error instanceof AdminMenuError) {
+			const status = error instanceof AdminMenuError ? error.status : 400;
+			const code = error instanceof AdminMenuError ? error.code : "INVALID_ADMIN_UPDATE";
+			return c.json({ error: { code, message: error.message } }, status);
+		}
+		throw error;
+	}
+});
+
+app.get("/api/admin/categories", async (c) => c.json({ categories: await listAdminCategories(c.env.DB) }));
+
+app.post("/api/admin/categories", async (c) => {
+	try {
+		const body = await readBoundedJson(c.req.raw);
+		const category = await createAdminCategory(c.env.DB, parseAdminCategoryCreate(body));
+		return c.json({ category }, 201);
+	} catch (error) {
+		if (error instanceof RequestBodyError || error instanceof AdminMenuError) {
+			const status = error instanceof AdminMenuError ? error.status : 400;
+			const code = error instanceof AdminMenuError ? error.code : "INVALID_ADMIN_UPDATE";
+			return c.json({ error: { code, message: error.message } }, status);
+		}
+		throw error;
+	}
+});
+
+app.patch("/api/admin/categories/:id", async (c) => {
+	try {
+		const body = await readBoundedJson(c.req.raw);
+		const category = await updateAdminCategory(
+			c.env.DB,
+			Number(c.req.param("id")),
+			parseAdminCategoryUpdate(body),
+		);
+		return c.json({ category });
+	} catch (error) {
+		if (error instanceof RequestBodyError || error instanceof AdminMenuError) {
+			const status = error instanceof AdminMenuError ? error.status : 400;
+			const code = error instanceof AdminMenuError ? error.code : "INVALID_ADMIN_UPDATE";
+			return c.json({ error: { code, message: error.message } }, status);
+		}
+		throw error;
+	}
+});
+
+app.get("/api/admin/store-presentation", async (c) => c.json(await getOriginDisclosure(c.env.DB)));
+
+app.patch("/api/admin/store-presentation", async (c) => {
+	try {
+		const body = await readBoundedJson(c.req.raw);
+		return c.json(await updateOriginDisclosure(c.env.DB, parseOriginDisclosure(body)));
+	} catch (error) {
+		if (error instanceof RequestBodyError || error instanceof AdminMenuError) {
+			return c.json(
+				{ error: { code: "INVALID_ADMIN_UPDATE", message: error.message } },
+				400,
+			);
+		}
+		throw error;
+	}
 });
 
 app.use("/api/merchant/*", async (c, next) => {

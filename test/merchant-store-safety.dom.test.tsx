@@ -417,6 +417,7 @@ describe("Merchant Store safety DOM", () => {
 			createdAt: "2026-09-14T01:00:00.000Z",
 			customerName: "Test",
 			customerPhone: "test-marker",
+			customerNote: "辣粉另包",
 			specialOrder: false,
 			items: [{ name: "Item", quantity: 1, lineTotal: 20, modifiers: [] }],
 		};
@@ -426,6 +427,8 @@ describe("Merchant Store safety DOM", () => {
 		const controlBefore = await screen.findByTestId("store-control");
 		const resumeBefore = button(".resume-store-button");
 		const reject = button(".reject-button");
+		expect(screen.getByText("訂單備註")).toBeTruthy();
+		expect(screen.getByText("辣粉另包")).toBeTruthy();
 
 		await userEvent.click(reject);
 

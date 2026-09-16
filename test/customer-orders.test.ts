@@ -40,7 +40,11 @@ beforeEach(async () => {
 	]);
 });
 
-async function insertOrder(id: string, status: OrderStatus = "pending") {
+async function insertOrder(
+	id: string,
+	status: OrderStatus = "pending",
+	customerNote: string | null = null,
+) {
 	const acceptedAt = status === "accepted" || status === "completed" ? "2026-09-06T05:15:00.000Z" : null;
 	const completedAt = status === "completed" ? "2026-09-06T05:45:00.000Z" : null;
 	const rejectedAt = status === "rejected" ? "2026-09-06T05:15:00.000Z" : null;
@@ -51,9 +55,9 @@ async function insertOrder(id: string, status: OrderStatus = "pending") {
 				`INSERT INTO orders (
 					id, public_lookup_token, order_number, status, total_amount, estimated_ready_at, created_at,
 					accepted_at, completed_at, rejected_at, customer_name, customer_phone,
-					special_order, idempotency_key, request_fingerprint
+					customer_note, special_order, idempotency_key, request_fingerprint
 				) VALUES (?, ?, ?, ?, 90, ?, '2026-09-06T05:00:00.000Z', ?, ?, ?, '王小明',
-					'0912345678', 0, ?, ?)`,
+					'0912345678', ?, 0, ?, ?)`,
 			)
 			.bind(
 				id,
@@ -64,6 +68,7 @@ async function insertOrder(id: string, status: OrderStatus = "pending") {
 				acceptedAt,
 				completedAt,
 				rejectedAt,
+				customerNote,
 				`key-${id}`,
 				"c".repeat(64),
 			),
@@ -109,7 +114,7 @@ describe("GET /api/orders/by-token/:token", () => {
 	);
 
 	it("returns stored item and modifier snapshots after current menu changes", async () => {
-		await insertOrder("snapshot-order");
+		await insertOrder("snapshot-order", "pending", "雞排不要切、辣粉另包");
 		await env.DB.batch([
 			env.DB.prepare("UPDATE menu_items SET name = '豪大雞排', price = 150 WHERE id = 1"),
 			env.DB.prepare("UPDATE modifier_groups SET name = '新版辣度' WHERE id = 1"),
@@ -124,6 +129,7 @@ describe("GET /api/orders/by-token/:token", () => {
 		const result = (await response.json()) as {
 			order: {
 				total: number;
+				customerNote: string | null;
 				items: Array<{
 					name: string;
 					unitPrice: number;
@@ -136,6 +142,7 @@ describe("GET /api/orders/by-token/:token", () => {
 		expect(response.status).toBe(200);
 		expect(result.order).toMatchObject({
 			total: 90,
+			customerNote: "雞排不要切、辣粉另包",
 			items: [
 				{
 					name: "雞排快照",

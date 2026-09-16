@@ -1,23 +1,17 @@
 import { useEffect, useRef, useState } from "react";
+import {
+	MerchantAvailabilityScreen,
+	MerchantOrderCard,
+	MerchantPrimaryNavigation,
+} from "./MerchantComponents";
+import {
+	sortOrdersByReadyDeadline,
+	type MerchantMenuCategory,
+	type MerchantMenuItem,
+	type MerchantOrder,
+	type MerchantViewName,
+} from "./merchant-operations";
 import { findNewPendingOrderIds, selectNewestStoreSnapshot } from "./merchant-polling";
-
-type MerchantOrder = {
-	id: string;
-	orderNumber: string;
-	status: "pending" | "accepted";
-	total: number;
-	estimatedReadyAt: string;
-	createdAt: string;
-	customerName: string;
-	customerPhone: string;
-	specialOrder: boolean;
-	items: Array<{
-		name: string;
-		quantity: number;
-		lineTotal: number;
-		modifiers: Array<{ name: string }>;
-	}>;
-};
 
 type MerchantOrdersResponse = {
 	orders: MerchantOrder[];
@@ -61,14 +55,8 @@ type StoreOperationResult = {
 	createdAt: string;
 };
 
-type MerchantMenuItem = {
-	id: number;
-	name: string;
-	isAvailable: boolean;
-};
-
 type MenuResponse = {
-	categories: Array<{ items: MerchantMenuItem[] }>;
+	categories: MerchantMenuCategory[];
 };
 
 type MerchantAction = "accept" | "reject" | "complete";
@@ -125,7 +113,8 @@ export default function MerchantView() {
 	const [orders, setOrders] = useState<MerchantOrder[]>([]);
 	const [notifications, setNotifications] = useState<MerchantNotification[]>([]);
 	const [store, setStore] = useState<StoreSettings | null>(null);
-	const [menuItems, setMenuItems] = useState<MerchantMenuItem[]>([]);
+	const [menuCategories, setMenuCategories] = useState<MerchantMenuCategory[]>([]);
+	const [activeView, setActiveView] = useState<MerchantViewName>("orders");
 	const [isLoading, setIsLoading] = useState(true);
 	const [error, setError] = useState<string | null>(null);
 	const [processingControl, setProcessingControl] = useState<string | null>(null);
@@ -273,7 +262,7 @@ export default function MerchantView() {
 					parseStoreSettings(storeResult),
 					requestEpoch,
 				);
-				setMenuItems(menuResult.categories.flatMap((category) => category.items));
+				setMenuCategories(menuResult.categories);
 				if (acceptedStoreSnapshot) {
 					setLastSyncAt(new Date());
 					setMerchantAccessHealthy(true);
@@ -396,7 +385,9 @@ export default function MerchantView() {
 		}
 	}
 
-	async function performAvailabilityAction(controlKey: string, endpoint: string) {
+	async function performAvailabilityAction(item: MerchantMenuItem) {
+		const controlKey = `item-${item.id}`;
+		const endpoint = `/api/merchant/menu-items/${item.id}/${item.isAvailable ? "sold-out" : "restore"}`;
 		setProcessingControl(controlKey);
 		setError(null);
 
@@ -409,7 +400,7 @@ export default function MerchantView() {
 
 			setRefreshVersion((current) => current + 1);
 		} catch {
-			setError("營運狀態更新失敗，請稍後再試。");
+			setError("商品狀態更新失敗，畫面仍保留原狀。請確認連線後再試。");
 		} finally {
 			setProcessingControl(null);
 		}
@@ -635,30 +626,47 @@ export default function MerchantView() {
 		}
 	}
 
+	const connectionState =
+		!isOnline || (!isLoading && !merchantAccessHealthy)
+			? "disconnected"
+			: merchantAccessHealthy
+				? "connected"
+				: "connecting";
+	const sortedOrders = sortOrdersByReadyDeadline(orders);
+	const now = new Date();
+
 	return (
 		<main className="merchant-page">
 			<header className="merchant-header">
 				<p className="eyebrow">吃炸的</p>
-				<h1>店家訂單</h1>
-				<p>依送單時間排列，先處理最早的訂單。</p>
+				<h1>店家工作台</h1>
+				<p>先看最接近完成時間的訂單。</p>
 			</header>
 
-			<p className="merchant-security-note">店家管理頁已啟用身分驗證。</p>
+			<MerchantPrimaryNavigation activeView={activeView} onChange={setActiveView} />
 
-			<section className="merchant-connection-status" aria-label="系統狀態">
+			<section
+				className={`merchant-connection-status ${connectionState}`}
+				aria-label="連線狀態"
+				aria-live="polite"
+			>
 				<div>
-					<span className={isOnline ? "status-dot online" : "status-dot offline"} />
-					<strong>{isOnline ? "Online" : "Offline"}</strong>
-				</div>
-				<div>
+					<span className={`status-dot ${connectionState === "connected" ? "online" : "offline"}`} />
 					<strong>
-						通知
-						{pushState === "enabled"
-							? "已開啟"
-							: pushState === "checking"
-								? "確認中"
-								: "未開啟"}
+						{connectionState === "connected"
+							? "連線正常"
+							: connectionState === "connecting"
+								? "連線中"
+								: "連線中斷"}
 					</strong>
+					<small>
+						最後同步 {lastSyncAt ? formatDateTime(lastSyncAt.toISOString()) : "尚未同步"}
+					</small>
+				</div>
+				<div className="merchant-push-control">
+					<span>
+						通知{pushState === "enabled" ? "已開啟" : pushState === "checking" ? "確認中" : "未開啟"}
+					</span>
 					<button
 						type="button"
 						disabled={processingControl !== null || pushState === "checking"}
@@ -671,233 +679,102 @@ export default function MerchantView() {
 						{pushState === "enabled" ? "停用通知" : "開啟通知"}
 					</button>
 				</div>
-				<small>
-					上次同步：{lastSyncAt ? formatDateTime(lastSyncAt.toISOString()) : "尚未同步"}
-				</small>
-				{pushState === "unsupported" && (
-					<p>此開啟方式尚不支援通知。請先將店家頁加入主畫面，再從主畫面開啟。</p>
-				)}
+				{pushState === "unsupported" && <p>請將店家頁加入主畫面後再開啟通知。</p>}
 				{pushState === "denied" && <p>通知已被瀏覽器拒絕，請從系統設定重新允許。</p>}
 			</section>
 
-			{error && (
-				<p className="merchant-message merchant-error" role="alert">
-					{error}
-				</p>
-			)}
+			{error && <p className="merchant-message merchant-error" role="alert">{error}</p>}
 
-			{store && (
-				<section className="merchant-controls" aria-labelledby="operations-heading">
-					<h2 id="operations-heading">營運控制</h2>
-
-					<div className="store-control" data-testid="store-control">
-						<div>
-							<h3>接單狀態</h3>
-							<strong className={store.is_accepting_orders ? "accepting" : "paused"}>
-								{store.is_accepting_orders ? "接單中" : "暫停接單"}
-							</strong>
-						</div>
-						<div className="store-actions">
-							<button
-								type="button"
-								className="pause-store-button"
-								disabled={storeMutationInFlight || !store.is_accepting_orders}
-								onClick={() => void pauseStore()}
-							>
-								暫停接單
-							</button>
-							<button
-								type="button"
-								className="resume-store-button"
-								disabled={
-									storeMutationInFlight || store.is_accepting_orders || !merchantAccessHealthy
-								}
-								onClick={() => void resumeStore()}
-							>
-								恢復接單
-							</button>
-						</div>
-					</div>
-					<p className="store-sync-status">
-						權威狀態版本：{store.stateVersion}；最後同步：
-						{lastSyncAt ? formatDateTime(lastSyncAt.toISOString()) : "尚未同步"}
-						{lastStoreOperation ? `；最近操作：${lastStoreOperation.outcome}` : ""}
-					</p>
-
-					<h3 className="item-controls-heading">商品狀態</h3>
-					<ul className="item-controls">
-						{menuItems.map((item) => (
-							<li key={item.id}>
-								<div>
-									<strong>{item.name}</strong>
-									<span className={item.isAvailable ? "available" : "sold-out"}>
-										{item.isAvailable ? "販售中" : "售完"}
-									</span>
-								</div>
-								<button
-									type="button"
-									disabled={processingControl !== null}
-									onClick={() =>
-										performAvailabilityAction(
-											`item-${item.id}`,
-											`/api/merchant/menu-items/${item.id}/${item.isAvailable ? "sold-out" : "restore"}`,
-										)
-									}
-								>
-									{item.isAvailable ? "標記售完" : "恢復販售"}
-								</button>
-							</li>
+			{activeView === "availability" ? (
+				<MerchantAvailabilityScreen
+					categories={menuCategories}
+					processingControl={processingControl}
+					onToggle={(item) => void performAvailabilityAction(item)}
+				/>
+			) : (
+				<>
+					{isLoading && <p className="merchant-message" role="status">訂單載入中…</p>}
+					{!isLoading && sortedOrders.length === 0 && (
+						<p className="merchant-message merchant-empty-orders">目前沒有待處理訂單。</p>
+					)}
+					<section className="merchant-orders" aria-label="待處理訂單">
+						{sortedOrders.map((order) => (
+							<MerchantOrderCard
+								key={order.id}
+								order={order}
+								now={now}
+								isNew={newOrderIds.has(order.id)}
+								isProcessing={processingControl === `order-${order.id}`}
+								onAction={(action) => void performAction(order.id, action)}
+							/>
 						))}
-					</ul>
-				</section>
-			)}
+					</section>
 
-			<section className="merchant-notifications" aria-labelledby="notifications-heading">
-				<h2 id="notifications-heading">通知狀態</h2>
-				{notifications.length === 0 ? (
-					<p>目前沒有通知紀錄。</p>
-				) : (
-					<ul>
-						{notifications.map((delivery) => {
-							const lastAttemptTime = delivery.lastAttemptAt
-								? new Date(delivery.lastAttemptAt).getTime()
-								: null;
-							const isStalePending =
-								delivery.status === "pending" &&
-								lastAttemptTime !== null &&
-								Date.now() - lastAttemptTime >= 60_000;
-							const canRetry =
-								delivery.status === "failed" ||
-								(delivery.status === "pending" &&
-									(delivery.attemptCount === 0 ||
-										delivery.lastAttemptAt === null ||
-										isStalePending));
-
-							return (
-								<li key={delivery.id}>
-									<div>
-										<strong>訂單 #{delivery.orderNumber}</strong>
-										<span>
-											{delivery.channel === "web_push" ? "Web Push" : "舊 LINE 紀錄"} ·{" "}
-											{delivery.status === "sent" ? "已通知" : delivery.status === "failed" ? "傳送失敗" : "傳送中"}
-										</span>
-										<small>已嘗試 {delivery.attemptCount} 次</small>
-									</div>
-									{delivery.channel === "web_push" && canRetry && (
-										<button
-											type="button"
-											disabled={processingControl !== null}
-											onClick={() => retryNotification(delivery.id)}
-										>
-											重新傳送
-										</button>
-									)}
-								</li>
-							);
-						})}
-					</ul>
-				)}
-			</section>
-
-			{isLoading && (
-				<p className="merchant-message" role="status">
-					訂單載入中…
-				</p>
-			)}
-			{!isLoading && orders.length === 0 && (
-				<p className="merchant-message">目前沒有待處理訂單。</p>
-			)}
-
-			<section className="merchant-orders" aria-label="待處理訂單">
-				{orders.map((order) => {
-					const isProcessing = processingControl === `order-${order.id}`;
-
-					return (
-						<article
-							className={`merchant-order ${order.specialOrder ? "special" : ""} ${newOrderIds.has(order.id) ? "new-order" : ""}`}
-							key={order.id}
-						>
-							<div className="merchant-order-heading">
+					{store && (
+						<section className="merchant-controls merchant-secondary-controls" aria-labelledby="operations-heading">
+							<h2 id="operations-heading">接單安全控制</h2>
+							<div className="store-control" data-testid="store-control">
 								<div>
-									<p className="merchant-order-number">訂單 #{order.orderNumber}</p>
-									<h2>{order.status === "pending" ? "等待店家確認" : "店家已接受"}</h2>
+									<h3>全店接單狀態</h3>
+									<strong className={store.is_accepting_orders ? "accepting" : "paused"}>
+										{store.is_accepting_orders ? "接單中" : "暫停接單"}
+									</strong>
 								</div>
-								{order.specialOrder && <span className="special-badge">特殊訂單</span>}
-							</div>
-
-							<dl className="merchant-order-meta">
-								<div>
-									<dt>顧客</dt>
-									<dd>{order.customerName}</dd>
-								</div>
-								<div>
-									<dt>電話</dt>
-									<dd>{order.customerPhone}</dd>
-								</div>
-								<div>
-									<dt>送出時間</dt>
-									<dd>{formatDateTime(order.createdAt)}</dd>
-								</div>
-								<div>
-									<dt>預計完成</dt>
-									<dd>{formatDateTime(order.estimatedReadyAt)}</dd>
-								</div>
-							</dl>
-
-							<ul className="merchant-item-list">
-								{order.items.map((item, index) => (
-									<li key={`${order.id}-${index}`}>
-										<div>
-											<strong>
-												{item.name} × {item.quantity}
-											</strong>
-											{item.modifiers.length > 0 && (
-												<p>{item.modifiers.map((modifier) => modifier.name).join(" / ")}</p>
-											)}
-										</div>
-										<span>NT$ {item.lineTotal}</span>
-									</li>
-								))}
-							</ul>
-
-							<p className="merchant-order-total">
-								<span>總額</span>
-								<strong>NT$ {order.total}</strong>
-							</p>
-
-							<div className="merchant-actions">
-								{order.status === "pending" ? (
-									<>
-										<button
-											type="button"
-											disabled={isProcessing}
-											onClick={() => performAction(order.id, "accept")}
-										>
-											接受
-										</button>
-										<button
-											className="reject-button"
-											type="button"
-											disabled={isProcessing}
-											onClick={() => performAction(order.id, "reject")}
-										>
-											拒絕
-										</button>
-									</>
-								) : (
+								<div className="store-actions">
 									<button
 										type="button"
-										disabled={isProcessing}
-										onClick={() => performAction(order.id, "complete")}
+										className="pause-store-button"
+										disabled={storeMutationInFlight || !store.is_accepting_orders}
+										onClick={() => void pauseStore()}
 									>
-										完成
+										暫停接單
 									</button>
-								)}
+									<button
+										type="button"
+										className="resume-store-button"
+										disabled={storeMutationInFlight || store.is_accepting_orders || !merchantAccessHealthy}
+										onClick={() => void resumeStore()}
+									>
+										恢復接單
+									</button>
+								</div>
 							</div>
-						</article>
-					);
-				})}
-			</section>
+							<p className="store-sync-status">
+								權威狀態版本：{store.stateVersion}；最後同步：
+								{lastSyncAt ? formatDateTime(lastSyncAt.toISOString()) : "尚未同步"}
+								{lastStoreOperation ? `；最近操作：${lastStoreOperation.outcome}` : ""}
+							</p>
+						</section>
+					)}
+
+					<section className="merchant-notifications" aria-labelledby="notifications-heading">
+						<h2 id="notifications-heading">通知狀態</h2>
+						{notifications.length === 0 ? <p>目前沒有通知紀錄。</p> : (
+							<ul>
+								{notifications.map((delivery) => {
+									const lastAttemptTime = delivery.lastAttemptAt ? new Date(delivery.lastAttemptAt).getTime() : null;
+									const isStalePending = delivery.status === "pending" && lastAttemptTime !== null && Date.now() - lastAttemptTime >= 60_000;
+									const canRetry = delivery.status === "failed" || (delivery.status === "pending" && (delivery.attemptCount === 0 || delivery.lastAttemptAt === null || isStalePending));
+									return (
+										<li key={delivery.id}>
+											<div>
+												<strong>訂單 #{delivery.orderNumber}</strong>
+												<span>{delivery.channel === "web_push" ? "Web Push" : "舊 LINE 紀錄"} · {delivery.status === "sent" ? "已通知" : delivery.status === "failed" ? "傳送失敗" : "傳送中"}</span>
+												<small>已嘗試 {delivery.attemptCount} 次</small>
+											</div>
+											{delivery.channel === "web_push" && canRetry && (
+												<button type="button" disabled={processingControl !== null} onClick={() => retryNotification(delivery.id)}>重新傳送</button>
+											)}
+										</li>
+									);
+								})}
+							</ul>
+						)}
+					</section>
+				</>
+			)}
+
+			<p className="merchant-security-note">店家頁已啟用身分驗證。</p>
 		</main>
 	);
 }

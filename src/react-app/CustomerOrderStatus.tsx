@@ -147,6 +147,13 @@ export default function CustomerOrderStatus({
 						</div>
 					</dl>
 
+					{order.customerNote && (
+						<p className="customer-order-note">
+							<strong>訂單備註</strong>
+							<span>{order.customerNote}</span>
+						</p>
+					)}
+
 					<ul className="customer-status-items">
 						{order.items.map((item, index) => (
 							<li key={`${order.publicLookupToken}-${index}`}>

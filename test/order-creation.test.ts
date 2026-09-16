@@ -14,6 +14,7 @@ type OrderResponse = {
 		orderNumber: string;
 		status: string;
 		total: number;
+		customerNote: string | null;
 		estimatedReadyAt: string;
 		createdAt: string;
 		items: Array<{
@@ -34,10 +35,10 @@ beforeAll(async () => {
 			"INSERT INTO menu_items (id, category_id, name, description, price, sort_order, is_available) VALUES (1, 1, '雞排', '', 85, 10, 1), (2, 1, '其他品項', '', 40, 20, 1)",
 		),
 		env.DB.prepare(
-			"INSERT INTO modifier_groups (id, menu_item_id, name, selection_type, is_required, sort_order, is_active) VALUES (1, 1, '辣度', 'single', 1, 10, 1), (2, 1, '切法', 'single', 0, 20, 1), (3, 2, '其他群組', 'single', 0, 10, 1)",
+			"INSERT INTO modifier_groups (id, menu_item_id, name, selection_type, is_required, sort_order, is_active) VALUES (1, 1, '辣度', 'single', 1, 10, 1), (2, 1, '切法', 'single', 0, 20, 1), (3, 2, '其他群組', 'single', 0, 10, 1), (4, 2, '調味', 'single', 1, 20, 1), (5, 1, '特殊選項：不加醬', 'single', 0, 30, 1)",
 		),
 		env.DB.prepare(
-			"INSERT INTO modifier_options (id, modifier_group_id, name, price_delta, sort_order, is_active) VALUES (10, 1, '小辣', 5, 10, 1), (20, 2, '切', 10, 10, 1), (30, 3, '其他選項', 0, 10, 1)",
+			"INSERT INTO modifier_options (id, modifier_group_id, name, price_delta, sort_order, is_active) VALUES (10, 1, '小辣', 5, 10, 1), (20, 2, '切', 10, 10, 1), (30, 3, '其他選項', 0, 10, 1), (40, 4, '胡椒', 0, 10, 1), (50, 5, '不加醬', 0, 10, 1)",
 		),
 	]);
 });
@@ -116,8 +117,85 @@ describe("POST /api/orders", () => {
 		expect(stored).toEqual({ status: "pending", total_amount: 100 });
 	});
 
+	it("accepts an omitted note and stores null", async () => {
+		const response = await postOrder("note-omitted");
+		const result = (await response.json()) as OrderResponse;
+		const stored = await env.DB
+			.prepare("SELECT customer_note FROM orders WHERE public_lookup_token = ?")
+			.bind(result.order.publicLookupToken)
+			.first<{ customer_note: string | null }>();
+
+		expect(response.status).toBe(201);
+		expect(result.order.customerNote).toBeNull();
+		expect(stored?.customer_note).toBeNull();
+	});
+
+	it("normalizes a blank note to null", async () => {
+		const response = await postOrder("note-blank", { ...defaultOrderRequest, customerNote: "   " });
+		const result = (await response.json()) as OrderResponse;
+
+		expect(response.status).toBe(201);
+		expect(result.order.customerNote).toBeNull();
+	});
+
+	it("trims and persists a valid Chinese note", async () => {
+		const response = await postOrder("note-chinese", {
+			...defaultOrderRequest,
+			customerNote: "  雞排不要切、辣粉另包  ",
+		});
+		const result = (await response.json()) as OrderResponse;
+		const stored = await env.DB
+			.prepare("SELECT customer_note FROM orders WHERE public_lookup_token = ?")
+			.bind(result.order.publicLookupToken)
+			.first<{ customer_note: string | null }>();
+
+		expect(response.status).toBe(201);
+		expect(result.order.customerNote).toBe("雞排不要切、辣粉另包");
+		expect(stored?.customer_note).toBe("雞排不要切、辣粉另包");
+	});
+
+	it("accepts exactly 120 Unicode characters", async () => {
+		const customerNote = "🍟".repeat(120);
+		const response = await postOrder("note-120", { ...defaultOrderRequest, customerNote });
+		const result = (await response.json()) as OrderResponse;
+
+		expect(response.status).toBe(201);
+		expect(result.order.customerNote).toBe(customerNote);
+	});
+
+	it("rejects a note over 120 Unicode characters", async () => {
+		const response = await postOrder("note-121", {
+			...defaultOrderRequest,
+			customerNote: "🍟".repeat(121),
+		});
+
+		expect(response.status).toBe(400);
+		expect(await response.json()).toMatchObject({ error: { code: "INVALID_ORDER_REQUEST" } });
+	});
+
+	it("rejects a non-string note", async () => {
+		const response = await postOrder("note-number", {
+			...defaultOrderRequest,
+			customerNote: 123,
+		});
+
+		expect(response.status).toBe(400);
+		expect(await response.json()).toMatchObject({ error: { code: "INVALID_ORDER_REQUEST" } });
+	});
+
+	it("rejects control characters in a note", async () => {
+		const response = await postOrder("note-control", {
+			...defaultOrderRequest,
+			customerNote: "雞排不要切\n辣粉另包",
+		});
+
+		expect(response.status).toBe(400);
+		expect(await response.json()).toMatchObject({ error: { code: "INVALID_ORDER_REQUEST" } });
+	});
+
 	it("preserves item and modifier snapshots after menu changes", async () => {
-		const firstResponse = await postOrder("snapshot-key");
+		const snapshotRequest = { ...defaultOrderRequest, customerNote: "雞排不要切" };
+		const firstResponse = await postOrder("snapshot-key", snapshotRequest);
 		const first = (await firstResponse.json()) as OrderResponse;
 
 		await env.DB.batch([
@@ -126,7 +204,7 @@ describe("POST /api/orders", () => {
 			env.DB.prepare("UPDATE modifier_options SET name = '微辣', price_delta = 20 WHERE id = 10"),
 		]);
 
-		const retryResponse = await postOrder("snapshot-key");
+		const retryResponse = await postOrder("snapshot-key", snapshotRequest);
 		const retry = (await retryResponse.json()) as OrderResponse;
 
 		expect(retryResponse.status).toBe(200);
@@ -139,6 +217,7 @@ describe("POST /api/orders", () => {
 				{ groupName: "切法", name: "切", priceDelta: 10 },
 			],
 		});
+		expect(retry.order.customerNote).toBe("雞排不要切");
 	});
 
 	it("rejects client price fields", async () => {
@@ -197,10 +276,10 @@ describe("POST /api/orders", () => {
 		});
 	});
 
-	it("rejects an invalid modifier at Order creation", async () => {
+	it("rejects a seasoning option owned by another menu item", async () => {
 		const response = await postOrder("invalid-modifier", {
 			...defaultOrderRequest,
-			items: [{ menuItemId: 1, quantity: 1, modifierOptionIds: [10, 30] }],
+			items: [{ menuItemId: 1, quantity: 1, modifierOptionIds: [10, 40] }],
 		});
 
 		expect(response.status).toBe(422);
@@ -209,9 +288,25 @@ describe("POST /api/orders", () => {
 		});
 	});
 
+	it("accepts API-backed Special Options through the existing modifier snapshot path", async () => {
+		const response = await postOrder("special-option", {
+			...defaultOrderRequest,
+			items: [{ menuItemId: 1, quantity: 1, modifierOptionIds: [10, 20, 50] }],
+		});
+		const result = (await response.json()) as OrderResponse;
+
+		expect(response.status).toBe(201);
+		expect(result.order.items[0]?.modifiers).toContainEqual({
+			groupName: "特殊選項：不加醬",
+			name: "不加醬",
+			priceDelta: 0,
+		});
+	});
+
 	it("returns the same Order for an identical idempotent retry", async () => {
-		const firstResponse = await postOrder("same-request-key");
-		const secondResponse = await postOrder("same-request-key");
+		const request = { ...defaultOrderRequest, customerNote: "辣粉另包" };
+		const firstResponse = await postOrder("same-request-key", request);
+		const secondResponse = await postOrder("same-request-key", request);
 		const first = (await firstResponse.json()) as OrderResponse;
 		const second = (await secondResponse.json()) as OrderResponse;
 		const count = await env.DB
@@ -224,6 +319,19 @@ describe("POST /api/orders", () => {
 		expect(second.order).toEqual(first.order);
 		expect(second.order.publicLookupToken).toBe(first.order.publicLookupToken);
 		expect(count?.count).toBe(1);
+	});
+
+	it("rejects the same idempotency key with a different note", async () => {
+		await postOrder("note-conflict-key", { ...defaultOrderRequest, customerNote: "辣粉另包" });
+		const response = await postOrder("note-conflict-key", {
+			...defaultOrderRequest,
+			customerNote: "不要辣粉",
+		});
+
+		expect(response.status).toBe(409);
+		expect(await response.json()).toMatchObject({
+			error: { code: "IDEMPOTENCY_KEY_CONFLICT" },
+		});
 	});
 
 	it("rejects conflicting reuse of an idempotency key", async () => {

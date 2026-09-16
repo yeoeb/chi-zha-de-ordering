@@ -1,6 +1,8 @@
 # Copy to .dev.vars for local Merchant API/UI access. Never set this bypass in production.
 MERCHANT_DEV_BYPASS=true
 MERCHANT_DEV_ACTOR_SUBJECT=local-development-merchant
+ADMIN_DEV_BYPASS=true
+ADMIN_DEV_ACTOR_SUBJECT=local-development-admin
 PUBLIC_WRITE_RATE_LIMIT_DEV_BYPASS=true
 
 # Generate a local-only value of at least 32 bytes. Production uses a Worker secret binding.
@@ -15,3 +17,8 @@ PUBLIC_WRITE_RATE_LIMIT_DEV_BYPASS=true
 # MERCHANT_HOSTNAME=merchant.example.com
 # CF_ACCESS_TEAM_DOMAIN=https://your-team.cloudflareaccess.com
 # CF_ACCESS_AUD=your-access-application-audience-tag
+
+# Production Admin access must use a separate Access application and hostname.
+# ADMIN_HOSTNAME=admin.example.com
+# ADMIN_ACCESS_TEAM_DOMAIN=https://your-team.cloudflareaccess.com
+# ADMIN_ACCESS_AUD=your-distinct-admin-access-application-audience-tag

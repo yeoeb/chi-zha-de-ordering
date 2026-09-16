@@ -1,6 +1,11 @@
 import { createRemoteJWKSet, jwtVerify } from "jose";
 
 export type SecurityBindings = {
+	ADMIN_ACCESS_AUD?: string;
+	ADMIN_ACCESS_TEAM_DOMAIN?: string;
+	ADMIN_DEV_BYPASS?: string;
+	ADMIN_DEV_ACTOR_SUBJECT?: string;
+	ADMIN_HOSTNAME?: string;
 	CF_ACCESS_AUD?: string;
 	CF_ACCESS_TEAM_DOMAIN?: string;
 	MERCHANT_DEV_BYPASS?: string;
@@ -18,6 +23,7 @@ type AccessIdentityVerifier = (
 ) => Promise<{ subject: string } | null>;
 
 export type MerchantIdentity = { subject: string };
+export type AdminIdentity = { subject: string };
 
 const accessJwkSets = new Map<string, ReturnType<typeof createRemoteJWKSet>>();
 
@@ -110,6 +116,19 @@ export async function authenticateMerchantRequest(input: {
 	} catch {
 		return null;
 	}
+}
+
+export async function authenticateAdminRequest(input: {
+	devBypass?: string;
+	devActorSubject?: string;
+	expectedHostname?: string;
+	requestUrl: string;
+	accessAudience?: string;
+	accessTeamDomain?: string;
+	accessToken?: string;
+	verifyAccessIdentity?: AccessIdentityVerifier;
+}): Promise<AdminIdentity | null> {
+	return authenticateMerchantRequest(input);
 }
 
 export function isMerchantMutationRequestAllowed(input: {

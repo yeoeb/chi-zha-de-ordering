@@ -5,6 +5,7 @@ export type CustomerOrder = {
 	orderNumber: string;
 	status: OrderStatus;
 	customerName: string;
+	customerNote: string | null;
 	createdAt: string;
 	estimatedReadyAt: string;
 	total: number;
@@ -44,6 +45,7 @@ export function toCustomerOrder(
 		orderNumber: storedOrder.orderNumber,
 		status: storedOrder.status,
 		customerName: storedOrder.customerName,
+		customerNote: storedOrder.customerNote,
 		createdAt: storedOrder.createdAt,
 		estimatedReadyAt: storedOrder.estimatedReadyAt,
 		total: storedOrder.total,

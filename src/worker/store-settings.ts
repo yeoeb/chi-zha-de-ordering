@@ -6,6 +6,7 @@ export type StoreSettingsRow = {
 	normal_order_minutes: number;
 	special_extra_minutes: number;
 	state_version: number;
+	origin_disclosure: string | null;
 };
 
 export const MAX_STORE_STATE_VERSION = Number.MAX_SAFE_INTEGER;
@@ -43,7 +44,8 @@ export async function getStoreSettings(db: D1Database) {
 				base_prep_minutes,
 				normal_order_minutes,
 				special_extra_minutes,
-				state_version
+				state_version,
+				origin_disclosure
 			FROM store_settings
 			WHERE id = 1`,
 		)

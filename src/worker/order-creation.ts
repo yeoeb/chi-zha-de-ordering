@@ -9,10 +9,19 @@ import { getStoreSettings } from "./store-settings";
 const IDEMPOTENCY_KEY_MAX_LENGTH = 128;
 const CUSTOMER_NAME_MAX_LENGTH = 50;
 const CUSTOMER_PHONE_MAX_LENGTH = 30;
+const CUSTOMER_NOTE_MAX_LENGTH = 120;
+
+function hasControlCharacter(value: string) {
+	return [...value].some((character) => {
+		const codePoint = character.codePointAt(0) ?? 0;
+		return codePoint <= 31 || (codePoint >= 127 && codePoint <= 159);
+	});
+}
 
 export type CreateOrderRequest = {
 	customerName: string;
 	customerPhone: string;
+	customerNote?: string | null;
 	specialOrder: boolean;
 	items: CheckoutLineSelection[];
 };
@@ -27,6 +36,7 @@ export type OrderSnapshot = {
 	createdAt: string;
 	customerName: string;
 	customerPhone: string;
+	customerNote: string | null;
 	specialOrder: boolean;
 	items: Array<{
 		menuItemId: number;
@@ -74,6 +84,7 @@ type StoredOrderRow = {
 	createdAt: string;
 	customerName: string;
 	customerPhone: string;
+	customerNote: string | null;
 	specialOrder: number;
 	requestFingerprint: string;
 	orderItemId: string | null;
@@ -119,10 +130,43 @@ function normalizeCustomerField(value: unknown, field: string, maxLength: number
 	return normalized;
 }
 
+function normalizeCustomerNote(value: unknown) {
+	if (value === undefined || value === null) return null;
+
+	if (typeof value !== "string") {
+		throw new OrderCreationError(400, "INVALID_ORDER_REQUEST", "customerNote must be a string or null");
+	}
+
+	if (hasControlCharacter(value)) {
+		throw new OrderCreationError(
+			400,
+			"INVALID_ORDER_REQUEST",
+			"customerNote must not contain control characters",
+		);
+	}
+
+	const normalized = value.trim();
+
+	if (normalized.length === 0) return null;
+
+	if ([...normalized].length > CUSTOMER_NOTE_MAX_LENGTH) {
+		throw new OrderCreationError(
+			400,
+			"INVALID_ORDER_REQUEST",
+			`customerNote must not exceed ${CUSTOMER_NOTE_MAX_LENGTH} characters`,
+		);
+	}
+
+	return normalized;
+}
+
 export function parseCreateOrderRequest(input: unknown): CreateOrderRequest {
 	if (
 		!isRecord(input) ||
-		!hasOnlyKeys(input, new Set(["customerName", "customerPhone", "specialOrder", "items"]))
+		!hasOnlyKeys(
+			input,
+			new Set(["customerName", "customerPhone", "customerNote", "specialOrder", "items"]),
+		)
 	) {
 		throw new OrderCreationError(
 			400,
@@ -150,6 +194,7 @@ export function parseCreateOrderRequest(input: unknown): CreateOrderRequest {
 			"customerPhone",
 			CUSTOMER_PHONE_MAX_LENGTH,
 		),
+		customerNote: normalizeCustomerNote(input.customerNote),
 		specialOrder: input.specialOrder ?? false,
 		items: parseCheckoutQuoteRequest({ items: input.items }),
 	};
@@ -185,6 +230,7 @@ function canonicalizeRequest(request: CreateOrderRequest) {
 	return JSON.stringify({
 		customerName: request.customerName,
 		customerPhone: request.customerPhone,
+		customerNote: request.customerNote ?? null,
 		specialOrder: request.specialOrder,
 		items,
 	});
@@ -214,6 +260,7 @@ async function getStoredOrderByIdempotencyKey(db: D1Database, idempotencyKey: st
 				orders.created_at AS createdAt,
 				orders.customer_name AS customerName,
 				orders.customer_phone AS customerPhone,
+				orders.customer_note AS customerNote,
 				orders.special_order AS specialOrder,
 				orders.request_fingerprint AS requestFingerprint,
 				order_items.id AS orderItemId,
@@ -255,6 +302,7 @@ async function getStoredOrderByIdempotencyKey(db: D1Database, idempotencyKey: st
 		createdAt: first.createdAt,
 		customerName: first.customerName,
 		customerPhone: first.customerPhone,
+		customerNote: first.customerNote,
 		specialOrder: Boolean(first.specialOrder),
 		items: [],
 	};
@@ -399,10 +447,11 @@ export async function createOrder(
 					created_at,
 					customer_name,
 					customer_phone,
+					customer_note,
 					special_order,
 					idempotency_key,
 					request_fingerprint
-				) VALUES (?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?, ?, ?)`,
+				) VALUES (?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 			)
 			.bind(
 				orderId,
@@ -413,6 +462,7 @@ export async function createOrder(
 				createdAt,
 				request.customerName,
 				request.customerPhone,
+				request.customerNote ?? null,
 				request.specialOrder ? 1 : 0,
 				idempotencyKey,
 				requestFingerprint,
@@ -526,6 +576,7 @@ export async function createOrder(
 			createdAt,
 			customerName: request.customerName,
 			customerPhone: request.customerPhone,
+			customerNote: request.customerNote ?? null,
 			specialOrder: request.specialOrder,
 			items: responseItems,
 		},

@@ -17,6 +17,18 @@ const mild: SelectedModifier = {
 	optionName: "小辣",
 	priceDelta: 5,
 };
+const notSpicy: SelectedModifier = {
+	...mild,
+	optionId: 100,
+	optionName: "不辣",
+	priceDelta: 0,
+};
+const verySpicy: SelectedModifier = {
+	...mild,
+	optionId: 104,
+	optionName: "大辣",
+	priceDelta: 0,
+};
 const sliced: SelectedModifier = {
 	groupId: 20,
 	groupName: "切法",
@@ -28,6 +40,18 @@ const notSliced: SelectedModifier = {
 	...sliced,
 	optionId: 202,
 	optionName: "不切",
+};
+const pepperSeasoning: SelectedModifier = {
+	groupId: 30,
+	groupName: "調味",
+	optionId: 301,
+	optionName: "胡椒",
+	priceDelta: 0,
+};
+const plumSeasoning: SelectedModifier = {
+	...pepperSeasoning,
+	optionId: 302,
+	optionName: "梅粉",
 };
 
 describe("cart identity and transitions", () => {
@@ -51,6 +75,56 @@ describe("cart identity and transitions", () => {
 		});
 
 		expect(slicedLine.id).not.toBe(notSlicedLine.id);
+		expect(cart).toHaveLength(2);
+	});
+
+	it("keeps different API spice selections as separate lines", () => {
+		const mildLine = createCartLine(item, [mild, sliced]);
+		const hotLine = createCartLine(item, [verySpicy, sliced]);
+		const cart = cartReducer(cartReducer([], { type: "add", line: mildLine }), {
+			type: "add",
+			line: hotLine,
+		});
+
+		expect(mildLine.id).not.toBe(hotLine.id);
+		expect(cart).toHaveLength(2);
+	});
+
+	it("reconfigures only the targeted line and merges when persisted modifiers become identical", () => {
+		const mildLine = createCartLine(item, [mild, sliced]);
+		const plainLine = createCartLine(item, [notSpicy, sliced]);
+		const cart = cartReducer(cartReducer([], { type: "add", line: mildLine }), {
+			type: "add",
+			line: plainLine,
+		});
+		const changed = cartReducer(cart, {
+			type: "reconfigure",
+			lineId: mildLine.id,
+			selectedModifiers: [verySpicy, sliced],
+		});
+
+		expect(changed).toHaveLength(2);
+		expect(changed.find((line) => line.id === plainLine.id)?.selectedModifiers).toContainEqual(notSpicy);
+
+		const merged = cartReducer(changed, {
+			type: "reconfigure",
+			lineId: changed.find((line) => line.id !== plainLine.id)!.id,
+			selectedModifiers: [notSpicy, sliced],
+		});
+		expect(merged).toHaveLength(1);
+		expect(merged[0]?.quantity).toBe(2);
+	});
+
+	it("keeps API-backed seasoning selections in cart-line identity without affecting price", () => {
+		const pepper = createCartLine(item, [mild, pepperSeasoning]);
+		const plum = createCartLine(item, [mild, plumSeasoning]);
+		const cart = cartReducer(cartReducer([], { type: "add", line: pepper }), {
+			type: "add",
+			line: plum,
+		});
+
+		expect(pepper.id).not.toBe(plum.id);
+		expect(pepper.unitPrice).toBe(plum.unitPrice);
 		expect(cart).toHaveLength(2);
 	});
 

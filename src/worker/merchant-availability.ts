@@ -30,7 +30,7 @@ export async function setMenuItemAvailability(
 		.prepare(
 			`UPDATE menu_items
 			SET is_available = ?
-			WHERE id = ?
+			WHERE id = ? AND is_archived = 0
 			RETURNING id, name, is_available AS isAvailable`,
 		)
 		.bind(isAvailable ? 1 : 0, menuItemId)

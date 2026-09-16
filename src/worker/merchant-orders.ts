@@ -12,6 +12,7 @@ export type MerchantOrder = {
 	rejectedAt: string | null;
 	customerName: string;
 	customerPhone: string;
+	customerNote: string | null;
 	specialOrder: boolean;
 	items: Array<{
 		menuItemId: number;
@@ -55,6 +56,7 @@ type MerchantOrderRow = {
 	rejectedAt: string | null;
 	customerName: string;
 	customerPhone: string;
+	customerNote: string | null;
 	specialOrder: number;
 	orderItemId: string | null;
 	menuItemId: number | null;
@@ -80,6 +82,7 @@ const SNAPSHOT_SELECT = `SELECT
 	orders.rejected_at AS rejectedAt,
 	orders.customer_name AS customerName,
 	orders.customer_phone AS customerPhone,
+	orders.customer_note AS customerNote,
 	orders.special_order AS specialOrder,
 	order_items.id AS orderItemId,
 	order_items.menu_item_id AS menuItemId,
@@ -96,6 +99,7 @@ LEFT JOIN order_items ON order_items.order_id = orders.id
 LEFT JOIN order_item_modifiers ON order_item_modifiers.order_item_id = order_items.id`;
 
 const SNAPSHOT_ORDER = `ORDER BY
+	orders.estimated_ready_at ASC,
 	orders.created_at ASC,
 	orders.id ASC,
 	order_items.sort_order ASC,
@@ -126,6 +130,7 @@ function buildMerchantOrders(rows: MerchantOrderRow[]) {
 				rejectedAt: row.rejectedAt,
 				customerName: row.customerName,
 				customerPhone: row.customerPhone,
+				customerNote: row.customerNote,
 				specialOrder: Boolean(row.specialOrder),
 				items: [],
 			};

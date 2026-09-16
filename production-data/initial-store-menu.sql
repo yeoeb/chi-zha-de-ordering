@@ -5,18 +5,21 @@
 UPDATE store_settings
 SET
 	display_name = '吃炸的',
-	is_accepting_orders = 0,
+	is_accepting_orders = CASE
+		WHEN NOT EXISTS (SELECT 1 FROM menu_items) THEN 0
+		ELSE is_accepting_orders
+	END,
 	base_prep_minutes = 15,
 	normal_order_minutes = 5,
 	special_extra_minutes = 10
 WHERE id = 1;
 
-INSERT INTO menu_categories (id, name, sort_order, is_active) VALUES
+INSERT OR IGNORE INTO menu_categories (id, name, sort_order, is_active) VALUES
 	(1, '香炸類', 10, 1),
 	(2, '串類', 20, 1),
 	(3, '蔬菜類', 30, 1);
 
-INSERT INTO menu_items (
+INSERT OR IGNORE INTO menu_items (
 	id,
 	category_id,
 	name,
@@ -69,7 +72,12 @@ INSERT INTO menu_items (
 	(42, 3, '小黃瓜', '', 35, 80, 1),
 	(43, 3, '小青椒', '', 30, 90, 1);
 
-INSERT INTO modifier_groups (
+-- Preserve the Phase 1 presentation configuration using authoritative data.
+UPDATE menu_items SET is_popular = 1
+WHERE (id = 1 AND name = '香雞排')
+	OR (id = 4 AND name = '鹹酥雞');
+
+INSERT OR IGNORE INTO modifier_groups (
 	id,
 	menu_item_id,
 	name,
@@ -81,9 +89,11 @@ INSERT INTO modifier_groups (
 	(1, 1, '辣度', 'single', 1, 10, 1),
 	(2, 1, '切法', 'single', 1, 20, 1),
 	(3, 4, '辣度', 'single', 1, 10, 1),
-	(4, 6, '辣度', 'single', 1, 10, 1);
+	(4, 6, '辣度', 'single', 1, 10, 1),
+	(5, 9, '調味', 'single', 1, 20, 1),
+	(6, 10, '調味', 'single', 1, 10, 1);
 
-INSERT INTO modifier_options (
+INSERT OR IGNORE INTO modifier_options (
 	id,
 	modifier_group_id,
 	name,
@@ -104,4 +114,10 @@ INSERT INTO modifier_options (
 	(11, 4, '不辣', 0, 10, 1),
 	(12, 4, '小辣', 0, 20, 1),
 	(13, 4, '中辣', 0, 30, 1),
-	(14, 4, '大辣', 0, 40, 1);
+	(14, 4, '大辣', 0, 40, 1),
+	(15, 5, '梅粉', 0, 10, 1),
+	(16, 5, '胡椒', 0, 20, 1),
+	(17, 5, '不加調味', 0, 30, 1),
+	(18, 6, '梅粉', 0, 10, 1),
+	(19, 6, '胡椒', 0, 20, 1),
+	(20, 6, '不加調味', 0, 30, 1);

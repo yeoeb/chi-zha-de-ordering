@@ -11,6 +11,9 @@ export default defineConfig(async () => {
 				wrangler: { configPath: "./wrangler.json" },
 				miniflare: {
 					bindings: {
+						ADMIN_DEV_BYPASS: "true",
+						ADMIN_DEV_ACTOR_SUBJECT: "local-test-admin-subject",
+						ADMIN_HOSTNAME: "example.com",
 						TEST_MIGRATIONS: migrations,
 						MERCHANT_DEV_BYPASS: "true",
 						MERCHANT_DEV_ACTOR_SUBJECT: "local-test-merchant-subject",

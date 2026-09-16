@@ -5,6 +5,7 @@ export type CustomerOrder = {
 	orderNumber: string;
 	status: OrderStatus;
 	customerName: string;
+	customerNote: string | null;
 	createdAt: string;
 	estimatedReadyAt: string;
 	total: number;

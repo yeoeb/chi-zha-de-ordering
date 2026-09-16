@@ -88,6 +88,8 @@ try {
 				(SELECT COUNT(*) FROM d1_migrations) AS migrationCount,
 				(SELECT COUNT(*) FROM store_settings WHERE id = 1 AND display_name = '吃炸的' AND state_version = 0) AS storeCount,
 				(SELECT COUNT(*) FROM menu_items) AS menuItemCount,
+				(SELECT COUNT(*) FROM modifier_groups WHERE id IN (5, 6) AND menu_item_id IN (9, 10) AND name = '調味' AND is_required = 1 AND is_active = 1) AS seasoningGroupCount,
+				(SELECT COUNT(*) FROM modifier_options WHERE id BETWEEN 15 AND 20 AND name IN ('梅粉', '胡椒', '不加調味') AND is_active = 1) AS seasoningOptionCount,
 				(SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' AND name = 'orders_public_lookup_token_unique') AS publicTokenIndexCount,
 				(SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' AND name = 'notification_deliveries_status_idx') AS notificationStatusIndexCount,
 				(SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'web_push_notification_deliveries') AS pushDeliveryTableCount,
@@ -97,14 +99,17 @@ try {
 				(SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'store_state_events') AS storeEventTableCount,
 				(SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' AND name = 'store_state_events_created_idx') AS storeEventIndexCount,
 				(SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'line_merchant_binding') AS lineBindingTableCount,
-				(SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'line_merchant_pairing_challenge') AS lineChallengeTableCount`,
+				(SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'line_merchant_pairing_challenge') AS lineChallengeTableCount,
+				(SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' AND name = 'menu_items_customer_visibility_sort_idx') AS adminMenuIndexCount`,
 		], true),
 	);
 
 	if (
-		summary.migrationCount !== 10 ||
+		summary.migrationCount !== 12 ||
 		summary.storeCount !== 1 ||
-		summary.menuItemCount !== 5 ||
+		summary.menuItemCount !== 6 ||
+		summary.seasoningGroupCount !== 2 ||
+		summary.seasoningOptionCount !== 6 ||
 		summary.publicTokenIndexCount !== 1 ||
 		summary.notificationStatusIndexCount !== 1 ||
 		summary.pushDeliveryTableCount !== 1 ||
@@ -114,7 +119,8 @@ try {
 		summary.storeEventTableCount !== 1 ||
 		summary.storeEventIndexCount !== 1 ||
 		summary.lineBindingTableCount !== 1 ||
-		summary.lineChallengeTableCount !== 1
+		summary.lineChallengeTableCount !== 1 ||
+		summary.adminMenuIndexCount !== 1
 	) {
 		throw new Error(`Unexpected fresh D1 summary: ${JSON.stringify(summary)}`);
 	}
@@ -172,6 +178,41 @@ try {
 	if (!pushDeliveryColumns?.some((column) => column.name === "last_attempt_at")) {
 		throw new Error("Fresh D1 is missing web_push_notification_deliveries.last_attempt_at");
 	}
+	const orderColumns = runWrangler([
+		"d1",
+		"execute",
+		database,
+		"--json",
+		"--command",
+		"PRAGMA table_info(orders)",
+	], true)?.[0]?.results;
+	if (!orderColumns?.some((column) => column.name === "customer_note")) {
+		throw new Error("Fresh D1 is missing orders.customer_note");
+	}
+	const menuItemColumns = runWrangler([
+		"d1",
+		"execute",
+		database,
+		"--json",
+		"--command",
+		"PRAGMA table_info(menu_items)",
+	], true)?.[0]?.results;
+	for (const name of ["image_url", "is_popular", "is_quick_sold_out", "is_archived"]) {
+		if (!menuItemColumns?.some((column) => column.name === name)) {
+			throw new Error(`Fresh D1 is missing menu_items.${name}`);
+		}
+	}
+	const storeColumns = runWrangler([
+		"d1",
+		"execute",
+		database,
+		"--json",
+		"--command",
+		"PRAGMA table_info(store_settings)",
+	], true)?.[0]?.results;
+	if (!storeColumns?.some((column) => column.name === "origin_disclosure")) {
+		throw new Error("Fresh D1 is missing store_settings.origin_disclosure");
+	}
 
 	const notificationMigration = readFileSync(join(root, "migrations", "0007_add_notification_last_attempt_at.sql"), "utf8");
 	if (!notificationMigration.includes("last_attempt_at")) {
@@ -203,6 +244,31 @@ try {
 		destructiveMigrationPattern.test(storeAuditMigration)
 	) {
 		throw new Error("Migration 0010 is missing additive Store audit schema or contains a forbidden write");
+	}
+	const customerNoteMigration = readFileSync(
+		join(root, "migrations", "0011_add_customer_note.sql"),
+		"utf8",
+	);
+	if (
+		!customerNoteMigration.includes("ADD COLUMN customer_note") ||
+		!customerNoteMigration.includes("length(customer_note) BETWEEN 1 AND 120") ||
+		destructiveMigrationPattern.test(customerNoteMigration)
+	) {
+		throw new Error("Migration 0011 is missing the additive customer_note schema or contains a forbidden write");
+	}
+	const adminMenuMigration = readFileSync(
+		join(root, "migrations", "0012_add_admin_menu_metadata.sql"),
+		"utf8",
+	);
+	if (
+		!adminMenuMigration.includes("ADD COLUMN image_url") ||
+		!adminMenuMigration.includes("ADD COLUMN is_popular") ||
+		!adminMenuMigration.includes("ADD COLUMN is_quick_sold_out") ||
+		!adminMenuMigration.includes("ADD COLUMN is_archived") ||
+		!adminMenuMigration.includes("ADD COLUMN origin_disclosure") ||
+		destructiveMigrationPattern.test(adminMenuMigration)
+	) {
+		throw new Error("Migration 0012 is missing additive Admin menu schema or contains a forbidden write");
 	}
 	const pushFixtureCounts = firstResult(
 		runWrangler([
@@ -311,7 +377,7 @@ try {
 		"--command",
 		"SELECT COUNT(*) AS migrationCount FROM d1_migrations",
 	], true);
-	if (firstResult(secondHistory).migrationCount !== 10) {
+	if (firstResult(secondHistory).migrationCount !== 12) {
 		throw new Error("Second fresh D1 migration apply changed migration history");
 	}
 	if (firstResult(runWrangler(["d1", "execute", database, "--json", "--command", "PRAGMA quick_check"], true)).quick_check !== "ok") {
@@ -319,7 +385,7 @@ try {
 	}
 
 	console.log(
-		"Fresh D1 PASS: 10 sequential migrations, Store state version/audit constraints, idempotent second apply, required store row, replaceable development seed, untouched historical LINE tables, additive Web Push tables, no Store/Push fixtures, and quick_check verified.",
+		"Fresh D1 PASS: 12 sequential migrations, additive Admin menu metadata and customer_note schema, API-backed fries seasoning fixtures, Store state version/audit constraints, idempotent second apply, required store row, replaceable development seed, untouched historical LINE tables, additive Web Push tables, no Store/Push fixtures, and quick_check verified.",
 	);
 } finally {
 	const resolvedPersistence = resolve(persistenceDirectory);

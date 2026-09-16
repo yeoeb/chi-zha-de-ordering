@@ -1,9 +1,11 @@
+@import "./App.css";
+
 :root {
 	font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
 	line-height: 1.5;
 	font-weight: 400;
-	color: #292524;
-	background: #fff7ed;
+	color: #241a14;
+	background: #fff9ed;
 	font-synthesis: none;
 	text-rendering: optimizeLegibility;
 	-webkit-font-smoothing: antialiased;
@@ -15,4 +17,5 @@ body {
 	display: flex;
 	min-width: 320px;
 	min-height: 100vh;
+	background: #fff9ed;
 }

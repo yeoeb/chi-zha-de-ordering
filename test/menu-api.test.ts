@@ -11,6 +11,9 @@ type MenuResponse = {
 			description: string;
 			price: number;
 			isAvailable: boolean;
+			imageUrl: string | null;
+			isPopular: boolean;
+			isQuickSoldOut: boolean;
 			modifierGroups: Array<{
 				id: number;
 				name: string;
@@ -28,7 +31,7 @@ beforeAll(async () => {
 			"INSERT INTO menu_categories (id, name, sort_order, is_active) VALUES (10, '後段分類', 20, 1), (20, '前段分類', 10, 1), (30, '隱藏分類', 0, 0)",
 		),
 		env.DB.prepare(
-			"INSERT INTO menu_items (id, category_id, name, description, price, sort_order, is_available) VALUES (100, 20, '後段餐點', '', 80, 20, 1), (101, 20, '售完餐點', '', 70, 10, 0), (102, 10, '另一分類餐點', '', 40, 10, 1), (103, 30, '不應曝光餐點', '', 999, 0, 1)",
+			"INSERT INTO menu_items (id, category_id, name, description, price, sort_order, is_available, image_url, is_popular, is_quick_sold_out, is_archived) VALUES (100, 20, '後段餐點', '', 80, 20, 1, 'https://example.com/item.jpg', 1, 1, 0), (101, 20, '售完餐點', '', 70, 10, 0, NULL, 0, 0, 0), (102, 10, '另一分類餐點', '', 40, 10, 1, NULL, 0, 0, 0), (103, 30, '不應曝光餐點', '', 999, 0, 1, NULL, 0, 0, 0), (104, 20, '封存餐點', '', 60, 30, 1, NULL, 0, 0, 1)",
 		),
 		env.DB.prepare(
 			"INSERT INTO modifier_groups (id, menu_item_id, name, selection_type, is_required, sort_order, is_active) VALUES (200, 101, '後段選項群', 'single', 1, 20, 1), (201, 101, '前段選項群', 'single', 1, 10, 1), (202, 101, '隱藏選項群', 'single', 1, 0, 0), (203, 100, '餐點專屬群', 'single', 0, 10, 1)",
@@ -48,6 +51,7 @@ describe("GET /api/menu", () => {
 		expect(menu.categories.map((category) => category.id)).toEqual([20, 10]);
 		expect(menu.categories[0]?.items.map((menuItem) => menuItem.id)).toEqual([101, 100]);
 		expect(menu.categories.flatMap((category) => category.items).map((menuItem) => menuItem.id)).not.toContain(103);
+		expect(menu.categories.flatMap((category) => category.items).map((menuItem) => menuItem.id)).not.toContain(104);
 
 		const unavailableItem = menu.categories[0]?.items[0];
 		expect(unavailableItem?.isAvailable).toBe(false);
@@ -64,6 +68,11 @@ describe("GET /api/menu", () => {
 		expect(unavailableItem?.modifierGroups.flatMap((group) => group.options).map((option) => option.id)).not.toContain(302);
 		expect(unavailableItem?.modifierGroups.map((group) => group.id)).not.toContain(202);
 		expect(menu.categories[0]?.items[1]?.modifierGroups[0]?.id).toBe(203);
+		expect(menu.categories[0]?.items[1]).toMatchObject({
+			imageUrl: "https://example.com/item.jpg",
+			isPopular: true,
+			isQuickSoldOut: true,
+		});
 	});
 });
 

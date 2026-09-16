@@ -1,51 +1,40 @@
 import { useEffect, useReducer, useRef, useState, type FormEvent } from "react";
 import {
-	calculateUnitPrice,
 	cartReducer,
 	createCartLine,
 	getCartItemCount,
 	getCartLineSubtotal,
 	getCartTotal,
-	type SelectedModifier,
+	type CartLine,
 } from "./cart";
-import { isModifierSelectionComplete } from "./modifier-selection";
+import {
+	BulkSpiceSelector,
+	CartBar,
+	CategoryTabs,
+	CustomerHeader,
+	InlineFoldOptionGroup,
+	ProductCard,
+	type ProductFoldDefinition,
+} from "./CustomerComponents";
+import {
+	getDefaultOptionIds,
+	getMainOptionDefinitions,
+	getSpiceGroup,
+	getSpecialOptionChoices,
+	toSelectedModifier,
+	type MenuItem,
+	type MenuCategory,
+	type SpiceChoice,
+} from "./customer-menu";
 import CustomerOrderStatus from "./CustomerOrderStatus";
+import AdminView from "./AdminView";
 import MerchantView from "./MerchantView";
 import type { CustomerOrder } from "./order-status";
-import "./App.css";
 
 type StoreSettings = {
 	display_name: string;
 	is_accepting_orders: boolean;
-};
-
-type ModifierOption = {
-	id: number;
-	name: string;
-	priceDelta: number;
-};
-
-type ModifierGroup = {
-	id: number;
-	name: string;
-	selectionType: "single";
-	isRequired: boolean;
-	options: ModifierOption[];
-};
-
-type MenuItem = {
-	id: number;
-	name: string;
-	description: string;
-	price: number;
-	isAvailable: boolean;
-	modifierGroups: ModifierGroup[];
-};
-
-type MenuCategory = {
-	id: number;
-	name: string;
-	items: MenuItem[];
+	originDisclosure?: string[];
 };
 
 type MenuResponse = {
@@ -72,18 +61,29 @@ type CheckoutQuote = {
 	leadMinutes: number;
 };
 
-function StoreHeader({ displayName, cartItemCount }: { displayName: string; cartItemCount: number }) {
-	return (
-		<header className="store-header">
-			<div>
-				<p className="eyebrow">現點現炸</p>
-				<h1>{displayName}</h1>
-			</div>
-			<p className="cart-count" aria-label={`購物車共 ${cartItemCount} 件`}>
-				購物車 {cartItemCount}
-			</p>
-		</header>
-	);
+const CUSTOMER_NOTE_MAX_CHARACTERS = 120;
+const PEPPER_PACKET_NOTE = "辣粉另包";
+
+function hasControlCharacter(value: string) {
+	return [...value].some((character) => {
+		const codePoint = character.codePointAt(0) ?? 0;
+		return codePoint <= 31 || (codePoint >= 127 && codePoint <= 159);
+	});
+}
+
+function composeCustomerNote(note: string, pepperPacketRequested: boolean) {
+	const normalized = note.trim();
+	if (!pepperPacketRequested) return normalized || null;
+	return normalized ? `${normalized}；${PEPPER_PACKET_NOTE}` : PEPPER_PACKET_NOTE;
+}
+
+function validateCustomerNote(note: string | null) {
+	if (note === null) return null;
+	if (hasControlCharacter(note)) return "備註不可包含換行或控制字元。";
+	if ([...note].length > CUSTOMER_NOTE_MAX_CHARACTERS) {
+		return `備註與辣粉另包標示合計不可超過 ${CUSTOMER_NOTE_MAX_CHARACTERS} 個字。`;
+	}
+	return null;
 }
 
 function formatReadyTime(estimatedReadyAt: string) {
@@ -95,12 +95,13 @@ function formatReadyTime(estimatedReadyAt: string) {
 	}).format(new Date(estimatedReadyAt));
 }
 
-function CustomerApp() {
+export function CustomerApp() {
 	const [store, setStore] = useState<StoreSettings | null>(null);
 	const [menu, setMenu] = useState<MenuResponse | null>(null);
 	const [error, setError] = useState<string | null>(null);
-	const [selectedItem, setSelectedItem] = useState<MenuItem | null>(null);
-	const [selectedOptionIds, setSelectedOptionIds] = useState<Record<number, number>>({});
+	const [productOptionIds, setProductOptionIds] = useState<
+		Record<number, Record<number, number | null>>
+	>({});
 	const [cart, dispatchCart] = useReducer(cartReducer, []);
 	const [view, setView] = useState<"menu" | "checkout">("menu");
 	const [checkoutQuote, setCheckoutQuote] = useState<CheckoutQuote | null>(null);
@@ -109,6 +110,8 @@ function CustomerApp() {
 	const [customerName, setCustomerName] = useState("");
 	const [customerPhone, setCustomerPhone] = useState("");
 	const [specialOrder, setSpecialOrder] = useState(false);
+	const [orderNote, setOrderNote] = useState("");
+	const [pepperPacketRequested, setPepperPacketRequested] = useState(false);
 	const [isOrderSubmitting, setIsOrderSubmitting] = useState(false);
 	const [orderError, setOrderError] = useState<string | null>(null);
 	const [createdOrder, setCreatedOrder] = useState<CustomerOrder | null>(null);
@@ -147,31 +150,6 @@ function CustomerApp() {
 
 	useEffect(() => () => checkoutRequest.current?.abort(), []);
 
-	const selectedModifiers: SelectedModifier[] =
-		selectedItem?.modifierGroups.flatMap((group) => {
-			const selectedOption = group.options.find(
-				(option) => option.id === selectedOptionIds[group.id],
-			);
-
-			return selectedOption
-				? [
-						{
-							groupId: group.id,
-							groupName: group.name,
-							optionId: selectedOption.id,
-							optionName: selectedOption.name,
-							priceDelta: selectedOption.priceDelta,
-						},
-					]
-				: [];
-		}) ?? [];
-
-	const isConfigurationComplete = selectedItem
-		? isModifierSelectionComplete(selectedItem.modifierGroups, selectedOptionIds)
-		: false;
-	const configuredUnitPrice = selectedItem
-		? calculateUnitPrice(selectedItem.price, selectedModifiers)
-		: 0;
 	const cartItemCount = getCartItemCount(cart);
 	const cartTotal = getCartTotal(cart);
 	const checkoutItems = cart.map((line) => ({
@@ -179,31 +157,140 @@ function CustomerApp() {
 		quantity: line.quantity,
 		modifierOptionIds: line.selectedModifiers.map((modifier) => modifier.optionId),
 	}));
-
-	function openItem(item: MenuItem) {
-		if (!item.isAvailable) {
-			return;
+	const submittedCustomerNote = composeCustomerNote(orderNote, pepperPacketRequested);
+	const customerNoteError = hasControlCharacter(orderNote)
+		? "備註不可包含換行或控制字元。"
+		: validateCustomerNote(submittedCustomerNote);
+	const customerNoteCharacterCount = submittedCustomerNote ? [...submittedCustomerNote].length : 0;
+	function getItemOptionIds(item: MenuItem) {
+		const selected = { ...getDefaultOptionIds(item) };
+		for (const [groupId, optionId] of Object.entries(productOptionIds[item.id] ?? {})) {
+			if (optionId === null) delete selected[Number(groupId)];
+			else selected[Number(groupId)] = optionId;
 		}
-
-		setSelectedItem(item);
-		setSelectedOptionIds({});
+		return selected;
 	}
 
-	function closeItem() {
-		setSelectedItem(null);
-		setSelectedOptionIds({});
+	function modifiersFromOptionIds(item: MenuItem, optionIds: Record<number, number>) {
+		return item.modifierGroups.flatMap((group) => {
+			const option = group.options.find((candidate) => candidate.id === optionIds[group.id]);
+			return option ? [toSelectedModifier(group, option)] : [];
+		});
 	}
 
-	function addConfiguredItem() {
-		if (!selectedItem?.isAvailable || !isConfigurationComplete) {
-			return;
-		}
+	function setProductOption(itemId: number, groupId: number, optionId: number | null) {
+		setProductOptionIds((current) => ({
+			...current,
+			[itemId]: { ...current[itemId], [groupId]: optionId },
+		}));
+	}
 
+	function getProductFolds(item: MenuItem): ProductFoldDefinition[] {
+		const optionIds = getItemOptionIds(item);
+		const mainFolds: ProductFoldDefinition[] = getMainOptionDefinitions(item).map(
+			(definition) => {
+				const selectedOption = definition.group.options.find(
+					(option) => option.id === optionIds[definition.group.id],
+				);
+				return {
+					id: definition.id,
+					label: definition.label,
+					summary: `${definition.label}：${selectedOption?.name ?? "請選擇"}`,
+					mode: "single",
+					choices: definition.group.options.map((option) => ({
+						id: String(option.id),
+						label: option.name,
+						selected: option.id === selectedOption?.id,
+					})),
+					onChange: (choiceId, selected) => {
+						if (selected) setProductOption(item.id, definition.group.id, Number(choiceId));
+					},
+				};
+			},
+		);
+		const specialChoices = getSpecialOptionChoices(item);
+		if (specialChoices.length === 0) return mainFolds;
+
+		const selectedSpecialChoices = specialChoices.filter(
+			(choice) => optionIds[choice.group.id] === choice.option.id,
+		);
+		const specialSummary =
+			selectedSpecialChoices.length === 0
+				? "特殊選項（選填）"
+				: selectedSpecialChoices.length === 1
+					? `特殊選項：${selectedSpecialChoices[0]?.label}`
+					: `特殊選項：已選 ${selectedSpecialChoices.length} 項`;
+
+		return [
+			...mainFolds,
+			{
+				id: "special-options",
+				label: "特殊選項（選填）",
+				summary: specialSummary,
+				mode: "multiple",
+				choices: specialChoices.map((choice) => ({
+					id: choice.id,
+					label: choice.label,
+					selected: optionIds[choice.group.id] === choice.option.id,
+				})),
+				onChange: (choiceId, selected) => {
+					const choice = specialChoices.find((candidate) => candidate.id === choiceId);
+					if (choice) {
+						setProductOption(item.id, choice.group.id, selected ? choice.option.id : null);
+					}
+				},
+			},
+		];
+	}
+
+	function addItem(item: MenuItem) {
+		if (!item.isAvailable) return;
 		dispatchCart({
 			type: "add",
-			line: createCartLine(selectedItem, selectedModifiers),
+			line: createCartLine(item, modifiersFromOptionIds(item, getItemOptionIds(item))),
 		});
-		closeItem();
+	}
+
+	function applyBulkSpice(nextChoice: SpiceChoice) {
+		const menuItems = menu?.categories.flatMap((category) => category.items) ?? [];
+
+		cart.forEach((line) => {
+			const item = menuItems.find((candidate) => candidate.id === line.menuItemId);
+			const group = item ? getSpiceGroup(item) : undefined;
+			if (!group) return;
+
+			const targetOption = group.options.find((option) => option.name === nextChoice);
+			if (!targetOption) return;
+
+			const replacement = toSelectedModifier(group, targetOption);
+			const selectedModifiers = [
+				...line.selectedModifiers.filter((modifier) => modifier.groupId !== group.id),
+				replacement,
+			];
+			dispatchCart({
+				type: "reconfigure",
+				lineId: line.id,
+				selectedModifiers,
+			});
+		});
+	}
+
+	function updateLineSpice(line: CartLine, item: MenuItem, optionId: number) {
+		const group = getSpiceGroup(item);
+		const option = group?.options.find((candidate) => candidate.id === optionId);
+		if (!group || !option) return;
+		dispatchCart({
+			type: "reconfigure",
+			lineId: line.id,
+			selectedModifiers: [
+				...line.selectedModifiers.filter((modifier) => modifier.groupId !== group.id),
+				toSelectedModifier(group, option),
+			],
+		});
+	}
+
+	function scrollToCart() {
+		document.getElementById("cart")?.scrollIntoView({ behavior: "smooth", block: "start" });
 	}
 
 	async function openCheckout() {
@@ -282,7 +369,13 @@ function CustomerApp() {
 	async function submitOrder(event: FormEvent<HTMLFormElement>) {
 		event.preventDefault();
 
-		if (!checkoutQuote || isOrderSubmitting || !customerName.trim() || !customerPhone.trim()) {
+		if (
+			!checkoutQuote ||
+			isOrderSubmitting ||
+			!customerName.trim() ||
+			!customerPhone.trim() ||
+			customerNoteError
+		) {
 			return;
 		}
 
@@ -302,6 +395,7 @@ function CustomerApp() {
 					customerName,
 					customerPhone,
 					specialOrder,
+					customerNote: submittedCustomerNote,
 					items: checkoutItems,
 				}),
 			});
@@ -338,9 +432,11 @@ function CustomerApp() {
 	if (view === "checkout") {
 		return (
 			<main className="page">
-				<StoreHeader
+				<CustomerHeader
 					displayName={store?.display_name ?? "店家載入中…"}
+					isAcceptingOrders={store?.is_accepting_orders ?? null}
 					cartItemCount={cartItemCount}
+					onCartClick={backToCart}
 				/>
 				<section className="checkout" aria-labelledby="checkout-heading">
 					<button
@@ -416,6 +512,9 @@ function CustomerApp() {
 									<span>電話</span>
 									<input
 										type="tel"
+										inputMode="tel"
+										pattern="[0-9+()\-\s]{7,30}"
+										title="請輸入 7 至 30 字元的電話格式"
 										maxLength={30}
 										required
 										disabled={isOrderSubmitting}
@@ -425,6 +524,34 @@ function CustomerApp() {
 											resetSubmissionAttempt();
 										}}
 									/>
+								</label>
+								<label className="pepper-packet-field">
+									<input
+										type="checkbox"
+										disabled={isOrderSubmitting}
+										checked={pepperPacketRequested}
+										onChange={(event) => {
+											setPepperPacketRequested(event.target.checked);
+											resetSubmissionAttempt();
+										}}
+									/>
+									<span>辣粉另包</span>
+								</label>
+								<label className="order-note-field">
+									<span>訂單備註（選填）</span>
+									<textarea
+										disabled={isOrderSubmitting}
+										placeholder="例如：辣／不辣分開裝、其他特殊需求"
+										value={orderNote}
+										onChange={(event) => {
+											setOrderNote(event.target.value);
+											resetSubmissionAttempt();
+										}}
+									/>
+									<small>如需分袋，可備註「辣／不辣分開裝」；未特別註明則一起裝。</small>
+									<small>需加價的需求請使用餐點選項，請勿填在備註。</small>
+									<small>{customerNoteCharacterCount} / {CUSTOMER_NOTE_MAX_CHARACTERS} 字</small>
+									{customerNoteError && <small className="note-error" role="alert">{customerNoteError}</small>}
 								</label>
 								<label className="special-order-field">
 									<input
@@ -448,7 +575,12 @@ function CustomerApp() {
 								<button
 									className="submit-order-button"
 									type="submit"
-									disabled={isOrderSubmitting || !customerName.trim() || !customerPhone.trim()}
+									disabled={
+										isOrderSubmitting ||
+										!customerName.trim() ||
+										!customerPhone.trim() ||
+										Boolean(customerNoteError)
+									}
 								>
 									{isOrderSubmitting ? "送出中…" : "送出訂單"}
 								</button>
@@ -461,11 +593,14 @@ function CustomerApp() {
 	}
 
 	return (
-		<main className="page">
-			<StoreHeader
+		<main className={`page customer-page${cart.length > 0 ? " has-cart-bar" : ""}`}>
+			<CustomerHeader
 				displayName={store?.display_name ?? "店家載入中…"}
+				isAcceptingOrders={store?.is_accepting_orders ?? null}
 				cartItemCount={cartItemCount}
+				onCartClick={scrollToCart}
 			/>
+			{menu && <CategoryTabs categories={menu.categories} />}
 
 			{store && !store.is_accepting_orders && (
 				<p className="store-paused-banner" role="status">
@@ -485,53 +620,79 @@ function CustomerApp() {
 				</p>
 			)}
 
+			<div className="customer-menu-content">
 			{menu?.categories.map((category) => (
-				<section className="category" key={category.id}>
+				<section className="category" id={`category-${category.id}`} key={category.id}>
 					<h2>{category.name}</h2>
 					<ul className="menu-list">
-						{category.items.map((item) => (
-							<li className={`menu-item${item.isAvailable ? "" : " sold-out"}`} key={item.id}>
-								<button
-									className="menu-item-button"
-									type="button"
-									disabled={!item.isAvailable}
-									onClick={() => openItem(item)}
-								>
-									<span className="item-copy">
-										<span className="item-heading">
-											<strong>{item.name}</strong>
-											{!item.isAvailable && <span className="sold-out-label">售完</span>}
-										</span>
-										{item.description && <span className="item-description">{item.description}</span>}
-									</span>
-									<span className="price">NT$ {item.price}</span>
-								</button>
-							</li>
-						))}
+						{[...category.items]
+							.sort((left, right) => Number(right.isAvailable) - Number(left.isAvailable))
+							.map((item) => {
+								return (
+									<ProductCard
+										key={item.id}
+										item={item}
+										folds={getProductFolds(item)}
+										onAdd={() => addItem(item)}
+									/>
+								);
+							})}
 					</ul>
 				</section>
 			))}
 
-			<section className="cart" aria-labelledby="cart-heading">
+			<section className="cart" id="cart" aria-labelledby="cart-heading">
 				<div className="section-heading">
 					<h2 id="cart-heading">購物車</h2>
 					<span>{cartItemCount} 件</span>
 				</div>
+				{cart.some((line) => {
+					const item = menu?.categories
+						.flatMap((category) => category.items)
+						.find((candidate) => candidate.id === line.menuItemId);
+					return item ? Boolean(getSpiceGroup(item)) : false;
+				}) && <BulkSpiceSelector onApply={applyBulkSpice} />}
 				{cart.length === 0 ? (
 					<p className="empty-cart">尚未加入餐點</p>
 				) : (
 					<>
 						<ul className="cart-lines">
-							{cart.map((line) => (
-								<li key={line.id}>
+							{cart.map((line) => {
+								const item = menu?.categories
+									.flatMap((category) => category.items)
+									.find((candidate) => candidate.id === line.menuItemId);
+								const spiceGroup = item ? getSpiceGroup(item) : undefined;
+								const spiceModifier = spiceGroup
+									? line.selectedModifiers.find((modifier) => modifier.groupId === spiceGroup.id)
+									: undefined;
+								const otherModifiers = line.selectedModifiers.filter(
+									(modifier) => modifier.groupId !== spiceGroup?.id,
+								);
+
+								return <li key={line.id}>
 									<div className="cart-line-heading">
 										<strong>
 											{line.itemName} × {line.quantity}
 										</strong>
 										<span>NT$ {getCartLineSubtotal(line)}</span>
 									</div>
-									{line.selectedModifiers.length > 0 && (
-										<p>{line.selectedModifiers.map((modifier) => modifier.optionName).join(" / ")}</p>
+									{otherModifiers.length > 0 && (
+										<p>{otherModifiers.map((modifier) => modifier.optionName).join(" / ")}</p>
+									)}
+									{item && spiceGroup && spiceModifier && (
+										<InlineFoldOptionGroup
+											label="辣度"
+											summary={`辣度：${spiceModifier.optionName}`}
+											mode="single"
+											choices={spiceGroup.options.map((option) => ({
+												id: String(option.id),
+												label: option.name,
+												selected: option.id === spiceModifier.optionId,
+											}))}
+											onChange={(choiceId, selected) => {
+												if (selected) updateLineSpice(line, item, Number(choiceId));
+											}}
+										/>
 									)}
 									<div className="cart-line-actions">
 										<button
@@ -558,8 +719,8 @@ function CustomerApp() {
 											移除
 										</button>
 									</div>
-								</li>
-							))}
+								</li>;
+							})}
 						</ul>
 						<p className="cart-total">
 							<span>總計</span>
@@ -577,67 +738,24 @@ function CustomerApp() {
 				)}
 			</section>
 
-			{selectedItem && (
-				<div className="dialog-backdrop">
-					<section
-						className="item-dialog"
-						role="dialog"
-						aria-modal="true"
-						aria-labelledby="item-dialog-title"
-					>
-						<div className="dialog-heading">
-							<div>
-								<h2 id="item-dialog-title">{selectedItem.name}</h2>
-								<p>NT$ {configuredUnitPrice}</p>
-							</div>
-							<button type="button" aria-label="關閉餐點設定" onClick={closeItem}>
-								×
-							</button>
-						</div>
-
-						{selectedItem.modifierGroups.map((group) => (
-							<fieldset key={group.id}>
-								<legend>
-									{group.name}
-									{group.isRequired && <span>必選</span>}
-								</legend>
-								{group.options.map((option) => (
-									<label key={option.id}>
-										<input
-											type="radio"
-											name={`modifier-${selectedItem.id}-${group.id}`}
-											value={option.id}
-											checked={selectedOptionIds[group.id] === option.id}
-											onChange={() =>
-												setSelectedOptionIds((current) => ({
-													...current,
-													[group.id]: option.id,
-												}))
-											}
-										/>
-										<span>{option.name}</span>
-										{option.priceDelta !== 0 && <small>+ NT$ {option.priceDelta}</small>}
-									</label>
-								))}
-							</fieldset>
-						))}
-
-						<button
-							className="add-to-cart-button"
-							type="button"
-							disabled={!isConfigurationComplete}
-							onClick={addConfiguredItem}
-						>
-							加入購物車 · NT$ {configuredUnitPrice}
-						</button>
-					</section>
-				</div>
+			{store?.originDisclosure && store.originDisclosure.length > 0 && (
+				<aside className="origin-disclosure" aria-label="食材來源資訊">
+					<h2>食材來源資訊</h2>
+					{store.originDisclosure.map((label) => <p key={label}>{label}</p>)}
+				</aside>
 			)}
+			</div>
+
+			<CartBar itemCount={cartItemCount} total={cartTotal} onClick={scrollToCart} />
 		</main>
 	);
 }
 
 function App() {
+	if (window.location.pathname === "/admin" || window.location.pathname === "/admin/menu") {
+		return <AdminView />;
+	}
+
 	if (window.location.pathname === "/merchant") {
 		return <MerchantView />;
 	}

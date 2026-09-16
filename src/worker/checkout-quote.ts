@@ -57,6 +57,7 @@ type QuoteCatalogRow = {
 	itemName: string;
 	itemPrice: number;
 	itemIsAvailable: number;
+	itemIsArchived: number;
 	categoryIsActive: number;
 	modifierGroupId: number | null;
 	modifierGroupName: string | null;
@@ -153,6 +154,7 @@ const catalogQuery = `SELECT
 	items.name AS itemName,
 	items.price AS itemPrice,
 	items.is_available AS itemIsAvailable,
+	items.is_archived AS itemIsArchived,
 	categories.is_active AS categoryIsActive,
 	modifier_groups.id AS modifierGroupId,
 	modifier_groups.name AS modifierGroupName,
@@ -212,7 +214,7 @@ export async function validateAndPriceCart(
 			throw new CheckoutQuoteError(422, "UNKNOWN_ITEM", `Menu item ${selection.menuItemId} does not exist`);
 		}
 
-		if (!item.categoryIsActive) {
+		if (!item.categoryIsActive || item.itemIsArchived) {
 			throw new CheckoutQuoteError(422, "INACTIVE_ITEM", `Menu item ${selection.menuItemId} is not active`);
 		}
 

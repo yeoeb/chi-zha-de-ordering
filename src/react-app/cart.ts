@@ -11,6 +11,7 @@ export type CartLine = {
 	menuItemId: number;
 	itemName: string;
 	selectedModifiers: SelectedModifier[];
+	basePrice: number;
 	unitPrice: number;
 	quantity: number;
 };
@@ -19,7 +20,12 @@ type CartAction =
 	| { type: "add"; line: Omit<CartLine, "quantity"> }
 	| { type: "increase"; lineId: string }
 	| { type: "decrease"; lineId: string }
-	| { type: "remove"; lineId: string };
+	| { type: "remove"; lineId: string }
+	| {
+			type: "reconfigure";
+			lineId: string;
+			selectedModifiers: SelectedModifier[];
+	  };
 
 export function calculateUnitPrice(basePrice: number, modifiers: SelectedModifier[]) {
 	return basePrice + modifiers.reduce((total, modifier) => total + modifier.priceDelta, 0);
@@ -33,14 +39,26 @@ export function createCartLine(
 		.sort((left, right) => left.groupId - right.groupId || left.optionId - right.optionId)
 		.map((modifier) => `${modifier.groupId}=${modifier.optionId}`)
 		.join("|");
-
 	return {
 		id: `${item.id}:${configurationKey}`,
 		menuItemId: item.id,
 		itemName: item.name,
 		selectedModifiers,
+		basePrice: item.price,
 		unitPrice: calculateUnitPrice(item.price, selectedModifiers),
 	};
+}
+
+function mergeMatchingLines(cart: CartLine[]) {
+	return cart.reduce<CartLine[]>((merged, line) => {
+		const existing = merged.find((candidate) => candidate.id === line.id);
+		if (!existing) return [...merged, line];
+		return merged.map((candidate) =>
+			candidate.id === line.id
+				? { ...candidate, quantity: candidate.quantity + line.quantity }
+				: candidate,
+		);
+	}, []);
 }
 
 export function cartReducer(cart: CartLine[], action: CartAction): CartLine[] {
@@ -68,6 +86,19 @@ export function cartReducer(cart: CartLine[], action: CartAction): CartLine[] {
 			);
 		case "remove":
 			return cart.filter((line) => line.id !== action.lineId);
+		case "reconfigure":
+			return mergeMatchingLines(
+				cart.map((line) => {
+					if (line.id !== action.lineId) return line;
+					return {
+						...line,
+						...createCartLine(
+							{ id: line.menuItemId, name: line.itemName, price: line.basePrice },
+							action.selectedModifiers,
+						),
+					};
+				}),
+			);
 	}
 }
 
