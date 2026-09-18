@@ -1,4 +1,4 @@
-const SHELL_CACHE = "chi-zha-de-shell-v2";
+const SHELL_CACHE = "chi-zha-de-shell-v3";
 const MERCHANT_PATH = "/merchant";
 const DEFAULT_PUSH_TITLE = "吃炸的｜新訂單";
 const DEFAULT_PUSH_BODY = "有一筆新訂單待處理";

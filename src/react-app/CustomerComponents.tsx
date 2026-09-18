@@ -1,4 +1,4 @@
-import { useId, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 import type { MenuCategory, MenuItem, SpiceChoice } from "./customer-menu";
 import { isPopularItem, spiceChoices } from "./customer-menu";
 
@@ -68,11 +68,45 @@ export function CustomerHeader({
 	);
 }
 
-export function CategoryTabs({ categories }: { categories: MenuCategory[] }) {
+export function CategoryTabs({
+	categories,
+	activeCategoryId,
+	onCategorySelect,
+}: {
+	categories: MenuCategory[];
+	activeCategoryId: number | null;
+	onCategorySelect: (categoryId: number) => void;
+}) {
+	const tabRefs = useRef(new Map<number, HTMLAnchorElement>());
+
+	useEffect(() => {
+		if (activeCategoryId === null) return;
+		const activeTab = tabRefs.current.get(activeCategoryId);
+		if (!activeTab || typeof activeTab.scrollIntoView !== "function") return;
+		const reduceMotion = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ?? false;
+		activeTab.scrollIntoView({
+			behavior: reduceMotion ? "auto" : "smooth",
+			block: "nearest",
+			inline: "nearest",
+		});
+	}, [activeCategoryId]);
+
 	return (
 		<nav className="category-tabs" aria-label="餐點分類">
 			{categories.map((category) => (
-				<a key={category.id} href={`#category-${category.id}`}>
+				<a
+					key={category.id}
+					href={`#category-${category.id}`}
+					ref={(element) => {
+						if (element) tabRefs.current.set(category.id, element);
+						else tabRefs.current.delete(category.id);
+					}}
+					aria-current={activeCategoryId === category.id ? "true" : undefined}
+					onClick={(event) => {
+						event.preventDefault();
+						onCategorySelect(category.id);
+					}}
+				>
 					{category.name}
 				</a>
 			))}

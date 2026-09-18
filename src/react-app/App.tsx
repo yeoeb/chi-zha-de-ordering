@@ -103,7 +103,8 @@ export function CustomerApp() {
 		Record<number, Record<number, number | null>>
 	>({});
 	const [cart, dispatchCart] = useReducer(cartReducer, []);
-	const [view, setView] = useState<"menu" | "checkout">("menu");
+	const [view, setView] = useState<"menu" | "cart" | "checkout">("menu");
+	const [activeCategoryId, setActiveCategoryId] = useState<number | null>(null);
 	const [checkoutQuote, setCheckoutQuote] = useState<CheckoutQuote | null>(null);
 	const [checkoutError, setCheckoutError] = useState<string | null>(null);
 	const [isCheckoutLoading, setIsCheckoutLoading] = useState(false);
@@ -117,6 +118,8 @@ export function CustomerApp() {
 	const [createdOrder, setCreatedOrder] = useState<CustomerOrder | null>(null);
 	const checkoutRequest = useRef<AbortController | null>(null);
 	const orderIdempotencyKey = useRef<string | null>(null);
+	const categorySelectionTarget = useRef<number | null>(null);
+	const categorySelectionTimer = useRef<number | null>(null);
 
 	useEffect(() => {
 		const controller = new AbortController();
@@ -148,7 +151,70 @@ export function CustomerApp() {
 		return () => controller.abort();
 	}, []);
 
-	useEffect(() => () => checkoutRequest.current?.abort(), []);
+	useEffect(() => () => {
+		checkoutRequest.current?.abort();
+		if (categorySelectionTimer.current !== null) {
+			window.clearTimeout(categorySelectionTimer.current);
+		}
+	}, []);
+
+	useEffect(() => {
+		const firstCategoryId = menu?.categories[0]?.id;
+		if (firstCategoryId !== undefined && activeCategoryId === null) {
+			setActiveCategoryId(firstCategoryId);
+		}
+	}, [activeCategoryId, menu]);
+
+	useEffect(() => {
+		document.documentElement.scrollTop = 0;
+		document.body.scrollTop = 0;
+	}, [view]);
+
+	useEffect(() => {
+		if (view !== "menu" || !menu || menu.categories.length === 0) return;
+
+		function updateActiveCategory() {
+			const headerBottom = document.querySelector(".customer-header")?.getBoundingClientRect().bottom ?? 0;
+			const tabsBottom = document.querySelector(".category-tabs")?.getBoundingClientRect().bottom ?? 0;
+			const stickyOffset = Math.max(headerBottom, tabsBottom) + 24;
+			const sections = menu!.categories.flatMap((category) => {
+				const element = document.getElementById(`category-${category.id}`);
+				return element ? [{ categoryId: category.id, rect: element.getBoundingClientRect() }] : [];
+			});
+
+			if (
+				sections.length === 0 ||
+				sections.every(({ rect }) => rect.top === 0 && rect.bottom === 0 && rect.height === 0)
+			) {
+				return;
+			}
+
+			if (categorySelectionTarget.current !== null) {
+				const targetSection = sections.find(
+					(section) => section.categoryId === categorySelectionTarget.current,
+				);
+				if (targetSection && targetSection.rect.top > stickyOffset) {
+					return;
+				}
+				categorySelectionTarget.current = null;
+			}
+
+			let nextActiveId = sections[0]?.categoryId ?? null;
+			for (const section of sections) {
+				if (section.rect.top <= stickyOffset) nextActiveId = section.categoryId;
+				else break;
+			}
+			setActiveCategoryId((current) => current === nextActiveId ? current : nextActiveId);
+		}
+
+		updateActiveCategory();
+		window.addEventListener("scroll", updateActiveCategory, { passive: true });
+		window.addEventListener("resize", updateActiveCategory);
+		return () => {
+			window.removeEventListener("scroll", updateActiveCategory);
+			window.removeEventListener("resize", updateActiveCategory);
+		};
+	}, [menu, view]);
 
 	const cartItemCount = getCartItemCount(cart);
 	const cartTotal = getCartTotal(cart);
@@ -289,8 +355,39 @@ export function CustomerApp() {
 		});
 	}
 
-	function scrollToCart() {
-		document.getElementById("cart")?.scrollIntoView({ behavior: "smooth", block: "start" });
+	function openCart() {
+		setView("cart");
+	}
+
+	function continueShopping() {
+		setView("menu");
+	}
+
+	function scrollCartToTop() {
+		document.documentElement.scrollTop = 0;
+		document.body.scrollTop = 0;
+	}
+
+	function selectCategory(categoryId: number) {
+		categorySelectionTarget.current = categoryId;
+		if (categorySelectionTimer.current !== null) {
+			window.clearTimeout(categorySelectionTimer.current);
+		}
+		categorySelectionTimer.current = window.setTimeout(() => {
+			categorySelectionTarget.current = null;
+			window.dispatchEvent(new Event("scroll"));
+		}, 1200);
+		setActiveCategoryId(categoryId);
+		const section = document.getElementById(`category-${categoryId}`);
+		if (!section) return;
+		const headerBottom = document.querySelector(".customer-header")?.getBoundingClientRect().bottom ?? 0;
+		const tabsHeight = document.querySelector(".category-tabs")?.getBoundingClientRect().height ?? 0;
+		const stickyOffset = headerBottom + tabsHeight + 24;
+		const reduceMotion = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ?? false;
+		window.scrollTo({
+			top: Math.max(0, window.scrollY + section.getBoundingClientRect().top - stickyOffset),
+			behavior: reduceMotion ? "auto" : "smooth",
+		});
 	}
 
 	async function openCheckout() {
@@ -358,7 +455,7 @@ export function CustomerApp() {
 		checkoutRequest.current = null;
 		orderIdempotencyKey.current = null;
 		setIsCheckoutLoading(false);
-		setView("menu");
+		setView("cart");
 	}
 
 	function resetSubmissionAttempt() {
@@ -431,7 +528,7 @@ export function CustomerApp() {
 
 	if (view === "checkout") {
 		return (
-			<main className="page">
+			<main className="page customer-page customer-checkout-page">
 				<CustomerHeader
 					displayName={store?.display_name ?? "店家載入中…"}
 					isAcceptingOrders={store?.is_accepting_orders ?? null}
@@ -592,15 +689,131 @@ export function CustomerApp() {
 		);
 	}
 
+	if (view === "cart") {
+		return (
+			<main className="page customer-page customer-cart-page">
+				<CustomerHeader
+					displayName={store?.display_name ?? "店家載入中…"}
+					isAcceptingOrders={store?.is_accepting_orders ?? null}
+					cartItemCount={cartItemCount}
+					onCartClick={scrollCartToTop}
+				/>
+				<section className="cart customer-cart-view" aria-labelledby="cart-heading">
+					<button className="back-button" type="button" onClick={continueShopping}>
+						← 繼續點餐
+					</button>
+					<div className="section-heading">
+						<h2 id="cart-heading">購物車</h2>
+						<span>{cartItemCount} 件</span>
+					</div>
+					{cart.some((line) => {
+						const item = menu?.categories
+							.flatMap((category) => category.items)
+							.find((candidate) => candidate.id === line.menuItemId);
+						return item ? Boolean(getSpiceGroup(item)) : false;
+					}) && <BulkSpiceSelector onApply={applyBulkSpice} />}
+					{cart.length === 0 ? (
+						<p className="empty-cart">尚未加入餐點</p>
+					) : (
+						<>
+							<ul className="cart-lines">
+								{cart.map((line) => {
+									const item = menu?.categories
+										.flatMap((category) => category.items)
+										.find((candidate) => candidate.id === line.menuItemId);
+									const spiceGroup = item ? getSpiceGroup(item) : undefined;
+									const spiceModifier = spiceGroup
+										? line.selectedModifiers.find((modifier) => modifier.groupId === spiceGroup.id)
+										: undefined;
+									const otherModifiers = line.selectedModifiers.filter(
+										(modifier) => modifier.groupId !== spiceGroup?.id,
+									);
+
+									return <li key={line.id}>
+										<div className="cart-line-heading">
+											<strong>{line.itemName} × {line.quantity}</strong>
+											<span>NT$ {getCartLineSubtotal(line)}</span>
+										</div>
+										{otherModifiers.length > 0 && (
+											<p>{otherModifiers.map((modifier) => modifier.optionName).join(" / ")}</p>
+										)}
+										{item && spiceGroup && spiceModifier && (
+											<InlineFoldOptionGroup
+												label="辣度"
+												summary={`辣度：${spiceModifier.optionName}`}
+												mode="single"
+												choices={spiceGroup.options.map((option) => ({
+													id: String(option.id),
+													label: option.name,
+													selected: option.id === spiceModifier.optionId,
+												}))}
+												onChange={(choiceId, selected) => {
+													if (selected) updateLineSpice(line, item, Number(choiceId));
+												}}
+											/>
+										)}
+										<div className="cart-line-actions">
+											<button
+												type="button"
+												disabled={line.quantity === 1}
+												aria-label={`減少 ${line.itemName} 數量`}
+												onClick={() => dispatchCart({ type: "decrease", lineId: line.id })}
+											>
+												−
+											</button>
+											<span aria-label={`${line.itemName} 數量 ${line.quantity}`}>{line.quantity}</span>
+											<button
+												type="button"
+												aria-label={`增加 ${line.itemName} 數量`}
+												onClick={() => dispatchCart({ type: "increase", lineId: line.id })}
+											>
+												+
+											</button>
+											<button
+												className="remove-button"
+												type="button"
+												onClick={() => dispatchCart({ type: "remove", lineId: line.id })}
+											>
+												移除
+											</button>
+										</div>
+									</li>;
+								})}
+							</ul>
+							<p className="cart-total">
+								<span>總計</span>
+								<strong>NT$ {cartTotal}</strong>
+							</p>
+							<button
+								className="checkout-button"
+								type="button"
+								disabled={!store?.is_accepting_orders}
+								onClick={openCheckout}
+							>
+								{store?.is_accepting_orders ? "下一步：確認訂單" : "目前暫停接單"}
+							</button>
+						</>
+					)}
+				</section>
+			</main>
+		);
+	}
+
 	return (
 		<main className={`page customer-page${cart.length > 0 ? " has-cart-bar" : ""}`}>
 			<CustomerHeader
 				displayName={store?.display_name ?? "店家載入中…"}
 				isAcceptingOrders={store?.is_accepting_orders ?? null}
 				cartItemCount={cartItemCount}
-				onCartClick={scrollToCart}
+				onCartClick={openCart}
 			/>
-			{menu && <CategoryTabs categories={menu.categories} />}
+			{menu && (
+				<CategoryTabs
+					categories={menu.categories}
+					activeCategoryId={activeCategoryId}
+					onCategorySelect={selectCategory}
+				/>
+			)}
 
 			{store && !store.is_accepting_orders && (
 				<p className="store-paused-banner" role="status">
@@ -641,103 +854,6 @@ export function CustomerApp() {
 				</section>
 			))}
 
-			<section className="cart" id="cart" aria-labelledby="cart-heading">
-				<div className="section-heading">
-					<h2 id="cart-heading">購物車</h2>
-					<span>{cartItemCount} 件</span>
-				</div>
-				{cart.some((line) => {
-					const item = menu?.categories
-						.flatMap((category) => category.items)
-						.find((candidate) => candidate.id === line.menuItemId);
-					return item ? Boolean(getSpiceGroup(item)) : false;
-				}) && <BulkSpiceSelector onApply={applyBulkSpice} />}
-				{cart.length === 0 ? (
-					<p className="empty-cart">尚未加入餐點</p>
-				) : (
-					<>
-						<ul className="cart-lines">
-							{cart.map((line) => {
-								const item = menu?.categories
-									.flatMap((category) => category.items)
-									.find((candidate) => candidate.id === line.menuItemId);
-								const spiceGroup = item ? getSpiceGroup(item) : undefined;
-								const spiceModifier = spiceGroup
-									? line.selectedModifiers.find((modifier) => modifier.groupId === spiceGroup.id)
-									: undefined;
-								const otherModifiers = line.selectedModifiers.filter(
-									(modifier) => modifier.groupId !== spiceGroup?.id,
-								);
-
-								return <li key={line.id}>
-									<div className="cart-line-heading">
-										<strong>
-											{line.itemName} × {line.quantity}
-										</strong>
-										<span>NT$ {getCartLineSubtotal(line)}</span>
-									</div>
-									{otherModifiers.length > 0 && (
-										<p>{otherModifiers.map((modifier) => modifier.optionName).join(" / ")}</p>
-									)}
-									{item && spiceGroup && spiceModifier && (
-										<InlineFoldOptionGroup
-											label="辣度"
-											summary={`辣度：${spiceModifier.optionName}`}
-											mode="single"
-											choices={spiceGroup.options.map((option) => ({
-												id: String(option.id),
-												label: option.name,
-												selected: option.id === spiceModifier.optionId,
-											}))}
-											onChange={(choiceId, selected) => {
-												if (selected) updateLineSpice(line, item, Number(choiceId));
-											}}
-										/>
-									)}
-									<div className="cart-line-actions">
-										<button
-											type="button"
-											disabled={line.quantity === 1}
-											aria-label={`減少 ${line.itemName} 數量`}
-											onClick={() => dispatchCart({ type: "decrease", lineId: line.id })}
-										>
-											−
-										</button>
-										<span aria-label={`${line.itemName} 數量 ${line.quantity}`}>{line.quantity}</span>
-										<button
-											type="button"
-											aria-label={`增加 ${line.itemName} 數量`}
-											onClick={() => dispatchCart({ type: "increase", lineId: line.id })}
-										>
-											+
-										</button>
-										<button
-											className="remove-button"
-											type="button"
-											onClick={() => dispatchCart({ type: "remove", lineId: line.id })}
-										>
-											移除
-										</button>
-									</div>
-								</li>;
-							})}
-						</ul>
-						<p className="cart-total">
-							<span>總計</span>
-							<strong>NT$ {cartTotal}</strong>
-						</p>
-						<button
-							className="checkout-button"
-							type="button"
-							disabled={!store?.is_accepting_orders}
-							onClick={openCheckout}
-						>
-							{store?.is_accepting_orders ? "查看結帳報價" : "目前暫停接單"}
-						</button>
-					</>
-				)}
-			</section>
-
 			{store?.originDisclosure && store.originDisclosure.length > 0 && (
 				<aside className="origin-disclosure" aria-label="食材來源資訊">
 					<h2>食材來源資訊</h2>
@@ -746,7 +862,7 @@ export function CustomerApp() {
 			)}
 			</div>
 
-			<CartBar itemCount={cartItemCount} total={cartTotal} onClick={scrollToCart} />
+			<CartBar itemCount={cartItemCount} total={cartTotal} onClick={openCart} />
 		</main>
 	);
 }
