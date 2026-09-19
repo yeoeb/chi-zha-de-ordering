@@ -6,6 +6,7 @@ export type CustomerOrder = {
 	status: OrderStatus;
 	customerName: string;
 	customerNote: string | null;
+	packagingPreference: "together" | "separate_spicy";
 	createdAt: string;
 	estimatedReadyAt: string;
 	total: number;

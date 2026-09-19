@@ -11,6 +11,8 @@ const CUSTOMER_NAME_MAX_LENGTH = 50;
 const CUSTOMER_PHONE_MAX_LENGTH = 30;
 const CUSTOMER_NOTE_MAX_LENGTH = 120;
 
+export type PackagingPreference = "together" | "separate_spicy";
+
 function hasControlCharacter(value: string) {
 	return [...value].some((character) => {
 		const codePoint = character.codePointAt(0) ?? 0;
@@ -22,6 +24,7 @@ export type CreateOrderRequest = {
 	customerName: string;
 	customerPhone: string;
 	customerNote?: string | null;
+	packagingPreference?: PackagingPreference;
 	specialOrder: boolean;
 	items: CheckoutLineSelection[];
 };
@@ -37,6 +40,7 @@ export type OrderSnapshot = {
 	customerName: string;
 	customerPhone: string;
 	customerNote: string | null;
+	packagingPreference: PackagingPreference;
 	specialOrder: boolean;
 	items: Array<{
 		menuItemId: number;
@@ -85,6 +89,7 @@ type StoredOrderRow = {
 	customerName: string;
 	customerPhone: string;
 	customerNote: string | null;
+	packagingPreference: PackagingPreference;
 	specialOrder: number;
 	requestFingerprint: string;
 	orderItemId: string | null;
@@ -160,12 +165,29 @@ function normalizeCustomerNote(value: unknown) {
 	return normalized;
 }
 
+function normalizePackagingPreference(value: unknown): PackagingPreference {
+	if (value === undefined) return "together";
+	if (value === "together" || value === "separate_spicy") return value;
+	throw new OrderCreationError(
+		400,
+		"INVALID_ORDER_REQUEST",
+		"packagingPreference must be together or separate_spicy",
+	);
+}
+
 export function parseCreateOrderRequest(input: unknown): CreateOrderRequest {
 	if (
 		!isRecord(input) ||
 		!hasOnlyKeys(
 			input,
-			new Set(["customerName", "customerPhone", "customerNote", "specialOrder", "items"]),
+			new Set([
+				"customerName",
+				"customerPhone",
+				"customerNote",
+				"packagingPreference",
+				"specialOrder",
+				"items",
+			]),
 		)
 	) {
 		throw new OrderCreationError(
@@ -195,6 +217,7 @@ export function parseCreateOrderRequest(input: unknown): CreateOrderRequest {
 			CUSTOMER_PHONE_MAX_LENGTH,
 		),
 		customerNote: normalizeCustomerNote(input.customerNote),
+		packagingPreference: normalizePackagingPreference(input.packagingPreference),
 		specialOrder: input.specialOrder ?? false,
 		items: parseCheckoutQuoteRequest({ items: input.items }),
 	};
@@ -231,6 +254,7 @@ function canonicalizeRequest(request: CreateOrderRequest) {
 		customerName: request.customerName,
 		customerPhone: request.customerPhone,
 		customerNote: request.customerNote ?? null,
+		packagingPreference: request.packagingPreference ?? "together",
 		specialOrder: request.specialOrder,
 		items,
 	});
@@ -261,6 +285,7 @@ async function getStoredOrderByIdempotencyKey(db: D1Database, idempotencyKey: st
 				orders.customer_name AS customerName,
 				orders.customer_phone AS customerPhone,
 				orders.customer_note AS customerNote,
+				orders.packaging_preference AS packagingPreference,
 				orders.special_order AS specialOrder,
 				orders.request_fingerprint AS requestFingerprint,
 				order_items.id AS orderItemId,
@@ -303,6 +328,7 @@ async function getStoredOrderByIdempotencyKey(db: D1Database, idempotencyKey: st
 		customerName: first.customerName,
 		customerPhone: first.customerPhone,
 		customerNote: first.customerNote,
+		packagingPreference: first.packagingPreference,
 		specialOrder: Boolean(first.specialOrder),
 		items: [],
 	};
@@ -448,10 +474,11 @@ export async function createOrder(
 					customer_name,
 					customer_phone,
 					customer_note,
+					packaging_preference,
 					special_order,
 					idempotency_key,
 					request_fingerprint
-				) VALUES (?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+				) VALUES (?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 			)
 			.bind(
 				orderId,
@@ -463,6 +490,7 @@ export async function createOrder(
 				request.customerName,
 				request.customerPhone,
 				request.customerNote ?? null,
+				request.packagingPreference ?? "together",
 				request.specialOrder ? 1 : 0,
 				idempotencyKey,
 				requestFingerprint,
@@ -577,6 +605,7 @@ export async function createOrder(
 			customerName: request.customerName,
 			customerPhone: request.customerPhone,
 			customerNote: request.customerNote ?? null,
+			packagingPreference: request.packagingPreference ?? "together",
 			specialOrder: request.specialOrder,
 			items: responseItems,
 		},

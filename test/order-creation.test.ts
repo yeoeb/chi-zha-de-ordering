@@ -15,6 +15,7 @@ type OrderResponse = {
 		status: string;
 		total: number;
 		customerNote: string | null;
+		packagingPreference: "together" | "separate_spicy";
 		estimatedReadyAt: string;
 		createdAt: string;
 		items: Array<{
@@ -38,7 +39,7 @@ beforeAll(async () => {
 			"INSERT INTO modifier_groups (id, menu_item_id, name, selection_type, is_required, sort_order, is_active) VALUES (1, 1, '辣度', 'single', 1, 10, 1), (2, 1, '切法', 'single', 0, 20, 1), (3, 2, '其他群組', 'single', 0, 10, 1), (4, 2, '調味', 'single', 1, 20, 1), (5, 1, '特殊選項：不加醬', 'single', 0, 30, 1)",
 		),
 		env.DB.prepare(
-			"INSERT INTO modifier_options (id, modifier_group_id, name, price_delta, sort_order, is_active) VALUES (10, 1, '小辣', 5, 10, 1), (20, 2, '切', 10, 10, 1), (30, 3, '其他選項', 0, 10, 1), (40, 4, '胡椒', 0, 10, 1), (50, 5, '不加醬', 0, 10, 1)",
+			"INSERT INTO modifier_options (id, modifier_group_id, name, price_delta, sort_order, is_active) VALUES (10, 1, '小辣', 5, 10, 1), (20, 2, '切', 10, 10, 1), (30, 3, '其他選項', 0, 10, 1), (40, 4, '胡椒', 0, 10, 1), (50, 5, '不加醬', 0, 10, 1), (60, 1, '辣粉另包', 0, 20, 1)",
 		),
 	]);
 });
@@ -128,6 +129,61 @@ describe("POST /api/orders", () => {
 		expect(response.status).toBe(201);
 		expect(result.order.customerNote).toBeNull();
 		expect(stored?.customer_note).toBeNull();
+	});
+
+	it("defaults packaging to together and persists an explicit spicy separation preference", async () => {
+		const defaultResponse = await postOrder("packaging-default");
+		const defaultResult = (await defaultResponse.json()) as OrderResponse;
+		expect(defaultResult.order.packagingPreference).toBe("together");
+
+		const separatedResponse = await postOrder("packaging-separated", {
+			...defaultOrderRequest,
+			packagingPreference: "separate_spicy",
+		});
+		const separated = (await separatedResponse.json()) as OrderResponse;
+		const stored = await env.DB
+			.prepare("SELECT packaging_preference FROM orders WHERE public_lookup_token = ?")
+			.bind(separated.order.publicLookupToken)
+			.first<{ packaging_preference: string }>();
+		expect(separatedResponse.status).toBe(201);
+		expect(separated.order.packagingPreference).toBe("separate_spicy");
+		expect(stored?.packaging_preference).toBe("separate_spicy");
+	});
+
+	it("rejects invalid packaging and fingerprints packaging changes", async () => {
+		const invalid = await postOrder("packaging-invalid", {
+			...defaultOrderRequest,
+			packagingPreference: "one-bag-per-item",
+		});
+		expect(invalid.status).toBe(400);
+
+		const request = { ...defaultOrderRequest, packagingPreference: "separate_spicy" };
+		const first = await postOrder("packaging-idempotency", request);
+		const replay = await postOrder("packaging-idempotency", request);
+		const conflict = await postOrder("packaging-idempotency", {
+			...defaultOrderRequest,
+			packagingPreference: "together",
+		});
+		expect(first.status).toBe(201);
+		expect(replay.status).toBe(200);
+		expect(conflict.status).toBe(409);
+	});
+
+	it("quotes and snapshots 辣粉另包 through its owned spice modifier option", async () => {
+		const items = [{ menuItemId: 1, quantity: 1, modifierOptionIds: [60, 20] }];
+		const quoteResponse = await postQuote(items);
+		const quote = (await quoteResponse.json()) as { items: Array<{ modifiers: Array<{ optionId: number; name: string }> }> };
+		expect(quoteResponse.status).toBe(200);
+		expect(quote.items[0]?.modifiers).toContainEqual(expect.objectContaining({ optionId: 60, name: "辣粉另包" }));
+
+		const orderResponse = await postOrder("pepper-packet-line", { ...defaultOrderRequest, items });
+		const order = (await orderResponse.json()) as OrderResponse;
+		expect(orderResponse.status).toBe(201);
+		expect(order.order.items[0]?.modifiers).toContainEqual({
+			groupName: "辣度",
+			name: "辣粉另包",
+			priceDelta: 0,
+		});
 	});
 
 	it("normalizes a blank note to null", async () => {

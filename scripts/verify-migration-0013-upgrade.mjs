@@ -6,7 +6,7 @@ import { fileURLToPath } from "node:url";
 
 const root = dirname(dirname(fileURLToPath(import.meta.url)));
 const safeTempRoot = realpathSync(tmpdir());
-const verifierRoot = mkdtempSync(join(safeTempRoot, "chi-zha-de-0012-upgrade-"));
+const verifierRoot = mkdtempSync(join(safeTempRoot, "chi-zha-de-0013-upgrade-"));
 const migrationDirectory = join(verifierRoot, "migrations");
 const persistenceDirectory = join(verifierRoot, "state");
 const configPath = join(verifierRoot, "wrangler.json");
@@ -14,12 +14,12 @@ const wranglerBin = join(root, "node_modules", "wrangler", "bin", "wrangler.js")
 
 mkdirSync(migrationDirectory);
 writeFileSync(configPath, JSON.stringify({
-	name: "chi-zha-de-0012-upgrade-verifier",
+	name: "chi-zha-de-0013-upgrade-verifier",
 	main: join(root, "src", "worker", "index.ts"),
 	compatibility_date: "2026-08-18",
 	d1_databases: [{
 		binding: "DB",
-		database_name: "chi-zha-de-0012-upgrade-verifier",
+		database_name: "chi-zha-de-0013-upgrade-verifier",
 		database_id: "local-upgrade-verifier",
 		migrations_dir: "migrations",
 	}],
@@ -69,6 +69,7 @@ function installMigration(number) {
 		10: "0010_add_store_state_audit.sql",
 		11: "0011_add_customer_note.sql",
 		12: "0012_add_admin_menu_metadata.sql",
+		13: "0013_add_order_packaging_preference.sql",
 	};
 	const name = names[number];
 	copyFileSync(join(root, "migrations", name), join(migrationDirectory, name));
@@ -102,6 +103,7 @@ try {
 
 	installMigration(11);
 	installMigration(12);
+	installMigration(13);
 	runWrangler(["d1", "migrations", "apply", "DB"]);
 
 	const upgraded = firstResult(runWrangler([
@@ -116,13 +118,14 @@ try {
 				AND image_url IS NULL AND is_popular = 0 AND is_quick_sold_out = 0 AND is_archived = 0) AS preservedItemCount,
 			(SELECT COUNT(*) FROM order_items WHERE id = 'upgrade-line' AND item_name = '升級雞排'
 				AND unit_price = 80 AND line_total = 80) AS preservedSnapshotCount,
-			(SELECT COUNT(*) FROM orders WHERE id = 'upgrade-order' AND customer_note IS NULL) AS preservedOrderCount,
+			(SELECT COUNT(*) FROM orders WHERE id = 'upgrade-order' AND customer_note IS NULL
+				AND packaging_preference = 'together') AS preservedOrderCount,
 			(SELECT COUNT(*) FROM store_settings WHERE id = 1 AND origin_disclosure IS NULL) AS preservedStoreCount,
 			(SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' AND name = 'menu_items_customer_visibility_sort_idx') AS visibilityIndexCount`,
 	], true));
 
 	for (const [key, expected] of Object.entries({
-		migrationCount: 12,
+		migrationCount: 13,
 		preservedItemCount: 1,
 		preservedSnapshotCount: 1,
 		preservedOrderCount: 1,
@@ -130,7 +133,7 @@ try {
 		visibilityIndexCount: 1,
 	})) {
 		if (upgraded[key] !== expected) {
-			throw new Error(`Migration 0012 upgrade verification failed for ${key}: ${JSON.stringify(upgraded)}`);
+			throw new Error(`Migration 0013 upgrade verification failed for ${key}: ${JSON.stringify(upgraded)}`);
 		}
 	}
 
@@ -138,13 +141,13 @@ try {
 	const secondHistory = firstResult(runWrangler([
 		"d1", "execute", "DB", "--json", "--command", "SELECT COUNT(*) AS migrationCount FROM d1_migrations",
 	], true));
-	if (secondHistory.migrationCount !== 12) throw new Error("Second upgrade apply changed migration history");
+	if (secondHistory.migrationCount !== 13) throw new Error("Second upgrade apply changed migration history");
 	const quickCheck = firstResult(runWrangler([
 		"d1", "execute", "DB", "--json", "--command", "PRAGMA quick_check",
 	], true));
 	if (quickCheck.quick_check !== "ok") throw new Error("Upgrade D1 quick_check failed");
 
-	console.log("Migrations 0011+0012 upgrade PASS: pre-0011 menu/order data preserved, customer_note and Admin metadata defaults verified, second apply idempotent, and quick_check passed.");
+	console.log("Migrations 0011+0012+0013 upgrade PASS: pre-0011 menu/order data preserved, customer_note, Admin metadata, and packaging default verified, second apply idempotent, and quick_check passed.");
 } finally {
 	const resolvedVerifierRoot = resolve(verifierRoot);
 	const resolvedTempRoot = resolve(safeTempRoot);

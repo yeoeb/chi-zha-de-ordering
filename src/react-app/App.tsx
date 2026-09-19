@@ -8,6 +8,12 @@ import {
 	type CartLine,
 } from "./cart";
 import {
+	CART_DRAFT_STORAGE_KEY,
+	restoreCartDraft,
+	revalidateCartLine,
+	serializeCartDraft,
+} from "./cart-draft";
+import {
 	BulkSpiceSelector,
 	CartBar,
 	CategoryTabs,
@@ -62,7 +68,6 @@ type CheckoutQuote = {
 };
 
 const CUSTOMER_NOTE_MAX_CHARACTERS = 120;
-const PEPPER_PACKET_NOTE = "辣粉另包";
 
 function hasControlCharacter(value: string) {
 	return [...value].some((character) => {
@@ -71,17 +76,11 @@ function hasControlCharacter(value: string) {
 	});
 }
 
-function composeCustomerNote(note: string, pepperPacketRequested: boolean) {
-	const normalized = note.trim();
-	if (!pepperPacketRequested) return normalized || null;
-	return normalized ? `${normalized}；${PEPPER_PACKET_NOTE}` : PEPPER_PACKET_NOTE;
-}
-
 function validateCustomerNote(note: string | null) {
 	if (note === null) return null;
 	if (hasControlCharacter(note)) return "備註不可包含換行或控制字元。";
 	if ([...note].length > CUSTOMER_NOTE_MAX_CHARACTERS) {
-		return `備註與辣粉另包標示合計不可超過 ${CUSTOMER_NOTE_MAX_CHARACTERS} 個字。`;
+		return `備註不可超過 ${CUSTOMER_NOTE_MAX_CHARACTERS} 個字。`;
 	}
 	return null;
 }
@@ -110,16 +109,19 @@ export function CustomerApp() {
 	const [isCheckoutLoading, setIsCheckoutLoading] = useState(false);
 	const [customerName, setCustomerName] = useState("");
 	const [customerPhone, setCustomerPhone] = useState("");
-	const [specialOrder, setSpecialOrder] = useState(false);
 	const [orderNote, setOrderNote] = useState("");
-	const [pepperPacketRequested, setPepperPacketRequested] = useState(false);
+	const [packagingPreference, setPackagingPreference] = useState<"together" | "separate_spicy">("together");
+	const [cartDraftMessage, setCartDraftMessage] = useState<string | null>(null);
+	const [removedLine, setRemovedLine] = useState<CartLine | null>(null);
 	const [isOrderSubmitting, setIsOrderSubmitting] = useState(false);
 	const [orderError, setOrderError] = useState<string | null>(null);
 	const [createdOrder, setCreatedOrder] = useState<CustomerOrder | null>(null);
 	const checkoutRequest = useRef<AbortController | null>(null);
 	const orderIdempotencyKey = useRef<string | null>(null);
 	const categorySelectionTarget = useRef<number | null>(null);
-	const categorySelectionTimer = useRef<number | null>(null);
+	const categoryScrollEndTimer = useRef<number | null>(null);
+	const undoTimer = useRef<number | null>(null);
+	const cartHydrated = useRef(false);
 
 	useEffect(() => {
 		const controller = new AbortController();
@@ -153,10 +155,44 @@ export function CustomerApp() {
 
 	useEffect(() => () => {
 		checkoutRequest.current?.abort();
-		if (categorySelectionTimer.current !== null) {
-			window.clearTimeout(categorySelectionTimer.current);
-		}
+		if (categoryScrollEndTimer.current !== null) window.clearTimeout(categoryScrollEndTimer.current);
+		if (undoTimer.current !== null) window.clearTimeout(undoTimer.current);
 	}, []);
+
+	useEffect(() => {
+		if (!menu || cartHydrated.current) return;
+		cartHydrated.current = true;
+		try {
+			const restored = restoreCartDraft(localStorage.getItem(CART_DRAFT_STORAGE_KEY), menu.categories);
+			if (restored.status === "expired" || restored.status === "invalid") {
+				localStorage.removeItem(CART_DRAFT_STORAGE_KEY);
+				setCartDraftMessage(
+					restored.status === "expired" ? "購物車草稿已過期，請重新選擇餐點。" : "購物車草稿格式異常，已安全忽略。",
+				);
+				return;
+			}
+			if (restored.status === "restored") {
+				dispatchCart({ type: "hydrate", lines: restored.lines });
+				setCartDraftMessage(
+					restored.skippedCount > 0
+						? `已依最新菜單還原購物車，另有 ${restored.skippedCount} 筆失效餐點未還原。`
+						: "已依最新菜單還原購物車；結帳時會再次確認價格與供應狀態。",
+				);
+			}
+		} catch {
+			setCartDraftMessage("瀏覽器無法讀取購物車草稿，本次仍可正常點餐。");
+		}
+	}, [menu]);
+
+	useEffect(() => {
+		if (!cartHydrated.current) return;
+		try {
+			if (cart.length === 0) localStorage.removeItem(CART_DRAFT_STORAGE_KEY);
+			else localStorage.setItem(CART_DRAFT_STORAGE_KEY, serializeCartDraft(cart));
+		} catch {
+			setCartDraftMessage("瀏覽器無法保存購物車草稿，請勿重新整理頁面。");
+		}
+	}, [cart]);
 
 	useEffect(() => {
 		const firstCategoryId = menu?.categories[0]?.id;
@@ -173,7 +209,7 @@ export function CustomerApp() {
 	useEffect(() => {
 		if (view !== "menu" || !menu || menu.categories.length === 0) return;
 
-		function updateActiveCategory() {
+		function updateActiveCategory(releaseProgrammaticTarget = false) {
 			const headerBottom = document.querySelector(".customer-header")?.getBoundingClientRect().bottom ?? 0;
 			const tabsBottom = document.querySelector(".category-tabs")?.getBoundingClientRect().bottom ?? 0;
 			const stickyOffset = Math.max(headerBottom, tabsBottom) + 24;
@@ -189,30 +225,67 @@ export function CustomerApp() {
 				return;
 			}
 
+			const documentHeight = document.documentElement.scrollHeight;
+			const isAtPageBottom =
+				window.scrollY > 0 &&
+				documentHeight > 0 &&
+				window.scrollY + window.innerHeight >= documentHeight - 2;
+
 			if (categorySelectionTarget.current !== null) {
 				const targetSection = sections.find(
 					(section) => section.categoryId === categorySelectionTarget.current,
 				);
-				if (targetSection && targetSection.rect.top > stickyOffset) {
+				const targetIsLast = targetSection?.categoryId === sections[sections.length - 1]?.categoryId;
+				if (
+					!releaseProgrammaticTarget &&
+					targetSection &&
+					targetSection.rect.top > stickyOffset + 2 &&
+					!(targetIsLast && isAtPageBottom)
+				) {
 					return;
 				}
 				categorySelectionTarget.current = null;
 			}
 
-			let nextActiveId = sections[0]?.categoryId ?? null;
-			for (const section of sections) {
-				if (section.rect.top <= stickyOffset) nextActiveId = section.categoryId;
-				else break;
+			let nextActiveId = isAtPageBottom
+				? sections[sections.length - 1]?.categoryId ?? null
+				: sections[0]?.categoryId ?? null;
+			if (!isAtPageBottom) {
+				for (const section of sections) {
+					if (section.rect.top <= stickyOffset) nextActiveId = section.categoryId;
+					else break;
+				}
 			}
 			setActiveCategoryId((current) => current === nextActiveId ? current : nextActiveId);
 		}
 
+		function handleScroll() {
+			updateActiveCategory();
+			if (categoryScrollEndTimer.current !== null) window.clearTimeout(categoryScrollEndTimer.current);
+			categoryScrollEndTimer.current = window.setTimeout(() => updateActiveCategory(true), 140);
+		}
+
+		function handleScrollEnd() {
+			if (categoryScrollEndTimer.current !== null) window.clearTimeout(categoryScrollEndTimer.current);
+			categoryScrollEndTimer.current = null;
+			updateActiveCategory(true);
+		}
+
 		updateActiveCategory();
-		window.addEventListener("scroll", updateActiveCategory, { passive: true });
-		window.addEventListener("resize", updateActiveCategory);
+		window.addEventListener("scroll", handleScroll, { passive: true });
+		window.addEventListener("scrollend", handleScrollEnd);
+		window.addEventListener("resize", handleScrollEnd);
+		const content = document.querySelector(".customer-menu-content");
+		const observer = typeof ResizeObserver === "undefined" || !content
+			? null
+			: new ResizeObserver(() => updateActiveCategory());
+		if (content) observer?.observe(content);
 		return () => {
-			window.removeEventListener("scroll", updateActiveCategory);
-			window.removeEventListener("resize", updateActiveCategory);
+			window.removeEventListener("scroll", handleScroll);
+			window.removeEventListener("scrollend", handleScrollEnd);
+			window.removeEventListener("resize", handleScrollEnd);
+			observer?.disconnect();
+			if (categoryScrollEndTimer.current !== null) window.clearTimeout(categoryScrollEndTimer.current);
 		};
 	}, [menu, view]);
 
@@ -223,7 +296,7 @@ export function CustomerApp() {
 		quantity: line.quantity,
 		modifierOptionIds: line.selectedModifiers.map((modifier) => modifier.optionId),
 	}));
-	const submittedCustomerNote = composeCustomerNote(orderNote, pepperPacketRequested);
+	const submittedCustomerNote = orderNote.trim() || null;
 	const customerNoteError = hasControlCharacter(orderNote)
 		? "備註不可包含換行或控制字元。"
 		: validateCustomerNote(submittedCustomerNote);
@@ -370,13 +443,6 @@ export function CustomerApp() {
 
 	function selectCategory(categoryId: number) {
 		categorySelectionTarget.current = categoryId;
-		if (categorySelectionTimer.current !== null) {
-			window.clearTimeout(categorySelectionTimer.current);
-		}
-		categorySelectionTimer.current = window.setTimeout(() => {
-			categorySelectionTarget.current = null;
-			window.dispatchEvent(new Event("scroll"));
-		}, 1200);
 		setActiveCategoryId(categoryId);
 		const section = document.getElementById(`category-${categoryId}`);
 		if (!section) return;
@@ -388,6 +454,31 @@ export function CustomerApp() {
 			top: Math.max(0, window.scrollY + section.getBoundingClientRect().top - stickyOffset),
 			behavior: reduceMotion ? "auto" : "smooth",
 		});
+	}
+
+	function removeCartLine(line: CartLine) {
+		if (undoTimer.current !== null) window.clearTimeout(undoTimer.current);
+		setRemovedLine(line);
+		dispatchCart({ type: "remove", lineId: line.id });
+		undoTimer.current = window.setTimeout(() => setRemovedLine(null), 6_000);
+	}
+
+	function undoRemoveCartLine() {
+		if (!removedLine || !menu) return;
+		const restored = revalidateCartLine(removedLine, menu.categories);
+		if (!restored) {
+			setRemovedLine(null);
+			setCartDraftMessage("餐點或選項已更新，無法安全復原，請重新選擇。");
+			return;
+		}
+		if (cart.some((line) => line.id === restored.id)) {
+			setRemovedLine(null);
+			setCartDraftMessage("購物車已有相同餐點，未重複加入已移除的數量。");
+			return;
+		}
+		dispatchCart({ type: "restore", line: restored });
+		setRemovedLine(null);
+		if (undoTimer.current !== null) window.clearTimeout(undoTimer.current);
 	}
 
 	async function openCheckout() {
@@ -491,8 +582,9 @@ export function CustomerApp() {
 				body: JSON.stringify({
 					customerName,
 					customerPhone,
-					specialOrder,
+					specialOrder: false,
 					customerNote: submittedCustomerNote,
+					packagingPreference,
 					items: checkoutItems,
 				}),
 			});
@@ -502,6 +594,12 @@ export function CustomerApp() {
 			}
 
 			const result = (await response.json()) as { order: CustomerOrder };
+			dispatchCart({ type: "clear" });
+			try {
+				localStorage.removeItem(CART_DRAFT_STORAGE_KEY);
+			} catch {
+				// The submitted order is authoritative even if browser storage is unavailable.
+			}
 			setCreatedOrder(result.order);
 			window.history.replaceState(
 				null,
@@ -622,47 +720,53 @@ export function CustomerApp() {
 										}}
 									/>
 								</label>
-								<label className="pepper-packet-field">
-									<input
-										type="checkbox"
-										disabled={isOrderSubmitting}
-										checked={pepperPacketRequested}
-										onChange={(event) => {
-											setPepperPacketRequested(event.target.checked);
-											resetSubmissionAttempt();
-										}}
-									/>
-									<span>辣粉另包</span>
-								</label>
+								<fieldset className="packaging-preference-field">
+									<legend>包裝方式</legend>
+									<label>
+										<input
+											type="radio"
+											name="packaging-preference"
+											value="together"
+											checked={packagingPreference === "together"}
+											disabled={isOrderSubmitting}
+											onChange={() => {
+												setPackagingPreference("together");
+												resetSubmissionAttempt();
+											}}
+										/>
+										<span>一起裝</span>
+									</label>
+									<label>
+										<input
+											type="radio"
+											name="packaging-preference"
+											value="separate_spicy"
+											checked={packagingPreference === "separate_spicy"}
+											disabled={isOrderSubmitting}
+											onChange={() => {
+												setPackagingPreference("separate_spicy");
+												resetSubmissionAttempt();
+											}}
+										/>
+										<span>辣／不辣分袋</span>
+									</label>
+								</fieldset>
 								<label className="order-note-field">
 									<span>訂單備註（選填）</span>
 									<textarea
 										disabled={isOrderSubmitting}
-										placeholder="例如：辣／不辣分開裝、其他特殊需求"
+										placeholder="例如：其他不影響價格或份量的需求"
 										value={orderNote}
 										onChange={(event) => {
 											setOrderNote(event.target.value);
 											resetSubmissionAttempt();
 										}}
 									/>
-									<small>如需分袋，可備註「辣／不辣分開裝」；未特別註明則一起裝。</small>
+									<small>包裝方式請使用上方選項；未特別選擇時為一起裝。</small>
 									<small>需加價的需求請使用餐點選項，請勿填在備註。</small>
 									<small>{customerNoteCharacterCount} / {CUSTOMER_NOTE_MAX_CHARACTERS} 字</small>
 									{customerNoteError && <small className="note-error" role="alert">{customerNoteError}</small>}
 								</label>
-								<label className="special-order-field">
-									<input
-										type="checkbox"
-										disabled={isOrderSubmitting}
-										checked={specialOrder}
-										onChange={(event) => {
-											setSpecialOrder(event.target.checked);
-											resetSubmissionAttempt();
-										}}
-									/>
-									<span>特殊訂單（需要較多準備時間）</span>
-								</label>
-
 								{orderError && (
 									<p className="message error" role="alert">
 										{orderError}
@@ -706,6 +810,7 @@ export function CustomerApp() {
 						<h2 id="cart-heading">購物車</h2>
 						<span>{cartItemCount} 件</span>
 					</div>
+					{cartDraftMessage && <p className="cart-draft-message" role="status">{cartDraftMessage}</p>}
 					{cart.some((line) => {
 						const item = menu?.categories
 							.flatMap((category) => category.items)
@@ -772,7 +877,8 @@ export function CustomerApp() {
 											<button
 												className="remove-button"
 												type="button"
-												onClick={() => dispatchCart({ type: "remove", lineId: line.id })}
+												aria-label={`移除 ${line.itemName}`}
+												onClick={() => removeCartLine(line)}
 											>
 												移除
 											</button>
@@ -780,6 +886,12 @@ export function CustomerApp() {
 									</li>;
 								})}
 							</ul>
+							{removedLine && (
+								<div className="cart-undo" role="status">
+									<span>已移除「{removedLine.itemName}」</span>
+									<button type="button" onClick={undoRemoveCartLine}>復原</button>
+								</div>
+							)}
 							<p className="cart-total">
 								<span>總計</span>
 								<strong>NT$ {cartTotal}</strong>
@@ -793,6 +905,12 @@ export function CustomerApp() {
 								{store?.is_accepting_orders ? "下一步：確認訂單" : "目前暫停接單"}
 							</button>
 						</>
+					)}
+					{cart.length === 0 && removedLine && (
+						<div className="cart-undo" role="status">
+							<span>已移除「{removedLine.itemName}」</span>
+							<button type="button" onClick={undoRemoveCartLine}>復原</button>
+						</div>
 					)}
 				</section>
 			</main>
@@ -832,6 +950,7 @@ export function CustomerApp() {
 					{error}
 				</p>
 			)}
+			{cartDraftMessage && <p className="cart-draft-message customer-draft-message" role="status">{cartDraftMessage}</p>}
 
 			<div className="customer-menu-content">
 			{menu?.categories.map((category) => (

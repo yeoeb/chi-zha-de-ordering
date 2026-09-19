@@ -45,7 +45,7 @@
 		"verify:deploy-dry-run": "node scripts/verify-deployment-dry-run.mjs",
 		"verify:fresh-d1": "node scripts/verify-fresh-d1.mjs",
 		"verify:production-data": "node scripts/verify-production-data.mjs",
-		"verify:upgrade-d1": "node scripts/verify-migration-0012-upgrade.mjs",
+		"verify:upgrade-d1": "node scripts/verify-migration-0013-upgrade.mjs",
 		"verify:pwa": "node scripts/verify-pwa.mjs"
 	},
 	"type": "module"

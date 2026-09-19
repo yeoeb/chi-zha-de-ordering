@@ -40,6 +40,7 @@ function firstResult(output) {
 const productionFiles = [
 	"production-data/initial-store-menu.sql",
 	"production-data/add-fries-seasoning.sql",
+	"production-data/add-spice-options.sql",
 	"production-data/add-admin-presentation-metadata.sql",
 ];
 
@@ -98,6 +99,13 @@ try {
 			(SELECT COUNT(*) FROM modifier_groups AS groups JOIN menu_items AS items ON items.id = groups.menu_item_id
 				WHERE groups.id = 6 AND groups.name = '調味' AND items.id = 10 AND items.name = '甘梅地瓜') AS sweetPotatoGroupCount,
 			(SELECT COUNT(*) FROM modifier_options WHERE id = 18 AND modifier_group_id = 6 AND name = '梅粉') AS sweetPotatoDefaultCount,
+			(SELECT COUNT(*) FROM modifier_options WHERE
+				(id = 21 AND modifier_group_id = 1 AND name = '微辣') OR
+				(id = 22 AND modifier_group_id = 1 AND name = '辣粉另包') OR
+				(id = 23 AND modifier_group_id = 3 AND name = '微辣') OR
+				(id = 24 AND modifier_group_id = 3 AND name = '辣粉另包') OR
+				(id = 25 AND modifier_group_id = 4 AND name = '微辣') OR
+				(id = 26 AND modifier_group_id = 4 AND name = '辣粉另包')) AS addedSpiceOptionCount,
 			(SELECT COUNT(*) FROM store_settings WHERE id = 1 AND is_accepting_orders = 1 AND state_version = 3) AS preservedStoreStateCount,
 			(SELECT COUNT(*) FROM orders WHERE id = 'production-data-history' AND total_amount = 35 AND customer_note = '保留備註') AS preservedOrderCount,
 			(SELECT COUNT(*) FROM order_items WHERE id = 'production-data-line' AND item_name = '薯條' AND unit_price = 35 AND line_total = 35) AS preservedSnapshotCount`,
@@ -107,12 +115,13 @@ try {
 		categoryCount: 3,
 		itemCount: 43,
 		groupCount: 6,
-		optionCount: 20,
+		optionCount: 26,
 		popularCount: 2,
 		friesGroupCount: 1,
 		friesDefaultCount: 1,
 		sweetPotatoGroupCount: 1,
 		sweetPotatoDefaultCount: 1,
+		addedSpiceOptionCount: 6,
 		preservedStoreStateCount: 1,
 		preservedOrderCount: 1,
 		preservedSnapshotCount: 1,
@@ -127,7 +136,7 @@ try {
 	], true));
 	if (quickCheck.quick_check !== "ok") throw new Error("Production-data quick_check failed");
 
-	console.log("Production data PASS: repeatable scripts, stable seasoning relationships, preserved Store state and historical snapshots, and quick_check verified.");
+	console.log("Production data PASS: repeatable scripts, stable seasoning/spice relationships, preserved Store state and historical snapshots, and quick_check verified.");
 } finally {
 	const resolvedPersistence = resolve(persistenceDirectory);
 	const resolvedTempRoot = resolve(safeTempRoot);

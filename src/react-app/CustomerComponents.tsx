@@ -78,21 +78,29 @@ export function CategoryTabs({
 	onCategorySelect: (categoryId: number) => void;
 }) {
 	const tabRefs = useRef(new Map<number, HTMLAnchorElement>());
+	const navRef = useRef<HTMLElement | null>(null);
 
 	useEffect(() => {
 		if (activeCategoryId === null) return;
 		const activeTab = tabRefs.current.get(activeCategoryId);
-		if (!activeTab || typeof activeTab.scrollIntoView !== "function") return;
+		const navigation = navRef.current;
+		if (!activeTab || !navigation) return;
+		const tabLeft = activeTab.offsetLeft;
+		const tabRight = tabLeft + activeTab.offsetWidth;
+		const visibleLeft = navigation.scrollLeft;
+		const visibleRight = visibleLeft + navigation.clientWidth;
+		if (tabLeft >= visibleLeft && tabRight <= visibleRight) return;
 		const reduceMotion = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ?? false;
-		activeTab.scrollIntoView({
-			behavior: reduceMotion ? "auto" : "smooth",
-			block: "nearest",
-			inline: "nearest",
-		});
+		const left = tabLeft < visibleLeft ? tabLeft : tabRight - navigation.clientWidth;
+		if (typeof navigation.scrollTo === "function") {
+			navigation.scrollTo({ left, behavior: reduceMotion ? "auto" : "smooth" });
+		} else {
+			navigation.scrollLeft = left;
+		}
 	}, [activeCategoryId]);
 
 	return (
-		<nav className="category-tabs" aria-label="餐點分類">
+		<nav ref={navRef} className="category-tabs" aria-label="餐點分類">
 			{categories.map((category) => (
 				<a
 					key={category.id}

@@ -90,6 +90,7 @@ try {
 				(SELECT COUNT(*) FROM menu_items) AS menuItemCount,
 				(SELECT COUNT(*) FROM modifier_groups WHERE id IN (5, 6) AND menu_item_id IN (9, 10) AND name = '調味' AND is_required = 1 AND is_active = 1) AS seasoningGroupCount,
 				(SELECT COUNT(*) FROM modifier_options WHERE id BETWEEN 15 AND 20 AND name IN ('梅粉', '胡椒', '不加調味') AND is_active = 1) AS seasoningOptionCount,
+				(SELECT COUNT(*) FROM modifier_options WHERE id BETWEEN 21 AND 26 AND name IN ('微辣', '辣粉另包') AND is_active = 1) AS addedSpiceOptionCount,
 				(SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' AND name = 'orders_public_lookup_token_unique') AS publicTokenIndexCount,
 				(SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' AND name = 'notification_deliveries_status_idx') AS notificationStatusIndexCount,
 				(SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'web_push_notification_deliveries') AS pushDeliveryTableCount,
@@ -105,11 +106,12 @@ try {
 	);
 
 	if (
-		summary.migrationCount !== 12 ||
+		summary.migrationCount !== 13 ||
 		summary.storeCount !== 1 ||
 		summary.menuItemCount !== 6 ||
 		summary.seasoningGroupCount !== 2 ||
 		summary.seasoningOptionCount !== 6 ||
+		summary.addedSpiceOptionCount !== 6 ||
 		summary.publicTokenIndexCount !== 1 ||
 		summary.notificationStatusIndexCount !== 1 ||
 		summary.pushDeliveryTableCount !== 1 ||
@@ -188,6 +190,9 @@ try {
 	], true)?.[0]?.results;
 	if (!orderColumns?.some((column) => column.name === "customer_note")) {
 		throw new Error("Fresh D1 is missing orders.customer_note");
+	}
+	if (!orderColumns?.some((column) => column.name === "packaging_preference")) {
+		throw new Error("Fresh D1 is missing orders.packaging_preference");
 	}
 	const menuItemColumns = runWrangler([
 		"d1",
@@ -269,6 +274,17 @@ try {
 		destructiveMigrationPattern.test(adminMenuMigration)
 	) {
 		throw new Error("Migration 0012 is missing additive Admin menu schema or contains a forbidden write");
+	}
+	const packagingMigration = readFileSync(
+		join(root, "migrations", "0013_add_order_packaging_preference.sql"),
+		"utf8",
+	);
+	if (
+		!packagingMigration.includes("ADD COLUMN packaging_preference") ||
+		!packagingMigration.includes("'together', 'separate_spicy'") ||
+		destructiveMigrationPattern.test(packagingMigration)
+	) {
+		throw new Error("Migration 0013 is missing the additive packaging preference schema or contains a forbidden write");
 	}
 	const pushFixtureCounts = firstResult(
 		runWrangler([
@@ -377,7 +393,7 @@ try {
 		"--command",
 		"SELECT COUNT(*) AS migrationCount FROM d1_migrations",
 	], true);
-	if (firstResult(secondHistory).migrationCount !== 12) {
+	if (firstResult(secondHistory).migrationCount !== 13) {
 		throw new Error("Second fresh D1 migration apply changed migration history");
 	}
 	if (firstResult(runWrangler(["d1", "execute", database, "--json", "--command", "PRAGMA quick_check"], true)).quick_check !== "ok") {
@@ -385,7 +401,7 @@ try {
 	}
 
 	console.log(
-		"Fresh D1 PASS: 12 sequential migrations, additive Admin menu metadata and customer_note schema, API-backed fries seasoning fixtures, Store state version/audit constraints, idempotent second apply, required store row, replaceable development seed, untouched historical LINE tables, additive Web Push tables, no Store/Push fixtures, and quick_check verified.",
+		"Fresh D1 PASS: 13 sequential migrations, additive packaging preference, Admin menu metadata and customer_note schema, API-backed fries seasoning and spice fixtures, Store state version/audit constraints, idempotent second apply, required store row, replaceable development seed, untouched historical LINE tables, additive Web Push tables, no Store/Push fixtures, and quick_check verified.",
 	);
 } finally {
 	const resolvedPersistence = resolve(persistenceDirectory);

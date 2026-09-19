@@ -60,7 +60,7 @@ const productModifierPresentation: Record<number, ProductModifierPresentation> =
 	10: { defaultOptionIds: { 6: 18 }, mainGroupIds: [6] },
 };
 
-export const spiceChoices = ["不辣", "小辣", "中辣", "大辣"] as const;
+export const spiceChoices = ["不辣", "微辣", "小辣", "中辣", "大辣", "辣粉另包"] as const;
 export type SpiceChoice = (typeof spiceChoices)[number];
 
 const mainOptionGroupNames = new Set(["調味", "調味料", "切法"]);

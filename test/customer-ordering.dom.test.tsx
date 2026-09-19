@@ -2,6 +2,7 @@ import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-li
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { CustomerApp } from "../src/react-app/App";
+import { CART_DRAFT_STORAGE_KEY, CART_DRAFT_TTL_MS } from "../src/react-app/cart-draft";
 
 type MenuItemFixture = {
 	id: number;
@@ -86,9 +87,11 @@ const chickenCutlet: MenuItemFixture = {
 			isRequired: true,
 			options: [
 				{ id: 1, name: "不辣", priceDelta: 0 },
+				{ id: 21, name: "微辣", priceDelta: 0 },
 				{ id: 2, name: "小辣", priceDelta: 0 },
 				{ id: 3, name: "中辣", priceDelta: 0 },
 				{ id: 4, name: "大辣", priceDelta: 0 },
+				{ id: 22, name: "辣粉另包", priceDelta: 0 },
 			],
 		},
 		{
@@ -118,9 +121,11 @@ const spicyChicken: MenuItemFixture = {
 			isRequired: true,
 			options: [
 				{ id: 7, name: "不辣", priceDelta: 0 },
+				{ id: 23, name: "微辣", priceDelta: 0 },
 				{ id: 8, name: "小辣", priceDelta: 0 },
 				{ id: 9, name: "中辣", priceDelta: 0 },
 				{ id: 10, name: "大辣", priceDelta: 0 },
+				{ id: 24, name: "辣粉另包", priceDelta: 0 },
 			],
 		},
 	],
@@ -193,7 +198,11 @@ function createFetchMock(
 			});
 		}
 		if (url === "/api/orders") {
-			const request = JSON.parse(String(init?.body)) as { customerName: string; customerNote: string | null };
+			const request = JSON.parse(String(init?.body)) as {
+				customerName: string;
+				customerNote: string | null;
+				packagingPreference: "together" | "separate_spicy";
+			};
 			return json(
 				{
 					order: {
@@ -202,6 +211,7 @@ function createFetchMock(
 						status: "pending",
 						customerName: request.customerName,
 						customerNote: request.customerNote,
+						packagingPreference: request.packagingPreference,
 						createdAt: "2026-09-16T05:00:00.000Z",
 						estimatedReadyAt: "2026-09-16T05:30:00.000Z",
 						total: 40,
@@ -245,6 +255,7 @@ afterEach(() => {
 	cleanup();
 	vi.restoreAllMocks();
 	vi.unstubAllGlobals();
+	localStorage.clear();
 });
 
 describe("customer ordering redesign", () => {
@@ -262,29 +273,96 @@ describe("customer ordering redesign", () => {
 		await waitFor(() => expect(first.getAttribute("aria-current")).toBe("true"));
 		expect(second.getAttribute("aria-current")).toBeNull();
 		const secondSection = document.getElementById("category-2");
-		if (!secondSection) throw new Error("Missing second category section");
-		vi.spyOn(secondSection, "getBoundingClientRect").mockReturnValue({
-			top: 900,
-			bottom: 1200,
+		const firstSection = document.getElementById("category-1");
+		const thirdSection = document.getElementById("category-3");
+		if (!firstSection || !secondSection || !thirdSection) throw new Error("Missing category sections");
+		const fixedRect = (top: number) => ({
+			top, bottom: top + 300, height: 300, left: 0, right: 320, width: 320,
+			x: 0, y: top, toJSON: () => ({}),
+		}) as DOMRect;
+		vi.spyOn(firstSection, "getBoundingClientRect").mockReturnValue(fixedRect(-500));
+		vi.spyOn(thirdSection, "getBoundingClientRect").mockReturnValue(fixedRect(1_300));
+		let secondTop = 900;
+		vi.spyOn(secondSection, "getBoundingClientRect").mockImplementation(() => ({
+			top: secondTop,
+			bottom: secondTop + 300,
 			height: 300,
 			left: 0,
 			right: 320,
 			width: 320,
 			x: 0,
-			y: 900,
+			y: secondTop,
 			toJSON: () => ({}),
-		} as DOMRect);
-		const scrollTabIntoView = vi.fn();
-		Object.defineProperty(second, "scrollIntoView", { configurable: true, value: scrollTabIntoView });
+		}) as DOMRect);
+		const navigation = screen.getByRole("navigation", { name: "餐點分類" });
+		Object.defineProperty(navigation, "clientWidth", { configurable: true, value: 100 });
+		Object.defineProperty(second, "offsetLeft", { configurable: true, value: 120 });
+		Object.defineProperty(second, "offsetWidth", { configurable: true, value: 50 });
+		const horizontalScroll = vi.fn();
+		Object.defineProperty(navigation, "scrollTo", { configurable: true, value: horizontalScroll });
 
 		await userEvent.click(second);
 		fireEvent.scroll(window);
-		expect(second.getAttribute("aria-current")).toBe("true");
+		await waitFor(() => expect(second.getAttribute("aria-current")).toBe("true"));
 		expect(first.getAttribute("aria-current")).toBeNull();
 		expect(window.scrollTo).toHaveBeenCalled();
-		await waitFor(() => expect(scrollTabIntoView).toHaveBeenCalledWith(
-			expect.objectContaining({ inline: "nearest" }),
+		await waitFor(() => expect(horizontalScroll).toHaveBeenCalledWith(
+			expect.objectContaining({ left: 70 }),
 		));
+		secondTop = 10;
+		fireEvent(window, new Event("scrollend"));
+		expect(second.getAttribute("aria-current")).toBe("true");
+	});
+
+	it("keeps the third category active when its short section can only reach the page bottom", async () => {
+		vi.spyOn(window, "scrollTo").mockImplementation(() => undefined);
+		vi.spyOn(window, "scrollY", "get").mockReturnValue(1_000);
+		vi.spyOn(window, "innerHeight", "get").mockReturnValue(800);
+		vi.spyOn(document.documentElement, "scrollHeight", "get").mockReturnValue(1_800);
+		await renderCustomer(undefined, categoryFixtures);
+		const sections = categoryFixtures.map((category) => document.getElementById(`category-${category.id}`));
+		if (sections.some((section) => !section)) throw new Error("Missing category sections");
+		const tops = [-900, -300, 420];
+		sections.forEach((section, index) => {
+			vi.spyOn(section!, "getBoundingClientRect").mockReturnValue({
+				top: tops[index], bottom: tops[index] + 250, height: 250,
+				left: 0, right: 320, width: 320, x: 0, y: tops[index], toJSON: () => ({}),
+			} as DOMRect);
+		});
+
+		await userEvent.click(screen.getByRole("link", { name: "蔬菜類" }));
+		fireEvent.scroll(window);
+		fireEvent(window, new Event("scrollend"));
+		expect(screen.getByRole("link", { name: "蔬菜類" }).getAttribute("aria-current")).toBe("true");
+	});
+
+	it("recomputes active category after content height changes and manual upward scrolling", async () => {
+		let resizeCallback: ResizeObserverCallback = () => undefined;
+		class ResizeObserverMock {
+			constructor(callback: ResizeObserverCallback) { resizeCallback = callback; }
+			observe() {}
+			disconnect() {}
+			unobserve() {}
+		}
+		vi.stubGlobal("ResizeObserver", ResizeObserverMock);
+		await renderCustomer(undefined, categoryFixtures);
+		const first = document.getElementById("category-1");
+		const second = document.getElementById("category-2");
+		const third = document.getElementById("category-3");
+		if (!first || !second || !third) throw new Error("Missing category sections");
+		let tops = [-500, -20, 500];
+		[first, second, third].forEach((section, index) => {
+			vi.spyOn(section, "getBoundingClientRect").mockImplementation(() => ({
+				top: tops[index], bottom: tops[index] + 300, height: 300,
+				left: 0, right: 320, width: 320, x: 0, y: tops[index], toJSON: () => ({}),
+			}) as DOMRect);
+		});
+		fireEvent.scroll(window);
+		await waitFor(() => expect(screen.getByRole("link", { name: "點心類" }).getAttribute("aria-current")).toBe("true"));
+		tops = [-10, 400, 800];
+		resizeCallback([], {} as ResizeObserver);
+		fireEvent.scroll(window);
+		await waitFor(() => expect(screen.getByRole("link", { name: "香炸類" }).getAttribute("aria-current")).toBe("true"));
 	});
 
 	it("updates the active category when manual scrolling crosses the sticky offset", async () => {
@@ -526,7 +604,7 @@ describe("customer ordering redesign", () => {
 		await userEvent.click(screen.getByRole("button", { name: "加入 薯條" }));
 		await openCheckoutFromMenu();
 		await screen.findByRole("heading", { name: "結帳報價" });
-		const checkoutNote = screen.getByPlaceholderText("例如：辣／不辣分開裝、其他特殊需求") as HTMLTextAreaElement;
+		const checkoutNote = screen.getByPlaceholderText("例如：其他不影響價格或份量的需求") as HTMLTextAreaElement;
 		await userEvent.type(checkoutNote, "薯條不要鹽");
 		expect(checkoutNote.value).toBe("薯條不要鹽");
 
@@ -771,7 +849,7 @@ describe("customer ordering redesign", () => {
 		});
 	});
 
-	it("does not infer packaging notes and only performs phone format validation", async () => {
+	it("persists explicit packaging separately from notes and only performs phone format validation", async () => {
 		const fetchMock = await renderCustomer([spicyChicken]);
 		await userEvent.click(screen.getByRole("button", { name: "加入 鹹酥雞" }));
 		await openCartView();
@@ -789,7 +867,9 @@ describe("customer ordering redesign", () => {
 		expect(document.body.textContent).not.toContain("已驗證");
 		expect(document.body.textContent).not.toContain("驗證成功");
 		expect(document.body.textContent).not.toContain("手機認證");
-		expect(screen.getByText(/未特別註明則一起裝/)).toBeTruthy();
+		expect((screen.getByRole("radio", { name: "一起裝" }) as HTMLInputElement).checked).toBe(true);
+		await userEvent.click(screen.getByRole("radio", { name: "辣／不辣分袋" }));
+		expect(screen.queryByText(/特殊訂單（需要較多準備時間）/)).toBeNull();
 
 		await userEvent.type(screen.getByLabelText("姓名"), "王小明");
 		await userEvent.type(phone, "0912345678");
@@ -799,20 +879,24 @@ describe("customer ordering redesign", () => {
 			const orderCall = fetchMock.mock.calls.find(
 				([input]) => requestUrl(input as RequestInfo | URL) === "/api/orders",
 			);
-			expect(JSON.parse(String(orderCall?.[1]?.body)).customerNote).toBeNull();
+			const body = JSON.parse(String(orderCall?.[1]?.body));
+			expect(body.customerNote).toBeNull();
+			expect(body.packagingPreference).toBe("separate_spicy");
+			expect(body.specialOrder).toBe(false);
 		});
 	});
 
-	it("persists 辣粉另包 while keeping line spice and fries seasoning unchanged", async () => {
+	it("persists 辣粉另包 as a per-line modifier while keeping fries seasoning unchanged", async () => {
 		const fetchMock = await renderCustomer([spicyChicken, fries]);
 		await userEvent.click(screen.getByRole("button", { name: "加入 鹹酥雞" }));
-		expect(screen.queryByRole("radio", { name: "辣粉另包" })).toBeNull();
-		expect(screen.queryByRole("button", { name: "辣粉另包" })).toBeNull();
 		await openCartView();
 		const chickenLine = screen.getByText("鹹酥雞 × 1").closest("li");
 		if (!chickenLine) throw new Error("Missing chicken line");
 		await userEvent.click(within(chickenLine).getByRole("button", { name: /辣度：不辣/ }));
-		await userEvent.click(within(chickenLine).getByRole("radio", { name: "中辣" }));
+		await userEvent.click(within(chickenLine).getByRole("radio", { name: "辣粉另包" }));
+		const packetLine = screen.getByText("鹹酥雞 × 1").closest("li");
+		if (!packetLine) throw new Error("Missing reconfigured chicken line");
+		expect(within(packetLine).getByRole("button", { name: /辣度：辣粉另包/ })).toBeTruthy();
 		await userEvent.click(screen.getByRole("button", { name: "← 繼續點餐" }));
 		await userEvent.click(screen.getByRole("button", { name: "加入 薯條" }));
 		await openCartView();
@@ -823,7 +907,7 @@ describe("customer ordering redesign", () => {
 
 		await userEvent.click(screen.getByRole("button", { name: "下一步：確認訂單" }));
 		await screen.findByRole("heading", { name: "結帳報價" });
-		await userEvent.click(screen.getByRole("checkbox", { name: "辣粉另包" }));
+		expect(screen.queryByRole("checkbox", { name: "辣粉另包" })).toBeNull();
 		await userEvent.type(screen.getByLabelText("姓名"), "王小明");
 		await userEvent.type(screen.getByLabelText("電話"), "0912345678");
 		await userEvent.click(screen.getByRole("button", { name: "送出訂單" }));
@@ -834,7 +918,7 @@ describe("customer ordering redesign", () => {
 			);
 			const quoteBody = JSON.parse(String(quoteCall?.[1]?.body));
 			expect(quoteBody.items).toEqual([
-				{ menuItemId: 4, quantity: 1, modifierOptionIds: [9] },
+				{ menuItemId: 4, quantity: 1, modifierOptionIds: [24] },
 				{ menuItemId: 9, quantity: 1, modifierOptionIds: [16] },
 			]);
 
@@ -842,8 +926,120 @@ describe("customer ordering redesign", () => {
 				([input]) => requestUrl(input as RequestInfo | URL) === "/api/orders",
 			);
 			const orderBody = JSON.parse(String(orderCall?.[1]?.body));
-			expect(orderBody.customerNote).toBe("辣粉另包");
+			expect(orderBody.customerNote).toBeNull();
 			expect(orderBody.items).toEqual(quoteBody.items);
 		});
+	});
+
+	it("restores a versioned cart draft after menu validation without merging modifier identities", async () => {
+		localStorage.setItem(CART_DRAFT_STORAGE_KEY, JSON.stringify({
+			version: 1,
+			updatedAt: Date.now(),
+			items: [
+				{ menuItemId: 4, quantity: 2, modifierOptionIds: [24] },
+				{ menuItemId: 4, quantity: 1, modifierOptionIds: [8] },
+			],
+		}));
+		await renderCustomer([spicyChicken]);
+		await openCartView();
+		const packetLine = screen.getByText("鹹酥雞 × 2").closest("li");
+		const mildLine = screen.getByText("鹹酥雞 × 1").closest("li");
+		if (!packetLine || !mildLine) throw new Error("Missing restored cart lines");
+		expect(within(packetLine).getByRole("button", { name: /辣度：辣粉另包/ })).toBeTruthy();
+		expect(within(mildLine).getByRole("button", { name: /辣度：小辣/ })).toBeTruthy();
+		expect(screen.getByText(/已依最新菜單還原購物車/)).toBeTruthy();
+	});
+
+	it("stores only non-sensitive cart identifiers in the local draft", async () => {
+		await renderCustomer([spicyChicken]);
+		await userEvent.click(screen.getByRole("button", { name: "加入 鹹酥雞" }));
+		await waitFor(() => expect(localStorage.getItem(CART_DRAFT_STORAGE_KEY)).not.toBeNull());
+		const stored = JSON.parse(localStorage.getItem(CART_DRAFT_STORAGE_KEY)!);
+		expect(Object.keys(stored).sort()).toEqual(["items", "updatedAt", "version"]);
+		expect(stored.items).toEqual([{ menuItemId: 4, quantity: 1, modifierOptionIds: [7] }]);
+		expect(JSON.stringify(stored)).not.toContain("鹹酥雞");
+		expect(JSON.stringify(stored)).not.toContain("customerPhone");
+		expect(JSON.stringify(stored)).not.toContain("idempotency");
+	});
+
+	it("ignores expired, unavailable, and invalid-option cart draft data", async () => {
+		localStorage.setItem(CART_DRAFT_STORAGE_KEY, JSON.stringify({
+			version: 1,
+			updatedAt: Date.now() - CART_DRAFT_TTL_MS - 1,
+			items: [{ menuItemId: 4, quantity: 1, modifierOptionIds: [24] }],
+		}));
+		await renderCustomer([spicyChicken]);
+		expect(await screen.findByText("購物車草稿已過期，請重新選擇餐點。")).toBeTruthy();
+		expect(localStorage.getItem(CART_DRAFT_STORAGE_KEY)).toBeNull();
+
+		cleanup();
+		localStorage.setItem(CART_DRAFT_STORAGE_KEY, JSON.stringify({
+			version: 1,
+			updatedAt: Date.now(),
+			items: [
+				{ menuItemId: 4, quantity: 1, modifierOptionIds: [9999] },
+				{ menuItemId: 3, quantity: 1, modifierOptionIds: [] },
+			],
+		}));
+		await renderCustomer([spicyChicken, soldOutChicken]);
+		expect(await screen.findByText(/另有 2 筆失效餐點未還原/)).toBeTruthy();
+		expect(screen.queryByText("查看購物車")).toBeNull();
+	});
+
+	it("keeps the full removed line for a short undo without duplicating a replacement line", async () => {
+		const mutableChicken = structuredClone(spicyChicken);
+		await renderCustomer([mutableChicken]);
+		await userEvent.click(screen.getByRole("button", { name: "加入 鹹酥雞" }));
+		await openCartView();
+		let line = screen.getByText("鹹酥雞 × 1").closest("li");
+		if (!line) throw new Error("Missing cart line");
+		await userEvent.click(within(line).getByRole("button", { name: /辣度：不辣/ }));
+		await userEvent.click(within(line).getByRole("radio", { name: "辣粉另包" }));
+		line = screen.getByText("鹹酥雞 × 1").closest("li");
+		if (!line) throw new Error("Missing reconfigured cart line");
+		await userEvent.click(within(line).getByRole("button", { name: "增加 鹹酥雞 數量" }));
+		await userEvent.click(within(line).getByRole("button", { name: "移除 鹹酥雞" }));
+		expect(screen.getByText("已移除「鹹酥雞」")).toBeTruthy();
+		await userEvent.click(screen.getByRole("button", { name: "復原" }));
+		const restored = screen.getByText("鹹酥雞 × 2").closest("li");
+		if (!restored) throw new Error("Missing restored cart line");
+		expect(within(restored).getByRole("button", { name: /辣度：辣粉另包/ })).toBeTruthy();
+
+		await userEvent.click(within(restored).getByRole("button", { name: "移除 鹹酥雞" }));
+		await userEvent.click(screen.getByRole("button", { name: "← 繼續點餐" }));
+		await userEvent.click(screen.getByRole("button", { name: "加入 鹹酥雞" }));
+		await openCartView();
+		const replacement = screen.getByText("鹹酥雞 × 1").closest("li");
+		if (!replacement) throw new Error("Missing replacement line");
+		await userEvent.click(within(replacement).getByRole("button", { name: /辣度：不辣/ }));
+		await userEvent.click(within(replacement).getByRole("radio", { name: "辣粉另包" }));
+		await userEvent.click(screen.getByRole("button", { name: "復原" }));
+		expect(screen.getByText("購物車已有相同餐點，未重複加入已移除的數量。")).toBeTruthy();
+		expect(screen.getByText("鹹酥雞 × 1")).toBeTruthy();
+	});
+
+	it("clears the cart draft only after a successful order and retains it on failure", async () => {
+		const fetchMock = await renderCustomer([spicyChicken]);
+		await userEvent.click(screen.getByRole("button", { name: "加入 鹹酥雞" }));
+		await waitFor(() => expect(localStorage.getItem(CART_DRAFT_STORAGE_KEY)).not.toBeNull());
+		await openCheckoutFromMenu();
+		await screen.findByRole("heading", { name: "結帳報價" });
+		await userEvent.type(screen.getByLabelText("姓名"), "王小明");
+		await userEvent.type(screen.getByLabelText("電話"), "0912345678");
+
+		const original = fetchMock.getMockImplementation();
+		fetchMock.mockImplementation(async (input, init) => {
+			if (requestUrl(input as RequestInfo | URL) === "/api/orders") return json({}, 503);
+			if (!original) throw new Error("Missing fetch implementation");
+			return original(input, init);
+		});
+		await userEvent.click(screen.getByRole("button", { name: "送出訂單" }));
+		await screen.findByRole("alert");
+		expect(localStorage.getItem(CART_DRAFT_STORAGE_KEY)).not.toBeNull();
+
+		fetchMock.mockImplementation(original!);
+		await userEvent.click(screen.getByRole("button", { name: "送出訂單" }));
+		await screen.findByText("等待店家確認");
+		expect(localStorage.getItem(CART_DRAFT_STORAGE_KEY)).toBeNull();
 	});
 });

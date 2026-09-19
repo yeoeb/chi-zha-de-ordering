@@ -153,6 +153,12 @@ export default function CustomerOrderStatus({
 							<span>{order.customerNote}</span>
 						</p>
 					)}
+					{order.packagingPreference === "separate_spicy" && (
+						<p className="customer-order-note">
+							<strong>包裝方式</strong>
+							<span>辣／不辣分袋</span>
+						</p>
+					)}
 
 					<ul className="customer-status-items">
 						{order.items.map((item, index) => (

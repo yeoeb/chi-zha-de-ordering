@@ -13,6 +13,7 @@ export type MerchantOrder = {
 	customerName: string;
 	customerPhone: string;
 	customerNote: string | null;
+	packagingPreference: "together" | "separate_spicy";
 	specialOrder: boolean;
 	items: Array<{
 		menuItemId: number;
@@ -57,6 +58,7 @@ type MerchantOrderRow = {
 	customerName: string;
 	customerPhone: string;
 	customerNote: string | null;
+	packagingPreference: "together" | "separate_spicy";
 	specialOrder: number;
 	orderItemId: string | null;
 	menuItemId: number | null;
@@ -83,6 +85,7 @@ const SNAPSHOT_SELECT = `SELECT
 	orders.customer_name AS customerName,
 	orders.customer_phone AS customerPhone,
 	orders.customer_note AS customerNote,
+	orders.packaging_preference AS packagingPreference,
 	orders.special_order AS specialOrder,
 	order_items.id AS orderItemId,
 	order_items.menu_item_id AS menuItemId,
@@ -131,6 +134,7 @@ function buildMerchantOrders(rows: MerchantOrderRow[]) {
 				customerName: row.customerName,
 				customerPhone: row.customerPhone,
 				customerNote: row.customerNote,
+				packagingPreference: row.packagingPreference,
 				specialOrder: Boolean(row.specialOrder),
 				items: [],
 			};

@@ -6,6 +6,7 @@ export type CustomerOrder = {
 	status: OrderStatus;
 	customerName: string;
 	customerNote: string | null;
+	packagingPreference: "together" | "separate_spicy";
 	createdAt: string;
 	estimatedReadyAt: string;
 	total: number;
@@ -46,6 +47,7 @@ export function toCustomerOrder(
 		status: storedOrder.status,
 		customerName: storedOrder.customerName,
 		customerNote: storedOrder.customerNote,
+		packagingPreference: storedOrder.packagingPreference,
 		createdAt: storedOrder.createdAt,
 		estimatedReadyAt: storedOrder.estimatedReadyAt,
 		total: storedOrder.total,

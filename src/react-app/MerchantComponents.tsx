@@ -101,6 +101,13 @@ export function MerchantOrderCard({
 				</section>
 			)}
 
+			{order.packagingPreference === "separate_spicy" && (
+				<section className="merchant-packaging-preference" aria-label="包裝方式">
+					<strong>包裝方式</strong>
+					<span>辣／不辣分袋</span>
+				</section>
+			)}
+
 			<footer className="merchant-order-footer">
 				<div>
 					<span>{order.customerName}</span>

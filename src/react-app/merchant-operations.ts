@@ -20,6 +20,7 @@ export type MerchantOrder = {
 	customerName: string;
 	customerPhone: string;
 	customerNote: string | null;
+	packagingPreference: "together" | "separate_spicy";
 	specialOrder: boolean;
 	items: MerchantOrderItem[];
 };

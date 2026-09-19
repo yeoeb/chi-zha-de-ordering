@@ -58,6 +58,7 @@ async function insertOrder({
 	estimatedReadyAt = fixedEta,
 	itemName = "雞排快照",
 	customerNote = null,
+	packagingPreference = "together",
 }: {
 	id: string;
 	status: OrderStatus;
@@ -65,6 +66,7 @@ async function insertOrder({
 	estimatedReadyAt?: string;
 	itemName?: string;
 	customerNote?: string | null;
+	packagingPreference?: "together" | "separate_spicy";
 }) {
 	const acceptedAt = status === "accepted" || status === "completed" ? "2026-09-06T04:10:00.000Z" : null;
 	const completedAt = status === "completed" ? "2026-09-06T04:30:00.000Z" : null;
@@ -76,8 +78,8 @@ async function insertOrder({
 				`INSERT INTO orders (
 					id, public_lookup_token, order_number, status, total_amount, estimated_ready_at, created_at,
 					accepted_at, completed_at, rejected_at, customer_name, customer_phone,
-					customer_note, special_order, idempotency_key, request_fingerprint
-				) VALUES (?, ?, ?, ?, 90, ?, ?, ?, ?, ?, '王小明', '0912345678', ?, 0, ?, ?)`,
+					customer_note, packaging_preference, special_order, idempotency_key, request_fingerprint
+				) VALUES (?, ?, ?, ?, 90, ?, ?, ?, ?, ?, '王小明', '0912345678', ?, ?, 0, ?, ?)`,
 			)
 			.bind(
 				id,
@@ -90,6 +92,7 @@ async function insertOrder({
 				completedAt,
 				rejectedAt,
 				customerNote,
+				packagingPreference,
 				`key-${id}`,
 				"a".repeat(64),
 			),
@@ -254,7 +257,8 @@ describe("Merchant Order API", () => {
 			status: "pending",
 			createdAt: "2026-09-06T04:00:00.000Z",
 			estimatedReadyAt: "2026-09-06T06:30:00.000Z",
-			customerNote: "辣粉另包",
+			customerNote: "雞排不要切",
+			packagingPreference: "separate_spicy",
 		});
 		await insertOrder({
 			id: "accepted",
@@ -277,6 +281,7 @@ describe("Merchant Order API", () => {
 			orders: Array<{
 				id: string;
 				customerNote: string | null;
+				packagingPreference: string;
 				items: Array<{
 					name: string;
 					unitPrice: number;
@@ -287,7 +292,8 @@ describe("Merchant Order API", () => {
 
 		expect(response.status).toBe(200);
 		expect(result.orders.map((order) => order.id)).toEqual(["newer", "accepted", "oldest"]);
-		expect(result.orders[2].customerNote).toBe("辣粉另包");
+		expect(result.orders[2].customerNote).toBe("雞排不要切");
+		expect(result.orders[2].packagingPreference).toBe("separate_spicy");
 		expect(result.orders[2].items[0]).toMatchObject({
 			name: "雞排快照",
 			unitPrice: 90,

@@ -29,6 +29,12 @@ const verySpicy: SelectedModifier = {
 	optionName: "大辣",
 	priceDelta: 0,
 };
+const pepperPacket: SelectedModifier = {
+	...mild,
+	optionId: 105,
+	optionName: "辣粉另包",
+	priceDelta: 0,
+};
 const sliced: SelectedModifier = {
 	groupId: 20,
 	groupName: "切法",
@@ -90,6 +96,15 @@ describe("cart identity and transitions", () => {
 		expect(cart).toHaveLength(2);
 	});
 
+	it("keeps 辣粉另包 mutually exclusive in line identity", () => {
+		const mildLine = createCartLine(item, [mild, sliced]);
+		const packetLine = createCartLine(item, [pepperPacket, sliced]);
+		expect(packetLine.id).not.toBe(mildLine.id);
+		expect(packetLine.selectedModifiers.filter((modifier) => modifier.groupId === mild.groupId)).toEqual([
+			pepperPacket,
+		]);
+	});
+
 	it("reconfigures only the targeted line and merges when persisted modifiers become identical", () => {
 		const mildLine = createCartLine(item, [mild, sliced]);
 		const plainLine = createCartLine(item, [notSpicy, sliced]);
@@ -140,6 +155,14 @@ describe("cart identity and transitions", () => {
 		expect(backToOne[0]?.quantity).toBe(1);
 		expect(stillOne[0]?.quantity).toBe(1);
 		expect(removed).toEqual([]);
+	});
+
+	it("restores a removed full line once without overwriting an identical replacement", () => {
+		const line: CartLine = { ...createCartLine(item, [pepperPacket, sliced]), quantity: 2 };
+		const restored = cartReducer([], { type: "restore", line });
+		const duplicateRestore = cartReducer(restored, { type: "restore", line });
+		expect(restored).toEqual([line]);
+		expect(duplicateRestore).toEqual([line]);
 	});
 });
 

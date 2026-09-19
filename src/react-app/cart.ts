@@ -16,11 +16,14 @@ export type CartLine = {
 	quantity: number;
 };
 
-type CartAction =
+export type CartAction =
 	| { type: "add"; line: Omit<CartLine, "quantity"> }
 	| { type: "increase"; lineId: string }
 	| { type: "decrease"; lineId: string }
 	| { type: "remove"; lineId: string }
+	| { type: "restore"; line: CartLine }
+	| { type: "hydrate"; lines: CartLine[] }
+	| { type: "clear" }
 	| {
 			type: "reconfigure";
 			lineId: string;
@@ -86,6 +89,14 @@ export function cartReducer(cart: CartLine[], action: CartAction): CartLine[] {
 			);
 		case "remove":
 			return cart.filter((line) => line.id !== action.lineId);
+		case "restore":
+			return cart.some((line) => line.id === action.line.id)
+				? cart
+				: [...cart, action.line];
+		case "hydrate":
+			return action.lines;
+		case "clear":
+			return [];
 		case "reconfigure":
 			return mergeMatchingLines(
 				cart.map((line) => {

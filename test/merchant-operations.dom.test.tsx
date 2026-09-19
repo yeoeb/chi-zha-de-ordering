@@ -24,7 +24,8 @@ function order(overrides: Record<string, unknown> = {}) {
 		createdAt: "2026-09-16T11:40:00.000Z",
 		customerName: "王小明",
 		customerPhone: "0912345678",
-		customerNote: "辣／不辣分開裝",
+		customerNote: "雞排不要切",
+		packagingPreference: "separate_spicy",
 		specialOrder: false,
 		items: [
 			{
@@ -158,7 +159,8 @@ describe("Merchant operations UI", () => {
 		expect(screen.getAllByText("辣度：中辣 · 切法：切").length).toBeGreaterThan(0);
 		expect(screen.getAllByText("辣度：不辣 · 切法：不切").length).toBeGreaterThan(0);
 		expect(screen.getAllByText("調味：胡椒 · 不加醬").length).toBeGreaterThan(0);
-		expect(screen.getByText("辣／不辣分開裝")).toBeTruthy();
+		expect(screen.getByText("雞排不要切")).toBeTruthy();
+		expect(screen.getAllByText("辣／不辣分袋").length).toBeGreaterThan(0);
 		const noNoteCard = screen.getByText("#024").closest("article");
 		expect(noNoteCard && within(noNoteCard).queryByLabelText("訂單備註")).toBeNull();
 	});
