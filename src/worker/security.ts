@@ -133,13 +133,38 @@ export async function authenticateAdminRequest(input: {
 
 export function isMerchantMutationRequestAllowed(input: {
 	method: string;
+	devBypass?: string;
 	expectedHostname?: string;
+	requestUrl?: string;
 	origin?: string;
 	secFetchSite?: string;
 }) {
 	if (["GET", "HEAD", "OPTIONS"].includes(input.method.toUpperCase())) return true;
+	if (input.secFetchSite !== "same-origin" || !input.origin) return false;
+
+	if (input.devBypass === "true") {
+		try {
+			const requestUrl = new URL(input.requestUrl ?? "");
+			const isLoopback = ["localhost", "127.0.0.1", "::1"].includes(requestUrl.hostname);
+			if (isLoopback) {
+				const origin = new URL(input.origin);
+				return (
+					input.origin === origin.origin &&
+					origin.origin === requestUrl.origin &&
+					origin.username === "" &&
+					origin.password === "" &&
+					origin.pathname === "/" &&
+					origin.search === "" &&
+					origin.hash === ""
+				);
+			}
+		} catch {
+			return false;
+		}
+	}
+
 	const expectedHostname = input.expectedHostname?.trim().toLowerCase();
-	if (!expectedHostname || input.secFetchSite !== "same-origin" || !input.origin) return false;
+	if (!expectedHostname) return false;
 
 	const expectedOrigin = `https://${expectedHostname}`;
 	try {

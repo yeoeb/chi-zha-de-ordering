@@ -4,6 +4,7 @@ export type MerchantModifier = {
 };
 
 export type MerchantOrderItem = {
+	id?: string;
 	name: string;
 	quantity: number;
 	lineTotal: number;
@@ -13,16 +14,26 @@ export type MerchantOrderItem = {
 export type MerchantOrder = {
 	id: string;
 	orderNumber: string;
-	status: "pending" | "accepted";
+	status: "pending" | "accepted" | "completed" | "rejected" | "cancelled";
+	orderSource?: "online" | "onsite";
 	total: number;
+	originalTotal?: number;
+	shortagePolicy?: "continue_available" | "cancel_entire_order";
+	shortageRevision?: number;
+	cancelledAt?: string | null;
+	cancellationReason?: "customer_cancelled" | "shortage_cancelled" | "all_items_unavailable" | null;
 	estimatedReadyAt: string;
 	createdAt: string;
+	acceptedAt?: string | null;
+	completedAt?: string | null;
+	rejectedAt?: string | null;
 	customerName: string;
 	customerPhone: string;
 	customerNote: string | null;
 	packagingPreference: "together" | "separate_spicy";
 	specialOrder: boolean;
 	items: MerchantOrderItem[];
+	shortages?: Array<{ orderItemId: string; name: string; quantity: number; amountDeducted: number }>;
 };
 
 export type MerchantMenuItem = {
@@ -47,6 +58,9 @@ export type DeadlineState = {
 
 export function getDeadlineState(estimatedReadyAt: string, now = new Date()): DeadlineState {
 	const differenceMs = new Date(estimatedReadyAt).getTime() - now.getTime();
+	if (!Number.isFinite(differenceMs)) {
+		return { className: "normal", label: "截止時間未記錄" };
+	}
 	if (differenceMs < 0) {
 		return {
 			className: "overdue",
@@ -63,8 +77,11 @@ export function getDeadlineState(estimatedReadyAt: string, now = new Date()): De
 
 export function sortOrdersByReadyDeadline(orders: MerchantOrder[]) {
 	return [...orders].sort((left, right) => {
+		const leftDeadline = new Date(left.estimatedReadyAt).getTime();
+		const rightDeadline = new Date(right.estimatedReadyAt).getTime();
 		const deadlineDifference =
-			new Date(left.estimatedReadyAt).getTime() - new Date(right.estimatedReadyAt).getTime();
+			(Number.isFinite(leftDeadline) ? leftDeadline : Number.POSITIVE_INFINITY) -
+			(Number.isFinite(rightDeadline) ? rightDeadline : Number.POSITIVE_INFINITY);
 		return deadlineDifference || left.createdAt.localeCompare(right.createdAt) || left.id.localeCompare(right.id);
 	});
 }

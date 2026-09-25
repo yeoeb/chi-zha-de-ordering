@@ -1,6 +1,6 @@
 export type PollingOrder = {
 	id: string;
-	status: "pending" | "accepted";
+	status: "pending" | "accepted" | "completed" | "rejected" | "cancelled";
 };
 
 export function findNewPendingOrderIds(

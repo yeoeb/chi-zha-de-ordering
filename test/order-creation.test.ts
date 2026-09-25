@@ -3,7 +3,7 @@ import { beforeAll, beforeEach, describe, expect, it } from "vitest";
 
 const defaultOrderRequest = {
 	customerName: "王小明",
-	customerPhone: "0912-345-678",
+	customerPhone: "0912345678",
 	specialOrder: false,
 	items: [{ menuItemId: 1, quantity: 1, modifierOptionIds: [10, 20] }],
 };
@@ -55,14 +55,27 @@ beforeEach(async () => {
 	]);
 });
 
-function postOrder(idempotencyKey: string, body: unknown = defaultOrderRequest) {
+async function postOrder(idempotencyKey: string, body: unknown = defaultOrderRequest) {
+	let requestBody = body;
+	if (body && typeof body === "object" && !Array.isArray(body)) {
+		const record = body as Record<string, unknown>;
+		if (!("quoteFingerprint" in record)) {
+			let quoteFingerprint = "0".repeat(64);
+			const quoteResponse = await postQuote(record.items);
+			if (quoteResponse.ok) {
+				quoteFingerprint = ((await quoteResponse.json()) as { quoteFingerprint: string })
+					.quoteFingerprint;
+			}
+			requestBody = { ...record, quoteFingerprint };
+		}
+	}
 	return exports.default.fetch("https://example.com/api/orders", {
 		method: "POST",
 		headers: {
 			"content-type": "application/json",
 			"Idempotency-Key": idempotencyKey,
 		},
-		body: JSON.stringify(body),
+		body: JSON.stringify(requestBody),
 	});
 }
 
@@ -101,6 +114,22 @@ async function insertQueueOrder(
 }
 
 describe("POST /api/orders", () => {
+	it("requires a valid confirmed quote fingerprint", async () => {
+		const response = await exports.default.fetch("https://example.com/api/orders", {
+			method: "POST",
+			headers: {
+				"content-type": "application/json",
+				"Idempotency-Key": "missing-quote-fingerprint",
+			},
+			body: JSON.stringify(defaultOrderRequest),
+		});
+
+		expect(response.status).toBe(400);
+		expect(await response.json()).toMatchObject({
+			error: { code: "INVALID_ORDER_REQUEST" },
+		});
+	});
+
 	it("creates a pending Order from current authoritative prices", async () => {
 		const response = await postOrder("create-current-price");
 		const result = (await response.json()) as OrderResponse;
@@ -116,6 +145,45 @@ describe("POST /api/orders", () => {
 			.bind(result.order.publicLookupToken)
 			.first<{ status: string; total_amount: number }>();
 		expect(stored).toEqual({ status: "pending", total_amount: 100 });
+	});
+
+	it("rejects invalid Taiwan mobile numbers before creating any Order records", async () => {
+		const invalidPhones: Array<[string, unknown]> = [
+			["eight-digits", "09123456"],
+			["letters", "09abcd5678"],
+			["empty", ""],
+			["blank", "   "],
+			["too-short", "0912345"],
+			["too-long", "09123456789"],
+			["non-string", 912345678],
+		];
+
+		for (const [name, customerPhone] of invalidPhones) {
+			const response = await postOrder(`phone-${name}`, {
+				...defaultOrderRequest,
+				customerPhone,
+			});
+			expect(response.status, name).toBe(400);
+			expect(await response.json(), name).toMatchObject({
+				error: { code: "INVALID_CUSTOMER_PHONE" },
+			});
+		}
+
+		const counts = await env.DB.prepare(
+			`SELECT
+				(SELECT COUNT(*) FROM orders) AS orders_count,
+				(SELECT COUNT(*) FROM order_items) AS items_count,
+				(SELECT COUNT(*) FROM order_item_modifiers) AS modifiers_count,
+				(SELECT COUNT(*) FROM web_push_notification_deliveries) AS notifications_count,
+				(SELECT COUNT(*) FROM notification_deliveries) AS legacy_notifications_count`,
+		).first();
+		expect(counts).toEqual({
+			orders_count: 0,
+			items_count: 0,
+			modifiers_count: 0,
+			notifications_count: 0,
+			legacy_notifications_count: 0,
+		});
 	});
 
 	it("accepts an omitted note and stores null", async () => {
@@ -210,6 +278,20 @@ describe("POST /api/orders", () => {
 		expect(stored?.customer_note).toBe("雞排不要切、辣粉另包");
 	});
 
+	it("stores SQL- and HTML-shaped note content as inert bound text", async () => {
+		const customerNote = "'); DROP TABLE orders; -- <script>alert(1)</script>";
+		const response = await postOrder("note-inert-text", { ...defaultOrderRequest, customerNote });
+		const result = (await response.json()) as OrderResponse;
+		const stored = await env.DB.prepare(
+			"SELECT customer_note AS customerNote FROM orders WHERE public_lookup_token = ?",
+		).bind(result.order.publicLookupToken).first<{ customerNote: string | null }>();
+		const tableStillExists = await env.DB.prepare("SELECT COUNT(*) AS count FROM orders").first<{ count: number }>();
+
+		expect(response.status).toBe(201);
+		expect(stored?.customerNote).toBe(customerNote);
+		expect(tableStillExists?.count).toBe(1);
+	});
+
 	it("accepts exactly 120 Unicode characters", async () => {
 		const customerNote = "🍟".repeat(120);
 		const response = await postOrder("note-120", { ...defaultOrderRequest, customerNote });
@@ -239,10 +321,21 @@ describe("POST /api/orders", () => {
 		expect(await response.json()).toMatchObject({ error: { code: "INVALID_ORDER_REQUEST" } });
 	});
 
-	it("rejects control characters in a note", async () => {
+	it("accepts reasonable line breaks in a note", async () => {
 		const response = await postOrder("note-control", {
 			...defaultOrderRequest,
 			customerNote: "雞排不要切\n辣粉另包",
+		});
+		const result = await response.json() as OrderResponse;
+
+		expect(response.status).toBe(201);
+		expect(result.order.customerNote).toBe("雞排不要切\n辣粉另包");
+	});
+
+	it("rejects non-line-break control characters in a note", async () => {
+		const response = await postOrder("note-tab-control", {
+			...defaultOrderRequest,
+			customerNote: "雞排不要切\t辣粉另包",
 		});
 
 		expect(response.status).toBe(400);
@@ -298,25 +391,109 @@ describe("POST /api/orders", () => {
 
 		expect(orderResponse.status).toBe(422);
 		expect(await orderResponse.json()).toMatchObject({
-			error: { code: "UNAVAILABLE_ITEM" },
+			error: {
+				code: "UNAVAILABLE_ITEM",
+				lineIssues: [{ itemIndex: 0, menuItemId: 1, code: "UNAVAILABLE_ITEM" }],
+			},
 		});
+		const counts = await env.DB.prepare(
+			`SELECT
+				(SELECT COUNT(*) FROM orders) AS orders_count,
+				(SELECT COUNT(*) FROM order_items) AS items_count,
+				(SELECT COUNT(*) FROM web_push_notification_deliveries) AS notifications_count`,
+		).first();
+		expect(counts).toEqual({ orders_count: 0, items_count: 0, notifications_count: 0 });
 	});
 
-	it("reprices from current D1 data after a successful quote", async () => {
+	it("rejects an unconfirmed price change, leaves no children, and accepts the refreshed quote with the same key", async () => {
 		const quoteResponse = await postQuote();
-		const quote = (await quoteResponse.json()) as { total: number };
+		const quote = (await quoteResponse.json()) as { total: number; quoteFingerprint: string };
 		expect(quoteResponse.status).toBe(200);
 		expect(quote.total).toBe(100);
 
 		await env.DB.prepare("UPDATE menu_items SET price = 95 WHERE id = 1").run();
-		const orderResponse = await postOrder("price-changed-after-quote");
-		const order = (await orderResponse.json()) as OrderResponse;
+		const orderResponse = await postOrder("price-changed-after-quote", {
+			...defaultOrderRequest,
+			quoteFingerprint: quote.quoteFingerprint,
+		});
 
-		expect(orderResponse.status).toBe(201);
-		expect(order.order).toMatchObject({
+		expect(orderResponse.status).toBe(409);
+		expect(await orderResponse.json()).toMatchObject({ error: { code: "QUOTE_CHANGED" } });
+		const countsAfterReject = await env.DB
+			.prepare(
+				`SELECT
+					(SELECT COUNT(*) FROM orders) AS orders_count,
+					(SELECT COUNT(*) FROM order_items) AS items_count,
+					(SELECT COUNT(*) FROM order_item_modifiers) AS modifiers_count,
+					(SELECT COUNT(*) FROM web_push_notification_deliveries) AS notifications_count,
+					(SELECT COUNT(*) FROM notification_deliveries) AS legacy_notifications_count`,
+			)
+			.first();
+		expect(countsAfterReject).toEqual({
+			orders_count: 0,
+			items_count: 0,
+			modifiers_count: 0,
+			notifications_count: 0,
+			legacy_notifications_count: 0,
+		});
+
+		const refreshedQuoteResponse = await postQuote();
+		const refreshedQuote = (await refreshedQuoteResponse.json()) as {
+			total: number;
+			quoteFingerprint: string;
+		};
+		expect(refreshedQuote).toMatchObject({ total: 110 });
+		const confirmedResponse = await postOrder("price-changed-after-quote", {
+			...defaultOrderRequest,
+			quoteFingerprint: refreshedQuote.quoteFingerprint,
+		});
+		const confirmed = (await confirmedResponse.json()) as OrderResponse;
+		expect(confirmedResponse.status).toBe(201);
+		expect(confirmed.order).toMatchObject({
 			total: 110,
 			items: [{ unitPrice: 110, lineTotal: 110 }],
 		});
+	});
+
+	it("rejects an unconfirmed modifier-price change", async () => {
+		const quoteResponse = await postQuote();
+		const quote = (await quoteResponse.json()) as { quoteFingerprint: string };
+		await env.DB.prepare("UPDATE modifier_options SET price_delta = 15 WHERE id = 10").run();
+
+		const response = await postOrder("modifier-price-changed", {
+			...defaultOrderRequest,
+			quoteFingerprint: quote.quoteFingerprint,
+		});
+
+		expect(response.status).toBe(409);
+		expect(await response.json()).toMatchObject({ error: { code: "QUOTE_CHANGED" } });
+		expect(
+			(await env.DB.prepare("SELECT COUNT(*) AS count FROM orders").first<{ count: number }>())
+				?.count,
+		).toBe(0);
+	});
+
+	it("detects offsetting base and modifier price changes even when the total is unchanged", async () => {
+		const quoteResponse = await postQuote();
+		const quote = (await quoteResponse.json()) as { total: number; quoteFingerprint: string };
+		expect(quote.total).toBe(100);
+		await env.DB.batch([
+			env.DB.prepare("UPDATE menu_items SET price = 90 WHERE id = 1"),
+			env.DB.prepare("UPDATE modifier_options SET price_delta = 0 WHERE id = 10"),
+		]);
+		const currentQuote = (await (await postQuote()).json()) as { total: number };
+		expect(currentQuote.total).toBe(100);
+
+		const response = await postOrder("offsetting-price-change", {
+			...defaultOrderRequest,
+			quoteFingerprint: quote.quoteFingerprint,
+		});
+		expect(response.status).toBe(409);
+		expect(await response.json()).toMatchObject({ error: { code: "QUOTE_CHANGED" } });
+		expect(
+			(await env.DB.prepare("SELECT COUNT(*) AS count FROM orders").first<{ count: number }>())
+				?.count,
+		).toBe(0);
 	});
 
 	it("rejects a modifier that becomes inactive after a successful quote", async () => {
@@ -437,9 +614,10 @@ describe("POST /api/orders", () => {
 			.first<{ count: number }>();
 
 		expect(response.status).toBe(201);
-		expect(Date.parse(result.order.estimatedReadyAt) - Date.parse(result.order.createdAt)).toBe(
-			35 * 60_000,
-		);
+		const readyDelay = Date.parse(result.order.estimatedReadyAt) - Date.parse(result.order.createdAt);
+		expect(readyDelay).toBeGreaterThanOrEqual(40 * 60_000);
+		expect(readyDelay).toBeLessThan(45 * 60_000);
+		expect(new Date(result.order.estimatedReadyAt).getUTCMinutes() % 5).toBe(0);
 		expect(activeCount?.count).toBe(3);
 	});
 });

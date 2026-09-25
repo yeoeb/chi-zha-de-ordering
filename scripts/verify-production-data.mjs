@@ -42,6 +42,7 @@ const productionFiles = [
 	"production-data/add-fries-seasoning.sql",
 	"production-data/add-spice-options.sql",
 	"production-data/add-admin-presentation-metadata.sql",
+	"production-data/add-portion-options.sql",
 ];
 
 try {
@@ -106,6 +107,14 @@ try {
 				(id = 24 AND modifier_group_id = 3 AND name = '辣粉另包') OR
 				(id = 25 AND modifier_group_id = 4 AND name = '微辣') OR
 				(id = 26 AND modifier_group_id = 4 AND name = '辣粉另包')) AS addedSpiceOptionCount,
+			(SELECT COUNT(*) FROM modifier_groups WHERE
+				(id = 7 AND menu_item_id = 4 AND name = '份量') OR
+				(id = 8 AND menu_item_id = 3 AND name = '份量')) AS portionGroupCount,
+			(SELECT COUNT(*) FROM modifier_options WHERE
+				(id = 27 AND modifier_group_id = 7 AND name = '小份' AND price_delta = 0) OR
+				(id = 28 AND modifier_group_id = 7 AND name = '大份' AND price_delta = 40) OR
+				(id = 29 AND modifier_group_id = 8 AND name = '小份' AND price_delta = 0) OR
+				(id = 30 AND modifier_group_id = 8 AND name = '大份' AND price_delta = 40)) AS portionOptionCount,
 			(SELECT COUNT(*) FROM store_settings WHERE id = 1 AND is_accepting_orders = 1 AND state_version = 3) AS preservedStoreStateCount,
 			(SELECT COUNT(*) FROM orders WHERE id = 'production-data-history' AND total_amount = 35 AND customer_note = '保留備註') AS preservedOrderCount,
 			(SELECT COUNT(*) FROM order_items WHERE id = 'production-data-line' AND item_name = '薯條' AND unit_price = 35 AND line_total = 35) AS preservedSnapshotCount`,
@@ -114,14 +123,16 @@ try {
 	const expected = {
 		categoryCount: 3,
 		itemCount: 43,
-		groupCount: 6,
-		optionCount: 26,
+		groupCount: 8,
+		optionCount: 30,
 		popularCount: 2,
 		friesGroupCount: 1,
 		friesDefaultCount: 1,
 		sweetPotatoGroupCount: 1,
 		sweetPotatoDefaultCount: 1,
 		addedSpiceOptionCount: 6,
+		portionGroupCount: 2,
+		portionOptionCount: 4,
 		preservedStoreStateCount: 1,
 		preservedOrderCount: 1,
 		preservedSnapshotCount: 1,

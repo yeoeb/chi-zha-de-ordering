@@ -11,6 +11,9 @@ export type PreparationTimeEstimate = {
 	estimatedReadyAt: string;
 };
 
+const PREPARATION_BUFFER_MINUTES = 5;
+const PREPARATION_ROUNDING_MINUTES = 5;
+
 function requireNonNegativeInteger(value: number, name: string) {
 	if (!Number.isInteger(value) || value < 0) {
 		throw new RangeError(`${name} must be a non-negative integer`);
@@ -39,10 +42,24 @@ export function getPreparationTimeEstimate(
 		input.basePrepMinutes +
 		input.ordersAhead * input.normalOrderMinutes +
 		input.specialOrdersAhead * input.specialExtraMinutes;
-	const leadMinutes = Math.max(input.basePrepMinutes, calculatedLeadMinutes);
+	const leadMinutes = roundPreparationDurationMinutes(
+		Math.max(input.basePrepMinutes, calculatedLeadMinutes),
+	);
+	const initialReadyAt = now.getTime() + leadMinutes * 60_000;
+	const roundingMilliseconds = PREPARATION_ROUNDING_MINUTES * 60_000;
 
 	return {
 		leadMinutes,
-		estimatedReadyAt: new Date(now.getTime() + leadMinutes * 60_000).toISOString(),
+		estimatedReadyAt: new Date(
+			Math.ceil(initialReadyAt / roundingMilliseconds) * roundingMilliseconds,
+		).toISOString(),
 	};
+}
+
+export function roundPreparationDurationMinutes(estimatedDurationMinutes: number) {
+	requireNonNegativeInteger(estimatedDurationMinutes, "estimatedDurationMinutes");
+	return Math.ceil(
+		(estimatedDurationMinutes + PREPARATION_BUFFER_MINUTES) /
+			PREPARATION_ROUNDING_MINUTES,
+	) * PREPARATION_ROUNDING_MINUTES;
 }

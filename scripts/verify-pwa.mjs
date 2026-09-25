@@ -6,6 +6,7 @@ import { runInNewContext } from "node:vm";
 const root = dirname(dirname(fileURLToPath(import.meta.url)));
 const manifestPath = join(root, "public", "manifest.webmanifest");
 const manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
+const onsiteUrl = "https://chi-zha-de-ordering.yeoeb55688.workers.dev/onsite";
 
 if (
 	manifest.name !== "吃炸的" ||
@@ -117,6 +118,17 @@ if (!registration.includes('navigator.serviceWorker.register("/service-worker.js
 	throw new Error("Service Worker registration is missing");
 }
 
+const onsiteQr = readFileSync(join(root, "public", "onsite-ordering-qr.svg"), "utf8");
+const onsiteQrPage = readFileSync(join(root, "public", "onsite-qr.html"), "utf8");
+if (
+	!onsiteQr.startsWith("<svg") ||
+	!onsiteQr.includes(onsiteUrl) ||
+	!onsiteQrPage.includes(onsiteUrl) ||
+	!onsiteQrPage.includes('/onsite-ordering-qr.svg')
+) {
+	throw new Error("Printable onsite QR assets do not identify the confirmed production /onsite URL");
+}
+
 console.log(
-	"PWA manifest, icons, API cache boundary, safe notification clicks, and registration verified.",
+	"PWA manifest, icons, onsite QR target, API cache boundary, safe notification clicks, and registration verified.",
 );

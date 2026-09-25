@@ -35,35 +35,76 @@ function ProductImage({ item }: { item: MenuItem }) {
 	);
 }
 
+function ShoppingCartIcon() {
+	return (
+		<svg className="header-action-icon" viewBox="0 0 24 24" aria-hidden="true">
+			<path d="M3 4h2l2.1 10.1a2 2 0 0 0 2 1.6h7.8a2 2 0 0 0 1.9-1.4L21 7H6" />
+			<circle cx="9" cy="19" r="1.5" />
+			<circle cx="18" cy="19" r="1.5" />
+		</svg>
+	);
+}
+
+function ReceiptIcon() {
+	return (
+		<svg className="header-action-icon" viewBox="0 0 24 24" aria-hidden="true">
+			<path d="M6 3h12v18l-3-2-3 2-3-2-3 2V3Z" />
+			<path d="M9 8h6M9 12h6M9 16h3" />
+		</svg>
+	);
+}
+
 export function CustomerHeader({
 	displayName,
 	isAcceptingOrders,
 	cartItemCount,
 	onCartClick,
+	activeOrderCount = 0,
+	hasUnreadOrderUpdate = false,
+	onOrdersClick,
+	orderMode = "online",
 }: {
 	displayName: string;
 	isAcceptingOrders: boolean | null;
 	cartItemCount: number;
 	onCartClick: () => void;
+	activeOrderCount?: number;
+	hasUnreadOrderUpdate?: boolean;
+	onOrdersClick?: () => void;
+	orderMode?: "online" | "onsite";
 }) {
 	return (
 		<header className="customer-header">
 			<div>
-				<p className="customer-kicker">現點現炸</p>
+				<p className="customer-kicker">{orderMode === "onsite" ? "現場點餐" : "現點現炸"}</p>
 				<h1>{displayName}</h1>
 				<p className={`store-state ${isAcceptingOrders === false ? "paused" : ""}`}>
 					<span aria-hidden="true" />
 					{isAcceptingOrders === null
 						? "營業狀態確認中"
 						: isAcceptingOrders
-							? "營業中・可接單"
-							: "暫停接單"}
+							? "營業中"
+							: "於下午5:30開始營業"}
 				</p>
 			</div>
-			<button className="header-cart-button" type="button" onClick={onCartClick} aria-label={`購物車共 ${cartItemCount} 件`}>
-				<span className="cart-icon" aria-hidden="true">袋</span>
-				<span className="cart-badge">{cartItemCount}</span>
-			</button>
+			<div className="customer-header-actions">
+				{onOrdersClick && (
+					<button
+						className="header-orders-button"
+						type="button"
+						onClick={onOrdersClick}
+						aria-label={`我的訂單${activeOrderCount > 1 ? ` ${activeOrderCount}` : ""}${hasUnreadOrderUpdate ? "，有未讀變更" : ""}`}
+					>
+						<ReceiptIcon />
+						<span>我的訂單{activeOrderCount > 1 ? ` ${activeOrderCount}` : ""}</span>
+						{hasUnreadOrderUpdate && <span className="order-update-badge" aria-hidden="true">!</span>}
+					</button>
+				)}
+				<button className="header-cart-button" type="button" onClick={onCartClick} aria-label={`購物車共 ${cartItemCount} 件`}>
+					<ShoppingCartIcon />
+					{cartItemCount > 0 && <span className="cart-badge">{cartItemCount}</span>}
+				</button>
+			</div>
 		</header>
 	);
 }
@@ -178,28 +219,36 @@ export function ProductCard({
 	item,
 	folds,
 	onAdd,
+	isRecentlyAdded = false,
 }: {
 	item: MenuItem;
 	folds: ProductFoldDefinition[];
 	onAdd: () => void;
+	isRecentlyAdded?: boolean;
 }) {
 	return (
 		<li className={`product-card${item.isAvailable ? "" : " sold-out"}`}>
 			<div className="product-card-main">
 				<div className="product-image-wrap">
 					<ProductImage key={`${item.id}:${item.imageUrl ?? "fallback"}`} item={item} />
-					{isPopularItem(item) && item.isAvailable && <span className="popular-badge">熱門</span>}
+					{isPopularItem(item) && item.isAvailable && <span className="popular-badge">熱門推薦</span>}
 				</div>
 				<div className="product-copy">
 					<div className="product-title-row">
 						<h3>{item.name}</h3>
-						{!item.isAvailable && <span className="sold-out-label">售完</span>}
+						{!item.isAvailable && <span className="sold-out-label">已售完</span>}
 					</div>
 					{item.description && <p>{item.description}</p>}
 					<div className="product-action-row">
 						<strong className="price">NT$ {item.price}</strong>
-						<button type="button" disabled={!item.isAvailable} onClick={onAdd} aria-label={`加入 ${item.name}`}>
-							{item.isAvailable ? "+" : "售完"}
+						<button
+							className={isRecentlyAdded ? "product-add-button is-added" : "product-add-button"}
+							type="button"
+							disabled={!item.isAvailable}
+							onClick={onAdd}
+							aria-label={`加入 ${item.name}`}
+						>
+							{item.isAvailable ? (isRecentlyAdded ? "✓" : "+") : "已售完"}
 						</button>
 					</div>
 				</div>
@@ -219,17 +268,46 @@ export function ProductCard({
 	);
 }
 
-export function BulkSpiceSelector({ onApply }: { onApply: (value: SpiceChoice) => void }) {
+export function BulkSpiceSelector({
+	currentSummary,
+	feedback,
+	activeChoice,
+	choiceAvailability,
+	onApply,
+}: {
+	currentSummary: string;
+	feedback: { choice: SpiceChoice; message: string; tone: "success" | "error" } | null;
+	activeChoice: SpiceChoice | null;
+	choiceAvailability: Record<SpiceChoice, "all" | "partial" | "none">;
+	onApply: (value: SpiceChoice) => void;
+}) {
 	return (
 		<fieldset className="spice-selector">
 			<legend>快速套用辣度</legend>
 			<p>只套用到目前購物車內可選辣度的餐點</p>
+			<p
+				className={`spice-selector-state${feedback ? ` ${feedback.tone}` : ""}`}
+				role={feedback?.tone === "error" ? "alert" : "status"}
+			>
+				{feedback?.message ?? currentSummary}
+			</p>
 			<div>
-				{spiceChoices.map((choice) => (
-					<button key={choice} type="button" onClick={() => onApply(choice)}>
-						{choice}
-					</button>
-				))}
+				{spiceChoices.map((choice) => {
+					const availability = choiceAvailability[choice];
+					return (
+						<button
+							key={choice}
+							className={feedback?.choice === choice ? `bulk-action-feedback ${feedback.tone}` : undefined}
+							type="button"
+							disabled={availability === "none"}
+							aria-pressed={activeChoice === choice}
+							title={availability === "partial" ? "部分商品沒有該選項" : undefined}
+							onClick={() => onApply(choice)}
+						>
+							{choice}{availability === "partial" ? "（部分）" : ""}
+						</button>
+					);
+				})}
 			</div>
 		</fieldset>
 	);

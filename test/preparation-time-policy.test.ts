@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { getPreparationTimeEstimate } from "../src/worker/preparation-time-policy";
+import {
+	getPreparationTimeEstimate,
+	roundPreparationDurationMinutes,
+} from "../src/worker/preparation-time-policy";
 
 const now = new Date("2026-09-06T04:00:00.000Z");
 const settings = {
@@ -10,9 +13,9 @@ const settings = {
 
 describe("PreparationTimePolicy", () => {
 	it.each([
-		{ ordersAhead: 0, specialOrdersAhead: 0, expected: 15 },
-		{ ordersAhead: 2, specialOrdersAhead: 0, expected: 25 },
-		{ ordersAhead: 3, specialOrdersAhead: 1, expected: 40 },
+		{ ordersAhead: 0, specialOrdersAhead: 0, expected: 20 },
+		{ ordersAhead: 2, specialOrdersAhead: 0, expected: 30 },
+		{ ordersAhead: 3, specialOrdersAhead: 1, expected: 45 },
 	])(
 		"returns $expected minutes for $ordersAhead orders with $specialOrdersAhead special",
 		({ ordersAhead, specialOrdersAhead, expected }) => {
@@ -46,7 +49,7 @@ describe("PreparationTimePolicy", () => {
 			now,
 		);
 
-		expect(estimate.leadMinutes).toBe(15);
+		expect(estimate.leadMinutes).toBe(20);
 	});
 
 	it("derives an absolute UTC timestamp from the supplied clock", () => {
@@ -55,6 +58,31 @@ describe("PreparationTimePolicy", () => {
 			now,
 		);
 
-		expect(estimate.estimatedReadyAt).toBe("2026-09-06T04:25:00.000Z");
+		expect(estimate.estimatedReadyAt).toBe("2026-09-06T04:30:00.000Z");
+	});
+
+	it.each([
+		[5, 10],
+		[12, 20],
+		[15, 20],
+	])("adds the buffer and rounds %i raw minutes to %i", (raw, expected) => {
+		expect(roundPreparationDurationMinutes(raw)).toBe(expected);
+	});
+
+	it("rounds the final instant up to a five-minute clock boundary", () => {
+		const estimate = getPreparationTimeEstimate(
+			{ basePrepMinutes: 12, normalOrderMinutes: 0, specialExtraMinutes: 0, ordersAhead: 0, specialOrdersAhead: 0 },
+			new Date("2026-09-06T10:03:27.500Z"),
+		);
+		expect(estimate.leadMinutes).toBe(20);
+		expect(estimate.estimatedReadyAt).toBe("2026-09-06T10:25:00.000Z");
+	});
+
+	it("rounds safely across the next day without depending on the display timezone", () => {
+		const estimate = getPreparationTimeEstimate(
+			{ basePrepMinutes: 5, normalOrderMinutes: 0, specialExtraMinutes: 0, ordersAhead: 0, specialOrdersAhead: 0 },
+			new Date("2026-09-06T23:53:59.999Z"),
+		);
+		expect(estimate.estimatedReadyAt).toBe("2026-09-07T00:05:00.000Z");
 	});
 });

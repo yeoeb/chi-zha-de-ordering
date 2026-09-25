@@ -213,6 +213,9 @@ describe("Admin menu API", () => {
 	});
 
 	it("archives and restores without deleting or rewriting historical snapshots", async () => {
+		const confirmedQuote = (await (await quoteAdminItem()).json()) as {
+			quoteFingerprint: string;
+		};
 		const creation = await exports.default.fetch("https://example.com/api/orders", {
 			method: "POST",
 			headers: {
@@ -222,6 +225,7 @@ describe("Admin menu API", () => {
 			body: JSON.stringify({
 				customerName: "歷史顧客",
 				customerPhone: "0912345678",
+				quoteFingerprint: confirmedQuote.quoteFingerprint,
 				items: [{ menuItemId: 700, quantity: 1, modifierOptionIds: [] }],
 			}),
 		});

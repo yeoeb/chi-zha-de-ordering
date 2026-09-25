@@ -1,7 +1,10 @@
 import { env, exports } from "cloudflare:workers";
 import { beforeAll, beforeEach, describe, expect, it } from "vitest";
 import app from "../src/worker/index";
-import { MAX_PUBLIC_REQUEST_BODY_BYTES } from "../src/worker/request-body";
+import {
+	MAX_PUBLIC_REQUEST_BODY_BYTES,
+	readBoundedJson,
+} from "../src/worker/request-body";
 import {
 	authenticateMerchantRequest,
 	isMerchantRequestAllowed,
@@ -45,14 +48,34 @@ beforeEach(async () => {
 	]);
 });
 
-function postOrder(idempotencyKey: string, body: unknown = orderRequest) {
+async function postOrder(idempotencyKey: string, body: unknown = orderRequest) {
+	let requestBody = body;
+	if (body && typeof body === "object" && !Array.isArray(body)) {
+		const record = body as Record<string, unknown>;
+		if (!("quoteFingerprint" in record)) {
+			let quoteFingerprint = "0".repeat(64);
+			const quoteResponse = await exports.default.fetch(
+				"https://example.com/api/checkout/quote",
+				{
+					method: "POST",
+					headers: { "content-type": "application/json" },
+					body: JSON.stringify({ items: record.items }),
+				},
+			);
+			if (quoteResponse.ok) {
+				quoteFingerprint = ((await quoteResponse.json()) as { quoteFingerprint: string })
+					.quoteFingerprint;
+			}
+			requestBody = { ...record, quoteFingerprint };
+		}
+	}
 	return exports.default.fetch("https://example.com/api/orders", {
 		method: "POST",
 		headers: {
 			"content-type": "application/json",
 			"Idempotency-Key": idempotencyKey,
 		},
-		body: JSON.stringify(body),
+		body: JSON.stringify(requestBody),
 	});
 }
 
@@ -273,6 +296,11 @@ describe("Merchant mutation origin boundary", () => {
 		{ method: "POST", path: "/api/merchant/orders/missing/accept", body: {} },
 		{ method: "POST", path: "/api/merchant/orders/missing/reject", body: {} },
 		{ method: "POST", path: "/api/merchant/orders/missing/complete", body: {} },
+		{
+			method: "POST",
+			path: "/api/merchant/orders/missing/shortages",
+			body: { requestId: "security-shortage-request", items: [{ orderItemId: "missing", quantity: 1 }] },
+		},
 	] as const;
 
 	async function merchantMutationSnapshot() {
@@ -345,6 +373,47 @@ describe("Merchant mutation origin boundary", () => {
 				secFetchSite: "same-origin",
 			}),
 		).toBe(true);
+	});
+
+	it("accepts an exact loopback same-origin mutation under the explicit local bypass", () => {
+		expect(
+			isMerchantMutationRequestAllowed({
+				method: "POST",
+				devBypass: "true",
+				requestUrl: "http://127.0.0.1:5173/api/merchant/orders/local/accept",
+				origin: "http://127.0.0.1:5173",
+				secFetchSite: "same-origin",
+			}),
+		).toBe(true);
+		expect(
+			isMerchantMutationRequestAllowed({
+				method: "POST",
+				devBypass: "true",
+				requestUrl: "http://127.0.0.1:5173/api/merchant/orders/local/accept",
+				origin: "http://localhost:5173",
+				secFetchSite: "same-origin",
+			}),
+		).toBe(false);
+		expect(
+			isMerchantMutationRequestAllowed({
+				method: "POST",
+				devBypass: "true",
+				expectedHostname: "example.com",
+				requestUrl: "https://example.com/api/merchant/orders/local/accept",
+				origin: "https://example.com",
+				secFetchSite: "same-origin",
+			}),
+		).toBe(true);
+		expect(
+			isMerchantMutationRequestAllowed({
+				method: "POST",
+				devBypass: "true",
+				expectedHostname: "example.com",
+				requestUrl: "https://example.com/api/merchant/orders/local/accept",
+				origin: "https://evil.example",
+				secFetchSite: "same-origin",
+			}),
+		).toBe(false);
 	});
 
 	it("does not let a valid Access identity bypass the mutation Origin boundary", async () => {
@@ -455,6 +524,36 @@ describe("public write boundaries", () => {
 		});
 	});
 
+	it("rate limits Checkout Quote independently before D1 validation", async () => {
+		let limiterKey = "";
+		const limiter = {
+			limit: async ({ key }: { key: string }) => {
+				limiterKey = key;
+				return { success: false };
+			},
+		} as RateLimit;
+		const response = await app.request(
+			new Request("https://example.com/api/checkout/quote", {
+				method: "POST",
+				headers: {
+					"CF-Connecting-IP": "192.0.2.12",
+					"content-type": "application/json",
+				},
+				body: JSON.stringify({ items: orderRequest.items }),
+			}),
+			undefined,
+			{
+				DB: env.DB,
+				ORDER_RATE_LIMITER: limiter,
+			} as Env & SecurityBindings,
+			{} as ExecutionContext,
+		);
+
+		expect(response.status).toBe(429);
+		expect(response.headers.get("Retry-After")).toBe("60");
+		expect(limiterKey).toBe("checkout-quote:192.0.2.12");
+	});
+
 	it("rejects a non-JSON media type clearly", async () => {
 		const response = await exports.default.fetch("https://example.com/api/checkout/quote", {
 			method: "POST",
@@ -489,7 +588,15 @@ describe("public write boundaries", () => {
 		});
 		const longPhone = await postOrder("long-phone", {
 			...orderRequest,
-			customerPhone: "1".repeat(31),
+			customerPhone: "09123456789",
+		});
+		const invalidPhone = await postOrder("invalid-phone", {
+			...orderRequest,
+			customerPhone: "not-a-phone",
+		});
+		const controlledName = await postOrder("controlled-name", {
+			...orderRequest,
+			customerName: "王小明\u0000",
 		});
 
 		expect(oversized.status).toBe(413);
@@ -500,5 +607,42 @@ describe("public write boundaries", () => {
 		expect(invalidQuantity.status).toBe(422);
 		expect(longName.status).toBe(400);
 		expect(longPhone.status).toBe(400);
+		expect(await longPhone.json()).toMatchObject({
+			error: { code: "INVALID_CUSTOMER_PHONE" },
+		});
+		expect(invalidPhone.status).toBe(400);
+		expect(await invalidPhone.json()).toMatchObject({
+			error: { code: "INVALID_CUSTOMER_PHONE" },
+		});
+		expect(controlledName.status).toBe(400);
+	});
+
+	it("stops reading a chunked body as soon as the byte limit is exceeded", async () => {
+		const encoder = new TextEncoder();
+		const chunk = encoder.encode("x".repeat(8_192));
+		let cancelled = false;
+		let chunkCount = 0;
+		const body = new ReadableStream<Uint8Array>({
+			pull(controller) {
+				chunkCount += 1;
+				controller.enqueue(chunk);
+				if (chunkCount === 10) controller.close();
+			},
+			cancel() {
+				cancelled = true;
+			},
+		});
+		const request = new Request("https://example.com/api/orders", {
+			method: "POST",
+			headers: { "content-type": "application/json" },
+			body,
+		} as RequestInit);
+
+		await expect(readBoundedJson(request)).rejects.toMatchObject({
+			code: "REQUEST_BODY_TOO_LARGE",
+			status: 413,
+		});
+		expect(cancelled).toBe(true);
+		expect(chunkCount).toBeLessThan(10);
 	});
 });

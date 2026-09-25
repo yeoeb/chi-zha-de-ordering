@@ -62,14 +62,20 @@ function order(overrides: Record<string, unknown> = {}) {
 
 function createFetchMock({
 	orders = [order()],
-	failOrderAction = false,
+	historyOrders = [],
+	orderActionStatus,
 	failAfterFirstPoll = false,
+	orderPollSequence,
 }: {
 	orders?: Array<Record<string, unknown>>;
-	failOrderAction?: boolean;
+	historyOrders?: Array<Record<string, unknown>>;
+	orderActionStatus?: number;
 	failAfterFirstPoll?: boolean;
+	orderPollSequence?: Array<Array<Record<string, unknown>>>;
 } = {}) {
 	let orderPolls = 0;
+	let activeOrders = [...orders];
+	let history: Array<Record<string, unknown>> = [...historyOrders];
 	let items: MenuItem[] = [
 		{ id: 1, name: "香雞排", isAvailable: true },
 		{ id: 2, name: "青椒", isAvailable: false },
@@ -82,7 +88,10 @@ function createFetchMock({
 		if (url === "/api/merchant/orders" && method === "GET") {
 			orderPolls += 1;
 			if (failAfterFirstPoll && orderPolls > 1) return json({}, 503);
-			return json({ orders });
+			if (orderPollSequence) {
+				activeOrders = orderPollSequence[Math.min(orderPolls - 1, orderPollSequence.length - 1)];
+			}
+			return json({ orders: activeOrders, history });
 		}
 		if (url === "/api/merchant/notifications" && method === "GET") return json({ deliveries: [] });
 		if (url === "/api/store" && method === "GET") {
@@ -91,8 +100,26 @@ function createFetchMock({
 		if (url === "/api/menu" && method === "GET") {
 			return json({ categories: [{ id: 1, name: "炸物", items }] });
 		}
-		if (url === "/api/merchant/orders/order-023/accept" && method === "POST") {
-			return failOrderAction ? json({ error: { code: "FAILED" } }, 500) : json({ order: {} });
+		const actionMatch = url.match(/^\/api\/merchant\/orders\/([^/]+)\/(accept|reject|complete)$/);
+		if (actionMatch && method === "POST") {
+			if (orderActionStatus) {
+				const code = orderActionStatus === 403
+					? "ORIGIN_DENIED"
+					: orderActionStatus === 409
+						? "ILLEGAL_ORDER_TRANSITION"
+						: "FAILED";
+				return json({ error: { code } }, orderActionStatus);
+			}
+			const [, orderId, action] = actionMatch;
+			const current = activeOrders.find((candidate) => candidate.id === orderId);
+			if (!current) return json({ error: { code: "ORDER_NOT_FOUND" } }, 404);
+			const status = action === "accept" ? "accepted" : action === "reject" ? "rejected" : "completed";
+			const updated = { ...current, status };
+			activeOrders = action === "accept"
+				? activeOrders.map((candidate) => candidate.id === orderId ? updated : candidate)
+				: activeOrders.filter((candidate) => candidate.id !== orderId);
+			if (action !== "accept") history = [updated, ...history];
+			return json({ order: updated });
 		}
 		if (url === "/api/merchant/menu-items/1/sold-out" && method === "POST") {
 			items = items.map((item) => item.id === 1 ? { ...item, isAvailable: false } : item);
@@ -113,25 +140,47 @@ afterEach(() => {
 	vi.restoreAllMocks();
 	vi.unstubAllGlobals();
 	vi.useRealTimers();
+	localStorage.clear();
 });
 
 describe("Merchant operations UI", () => {
-	it("has only 接單 and 售罄 as primary navigation and exposes no admin editing", async () => {
+	it("has only 待接單, 製作中, and 售罄 as primary navigation and exposes no admin editing", async () => {
 		vi.stubGlobal("fetch", createFetchMock());
 		render(<MerchantView />);
-		await screen.findByText("#023");
+		await screen.findByLabelText("訂單 #023");
 
 		const navigation = screen.getByRole("navigation", { name: "店家主要功能" });
 		expect(within(navigation).getAllByRole("button").map((button) => button.textContent)).toEqual([
-			"接單",
+			"待接單 1",
+			"製作中 0",
 			"售罄",
 		]);
 		for (const label of ["價格", "商品編輯", "商品管理", "圖片", "分類", "Modifier 設定", "Menu CRUD", "Admin"]) {
 			expect(screen.queryByText(label)).toBeNull();
 		}
+		const activeCard = screen.getByLabelText("訂單 #023");
+		expect(within(activeCard).getByText("網路")).toBeTruthy();
+		expect(within(activeCard).queryByText("王小明")).toBeNull();
+		expect(within(activeCard).queryByText("0912345678")).toBeNull();
+		expect(within(activeCard).queryByText("NT$ 185")).toBeNull();
+		expect(within(activeCard).queryByText("訂單 #023")).toBeNull();
+		expect(screen.queryByText("通知狀態")).toBeNull();
 	});
 
-	it("sorts cards by ready deadline and renders overdue urgency", async () => {
+	it("labels onsite work and shows the backend snapshot total only after acceptance", async () => {
+		vi.stubGlobal("fetch", createFetchMock({
+			orders: [order({ status: "accepted", orderSource: "onsite", customerName: "現場顧客", customerPhone: "現場免填" })],
+		}));
+		render(<MerchantView />);
+		await screen.findByRole("button", { name: /製作中 1/ });
+		await userEvent.click(screen.getByRole("button", { name: /製作中 1/ }));
+		const card = await screen.findByLabelText("訂單 #023");
+		expect(within(card).getByText("現場")).toBeTruthy();
+		expect(within(card).getByText("NT$ 185")).toBeTruthy();
+		expect(within(card).queryByText("現場顧客")).toBeNull();
+	});
+
+	it("sorts current cards by ready deadline without showing countdown or overdue copy", async () => {
 		vi.useFakeTimers({ shouldAdvanceTime: true });
 		vi.setSystemTime(new Date("2026-09-16T12:00:00.000Z"));
 		vi.stubGlobal("fetch", createFetchMock({
@@ -141,27 +190,50 @@ describe("Merchant operations UI", () => {
 			],
 		}));
 		render(<MerchantView />);
-		await screen.findByText("#023");
+		await screen.findByLabelText("訂單 #023");
 
-		const cards = [...document.querySelectorAll<HTMLElement>(".merchant-order")];
-		expect(cards.map((card) => within(card).getByText(/^#\d+/).textContent)).toEqual(["#023", "#024"]);
-		expect(within(cards[0]).getByText("已逾時 4 分")).toBeTruthy();
-		expect(within(cards[1]).getByText("剩 15 分")).toBeTruthy();
+		expect(screen.getByText("待接單 1／2")).toBeTruthy();
+		expect(screen.getAllByText("19:56").length).toBeGreaterThan(0);
+		expect(screen.queryByText("已逾時 4 分")).toBeNull();
+		await userEvent.click(screen.getByRole("button", { name: "下一筆" }));
+		expect(screen.getByText("待接單 2／2")).toBeTruthy();
+		expect(screen.getByLabelText("訂單 #024")).toBeTruthy();
+		expect(screen.getAllByText("20:15").length).toBeGreaterThan(0);
+		expect(screen.queryByText("剩 15 分")).toBeNull();
+	});
+
+	it("uses the actual deadline date in history and distinguishes equal times on different days", async () => {
+		vi.stubGlobal("fetch", createFetchMock({
+			orders: [],
+			historyOrders: [
+				order({ id: "day-one", orderNumber: "031", status: "completed", estimatedReadyAt: "2026-09-16T11:20:00.000Z" }),
+				order({ id: "day-two", orderNumber: "032", status: "rejected", estimatedReadyAt: "2026-09-17T11:20:00.000Z" }),
+			],
+		}));
+		render(<MerchantView />);
+		await screen.findByText("目前沒有待接單");
+		await userEvent.click(screen.getByRole("button", { name: "歷史訂單" }));
+		expect(screen.getAllByText("2026/09/16 19:20").length).toBeGreaterThan(0);
+		expect(screen.getAllByText("2026/09/17 19:20").length).toBeGreaterThan(0);
 	});
 
 	it("shows human-readable modifiers, distinct spice lines, and only non-null notes", async () => {
 		vi.stubGlobal("fetch", createFetchMock({
-			orders: [order(), order({ id: "no-note", orderNumber: "024", customerNote: null })],
+			orders: [
+				order(),
+				order({ id: "no-note", orderNumber: "024", customerNote: null, estimatedReadyAt: "2026-09-16T12:20:00.000Z" }),
+			],
 		}));
 		render(<MerchantView />);
-		await screen.findByText("#023");
+		await screen.findByLabelText("訂單 #023");
 
 		expect(screen.getAllByText("辣度：中辣 · 切法：切").length).toBeGreaterThan(0);
 		expect(screen.getAllByText("辣度：不辣 · 切法：不切").length).toBeGreaterThan(0);
 		expect(screen.getAllByText("調味：胡椒 · 不加醬").length).toBeGreaterThan(0);
 		expect(screen.getByText("雞排不要切")).toBeTruthy();
 		expect(screen.getAllByText("辣／不辣分袋").length).toBeGreaterThan(0);
-		const noNoteCard = screen.getByText("#024").closest("article");
+		await userEvent.click(screen.getByRole("button", { name: "下一筆" }));
+		const noNoteCard = screen.getByLabelText("訂單 #024");
 		expect(noNoteCard && within(noNoteCard).queryByLabelText("訂單備註")).toBeNull();
 	});
 
@@ -169,41 +241,158 @@ describe("Merchant operations UI", () => {
 		vi.useFakeTimers({ shouldAdvanceTime: true });
 		vi.stubGlobal("fetch", createFetchMock({ failAfterFirstPoll: true }));
 		render(<MerchantView />);
-		await screen.findByText("#023");
+		await screen.findByLabelText("訂單 #023");
 
 		await vi.advanceTimersByTimeAsync(5_000);
 		await screen.findByText("連線中斷");
-		expect(screen.getByLabelText("連線狀態").textContent).toContain("最後同步");
+		expect(screen.getByLabelText("連線狀態").textContent).toContain("連線中斷");
 	});
 
 	it("keeps the order pending when an order mutation fails", async () => {
-		vi.stubGlobal("fetch", createFetchMock({ failOrderAction: true }));
+		vi.stubGlobal("fetch", createFetchMock({ orderActionStatus: 403 }));
 		render(<MerchantView />);
-		await screen.findByText("#023");
+		await screen.findByLabelText("訂單 #023");
 
-		const orderCard = screen.getByText("#023").closest("article");
+		const orderCard = screen.getByLabelText("訂單 #023");
 		if (!orderCard) throw new Error("Missing order card");
 		await userEvent.click(within(orderCard).getByRole("button", { name: "接單" }));
 
-		await screen.findByRole("alert");
+		await screen.findByText(/ORIGIN_DENIED/);
 		expect(within(orderCard).getByRole("button", { name: "接單" })).toBeTruthy();
-		expect(screen.getByText("#023")).toBeTruthy();
+		expect(screen.getByLabelText("訂單 #023")).toBeTruthy();
+	});
+
+	it("lets the merchant inspect all five pending Orders before acting", async () => {
+		vi.stubGlobal("fetch", createFetchMock({
+			orders: Array.from({ length: 5 }, (_, index) => order({
+				id: `order-${index + 1}`,
+				orderNumber: `02${index + 1}`,
+				estimatedReadyAt: `2026-09-16T12:${String(10 + index).padStart(2, "0")}:00.000Z`,
+			})),
+		}));
+		render(<MerchantView />);
+		await screen.findByLabelText("訂單 #021");
+
+		for (let index = 1; index < 5; index += 1) {
+			expect(screen.getByText(`待接單 ${index}／5`)).toBeTruthy();
+			await userEvent.click(screen.getByRole("button", { name: "下一筆" }));
+			expect(screen.getByLabelText(`訂單 #02${index + 1}`)).toBeTruthy();
+		}
+		expect(screen.getByText("待接單 5／5")).toBeTruthy();
+		await userEvent.click(screen.getByRole("button", { name: "返回待接單清單" }));
+		expect(within(screen.getByLabelText("待接單清單")).getAllByRole("button")).toHaveLength(5);
+	});
+
+	it("moves an accepted Order to production, advances pending focus, and reopens the last accepted detail", async () => {
+		const fetchMock = createFetchMock({
+			orders: [
+				order(),
+				order({ id: "order-024", orderNumber: "024", estimatedReadyAt: "2026-09-16T12:20:00.000Z" }),
+			],
+		});
+		vi.stubGlobal("fetch", fetchMock);
+		render(<MerchantView />);
+		const firstCard = await screen.findByLabelText("訂單 #023");
+
+		await userEvent.click(within(firstCard).getByRole("button", { name: "接單" }));
+		await screen.findByText("已接單 #023");
+		expect(screen.getByLabelText("訂單 #024")).toBeTruthy();
+		expect(screen.getByRole("button", { name: /製作中 1/ })).toBeTruthy();
+
+		await userEvent.click(screen.getByRole("button", { name: "查看剛接的訂單" }));
+		expect(screen.getByRole("button", { name: /製作中 1/ }).getAttribute("aria-current")).toBe("page");
+		const acceptedCard = screen.getByLabelText("訂單 #023");
+		expect(within(acceptedCard).getByText("雞排不要切")).toBeTruthy();
+		expect(within(acceptedCard).getByRole("button", { name: "完成" })).toBeTruthy();
+		expect(within(acceptedCard).queryByRole("button", { name: "拒單" })).toBeNull();
+	});
+
+	it("shows the production shortcut when accepting the last pending Order", async () => {
+		vi.stubGlobal("fetch", createFetchMock());
+		render(<MerchantView />);
+		const card = await screen.findByLabelText("訂單 #023");
+		await userEvent.click(within(card).getByRole("button", { name: "接單" }));
+
+		await screen.findByText("目前沒有待接單");
+		expect(screen.getByRole("button", { name: "查看製作中訂單" })).toBeTruthy();
+	});
+
+	it("requires reject confirmation, sends nothing when cancelled, and keeps the rejected snapshot in history", async () => {
+		const fetchMock = createFetchMock();
+		vi.stubGlobal("fetch", fetchMock);
+		const confirm = vi.spyOn(window, "confirm").mockReturnValueOnce(false).mockReturnValueOnce(true);
+		render(<MerchantView />);
+		const card = await screen.findByLabelText("訂單 #023");
+
+		await userEvent.click(within(card).getByRole("button", { name: "拒單" }));
+		expect(fetchMock.mock.calls.filter(([input, init]) => String(input).endsWith("/reject") && init?.method === "POST")).toHaveLength(0);
+		expect(screen.getByLabelText("訂單 #023")).toBeTruthy();
+
+		await userEvent.click(within(card).getByRole("button", { name: "拒單" }));
+		await screen.findByText("已拒單 #023");
+		expect(confirm).toHaveBeenCalledTimes(2);
+		await userEvent.click(screen.getByRole("button", { name: "歷史訂單" }));
+		const historyCard = screen.getByLabelText("訂單 #023");
+		expect(within(historyCard).getByText("已拒單")).toBeTruthy();
+		expect(within(historyCard).getByText("雞排不要切")).toBeTruthy();
+	});
+
+	it("reloads the authoritative status after a 409 and leaves the pending Order actionable", async () => {
+		const fetchMock = createFetchMock({ orderActionStatus: 409 });
+		vi.stubGlobal("fetch", fetchMock);
+		render(<MerchantView />);
+		const card = await screen.findByLabelText("訂單 #023");
+
+		await userEvent.click(within(card).getByRole("button", { name: "接單" }));
+		await screen.findByText("#023 已被其他裝置更新，已重新同步最新狀態。");
+		expect(within(screen.getByLabelText("訂單 #023")).getByRole("button", { name: "接單" })).toBeTruthy();
+		expect(fetchMock.mock.calls.filter(([input]) => String(input) === "/api/merchant/orders").length).toBeGreaterThan(1);
+	});
+
+	it("keeps the selected pending Order while polling discovers a newer Order", async () => {
+		vi.useFakeTimers({ shouldAdvanceTime: true });
+		const first = order();
+		const second = order({ id: "order-024", orderNumber: "024", estimatedReadyAt: "2026-09-16T12:20:00.000Z" });
+		const incoming = order({ id: "order-020", orderNumber: "020", estimatedReadyAt: "2026-09-16T11:50:00.000Z" });
+		vi.stubGlobal("fetch", createFetchMock({ orderPollSequence: [[first, second], [incoming, first, second]] }));
+		render(<MerchantView />);
+		await screen.findByLabelText("訂單 #023");
+
+		await vi.advanceTimersByTimeAsync(10_100);
+		expect(screen.getByLabelText("訂單 #023")).toBeTruthy();
+		expect(screen.getByRole("button", { name: /待接單 3/ })).toBeTruthy();
+	});
+
+	it("persists large-text mode and keeps a long note visible", async () => {
+		const longNote = "這是一段很長的訂單備註，請炸酥一點並確認每一項調味與切法都完整顯示，不可以截斷。";
+		vi.stubGlobal("fetch", createFetchMock({ orders: [order({ customerNote: longNote })] }));
+		render(<MerchantView />);
+		await screen.findByText(longNote);
+
+		await userEvent.click(screen.getByRole("button", { name: "大字模式" }));
+		expect(document.querySelector(".merchant-page.large-text")).toBeTruthy();
+		expect(localStorage.getItem("merchant-large-text")).toBe("true");
+		expect(screen.getByText(longNote)).toBeTruthy();
 	});
 
 	it("lists products and uses only the narrow sold-out and restore endpoints", async () => {
 		const fetchMock = createFetchMock();
 		vi.stubGlobal("fetch", fetchMock);
 		render(<MerchantView />);
-		await screen.findByText("#023");
+		await screen.findByLabelText("訂單 #023");
 		const navigation = screen.getByRole("navigation", { name: "店家主要功能" });
 		await userEvent.click(within(navigation).getByRole("button", { name: "售罄" }));
 
 		expect(screen.getByText("香雞排")).toBeTruthy();
 		expect(screen.getByText("青椒")).toBeTruthy();
+		const soldOutRow = screen.getByRole("button", { name: "恢復 青椒" }).closest("li");
+		expect(soldOutRow?.classList.contains("is-sold-out")).toBe(true);
 		await userEvent.click(screen.getByRole("button", { name: "售罄 香雞排" }));
-		await screen.findByRole("button", { name: "恢復 香雞排" });
+		const restoreChicken = await screen.findByRole("button", { name: "恢復 香雞排" });
+		expect(restoreChicken.closest("li")?.classList.contains("is-sold-out")).toBe(true);
 		await userEvent.click(screen.getByRole("button", { name: "恢復 香雞排" }));
-		await screen.findByRole("button", { name: "售罄 香雞排" });
+		const sellOutChicken = await screen.findByRole("button", { name: "售罄 香雞排" });
+		expect(sellOutChicken.closest("li")?.classList.contains("is-sold-out")).toBe(false);
 
 		const postedUrls = fetchMock.mock.calls
 			.filter(([, init]) => init?.method === "POST")
@@ -239,7 +428,7 @@ describe("Merchant operations UI", () => {
 		});
 		vi.stubGlobal("fetch", fetchMock);
 		render(<MerchantView />);
-		await screen.findByText("#023");
+		await screen.findByLabelText("訂單 #023");
 		await userEvent.click(within(screen.getByRole("navigation", { name: "店家主要功能" })).getByRole("button", { name: "售罄" }));
 
 		const quickSection = screen.getByRole("heading", { name: "快速售罄" }).closest("section");

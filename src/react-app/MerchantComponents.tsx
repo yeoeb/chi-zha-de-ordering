@@ -1,20 +1,17 @@
+import { useState } from "react";
 import {
-	getDeadlineState,
 	type MerchantMenuCategory,
 	type MerchantMenuItem,
 	type MerchantModifier,
 	type MerchantOrder,
 	type MerchantViewName,
 } from "./merchant-operations";
+import {
+	formatTaipeiDeadlineDateTime,
+	formatTaipeiDeadlineTime,
+} from "./taipei-time";
 
 const LARGE_ORDER_QUANTITY = 8;
-
-function formatReadyTime(timestamp: string) {
-	return new Intl.DateTimeFormat("zh-TW", {
-		hour: "2-digit",
-		minute: "2-digit",
-	}).format(new Date(timestamp));
-}
 
 function modifierLabel(modifier: MerchantModifier) {
 	if (modifier.groupName.startsWith("特殊選項：")) return modifier.name;
@@ -23,19 +20,32 @@ function modifierLabel(modifier: MerchantModifier) {
 
 export function MerchantPrimaryNavigation({
 	activeView,
+	workflowView,
+	pendingCount,
+	acceptedCount,
 	onChange,
 }: {
 	activeView: MerchantViewName;
-	onChange: (view: MerchantViewName) => void;
+	workflowView: "pending" | "accepted" | "history";
+	pendingCount: number;
+	acceptedCount: number;
+	onChange: (view: "pending" | "accepted" | "availability") => void;
 }) {
 	return (
 		<nav className="merchant-primary-nav" aria-label="店家主要功能">
 			<button
 				type="button"
-				aria-current={activeView === "orders" ? "page" : undefined}
-				onClick={() => onChange("orders")}
+				aria-current={activeView === "orders" && workflowView === "pending" ? "page" : undefined}
+				onClick={() => onChange("pending")}
 			>
-				接單
+				待接單 <strong>{pendingCount}</strong>
+			</button>
+			<button
+				type="button"
+				aria-current={activeView === "orders" && workflowView === "accepted" ? "page" : undefined}
+				onClick={() => onChange("accepted")}
+			>
+				製作中 <strong>{acceptedCount}</strong>
 			</button>
 			<button
 				type="button"
@@ -50,33 +60,59 @@ export function MerchantPrimaryNavigation({
 
 export function MerchantOrderCard({
 	order,
-	now,
 	isNew,
 	isProcessing,
+	processingAction,
 	onAction,
+	onShortage,
 }: {
 	order: MerchantOrder;
-	now: Date;
 	isNew: boolean;
 	isProcessing: boolean;
+	processingAction?: "accept" | "reject" | "complete" | null;
 	onAction: (action: "accept" | "reject" | "complete") => void;
+	onShortage?: (items: Array<{ orderItemId: string; quantity: number }>) => Promise<boolean>;
 }) {
-	const deadline = getDeadlineState(order.estimatedReadyAt, now);
+	const [shortageOpen, setShortageOpen] = useState(false);
+	const [shortageQuantities, setShortageQuantities] = useState<Record<string, number>>({});
 	const itemQuantity = order.items.reduce((total, item) => total + item.quantity, 0);
+	const isActiveOrder = order.status === "pending" || order.status === "accepted";
+	const deadlineTime = formatTaipeiDeadlineTime(order.estimatedReadyAt);
+	const deadlineDateTime = formatTaipeiDeadlineDateTime(order.estimatedReadyAt);
+	const orderSource = order.orderSource ?? "online";
 
 	return (
 		<article
-			className={`merchant-order urgency-${deadline.className}${order.specialOrder ? " special" : ""}${isNew ? " new-order" : ""}`}
+			className={`merchant-order${order.specialOrder ? " special" : ""}${isNew ? " new-order" : ""}`}
+			aria-label={`訂單 #${order.orderNumber}`}
+			aria-busy={isProcessing}
 		>
 			<header className="merchant-order-heading">
 				<div>
-					<p className="merchant-order-number">#{order.orderNumber}</p>
-					<p className={`merchant-deadline ${deadline.className}`}>{deadline.label}</p>
-					<time dateTime={order.estimatedReadyAt}>預計 {formatReadyTime(order.estimatedReadyAt)} 完成</time>
+					<p className="merchant-primary-deadline">
+						{isActiveOrder
+							? deadlineTime ?? "截止時間未記錄"
+							: deadlineDateTime ?? "截止時間未記錄"}
+					</p>
+					{!isActiveOrder && <p className="merchant-order-number">訂單 #{order.orderNumber}</p>}
+					{!isActiveOrder && <p className="merchant-deadline history">
+						{order.status === "completed" ? "已完成" : order.status === "cancelled" ? "已取消" : "已拒單"}
+					</p>}
+					{!isActiveOrder && deadlineDateTime && (
+						<time dateTime={order.estimatedReadyAt}>截止 {deadlineDateTime}</time>
+					)}
+					{!isActiveOrder && <time dateTime={order.createdAt}>下單 {formatTaipeiDeadlineDateTime(order.createdAt) ?? "時間未記錄"}</time>}
 				</div>
 				<div className="merchant-order-signals">
-					{itemQuantity >= LARGE_ORDER_QUANTITY && <strong>共 {itemQuantity} 份</strong>}
-					{order.specialOrder && <span className="special-badge">特殊訂單</span>}
+					<span className={`order-source-badge source-${orderSource}`}>
+						{orderSource === "onsite" ? "現場" : "網路"}
+					</span>
+					{order.status === "accepted" && (
+						<strong className="merchant-active-total">NT$ {order.total}</strong>
+					)}
+					{(order.shortageRevision ?? 0) > 0 && <span className="merchant-adjusted-badge">已調整</span>}
+					{!isActiveOrder && itemQuantity >= LARGE_ORDER_QUANTITY && <strong>共 {itemQuantity} 份</strong>}
+					{!isActiveOrder && order.specialOrder && <span className="special-badge">特殊訂單</span>}
 				</div>
 			</header>
 
@@ -89,7 +125,7 @@ export function MerchantOrderCard({
 								<p>{item.modifiers.map(modifierLabel).join(" · ")}</p>
 							)}
 						</div>
-						<span>NT$ {item.lineTotal}</span>
+						{!isActiveOrder && <span>NT$ {item.lineTotal}</span>}
 					</li>
 				))}
 			</ul>
@@ -101,6 +137,41 @@ export function MerchantOrderCard({
 				</section>
 			)}
 
+			{(order.shortages?.length ?? 0) > 0 && (
+				<section className="merchant-shortage-record">
+					<strong>餐點調整</strong>
+					{order.shortages!.map((shortage) => (
+						<span key={shortage.orderItemId}>{shortage.name} 缺少 {shortage.quantity} 份</span>
+					))}
+					<span>原始 NT$ {order.originalTotal ?? order.total}・目前 NT$ {order.total}</span>
+				</section>
+			)}
+
+			{isActiveOrder && onShortage && (
+				<section className="merchant-shortage-control">
+					<button type="button" className="secondary-button" disabled={isProcessing} aria-expanded={shortageOpen} onClick={() => setShortageOpen((value) => !value)}>品項不足</button>
+					{shortageOpen && (
+						<div className="merchant-shortage-panel">
+							<p>請填寫本次無法供應的數量。</p>
+							{order.items.map((item, index) => {
+								const itemKey = item.id ?? `${order.id}-${index}`;
+								return <label key={itemKey}><span>{item.name}（目前 {item.quantity} 份）</span><select value={shortageQuantities[itemKey] ?? 0} onChange={(event) => setShortageQuantities((current) => ({ ...current, [itemKey]: Number(event.target.value) }))}>{Array.from({ length: item.quantity + 1 }, (_, quantity) => <option key={quantity} value={quantity}>{quantity}</option>)}</select></label>;
+							})}
+							<button type="button" disabled={isProcessing || !order.items.some((item, index) => (shortageQuantities[item.id ?? `${order.id}-${index}`] ?? 0) > 0)} onClick={async () => {
+								const items = order.items.flatMap((item, index) => {
+									const quantity = shortageQuantities[item.id ?? `${order.id}-${index}`] ?? 0;
+									return item.id && quantity > 0 ? [{ orderItemId: item.id, quantity }] : [];
+								});
+								if (items.length > 0 && await onShortage(items)) {
+									setShortageOpen(false);
+									setShortageQuantities({});
+								}
+							}}>確認品項不足</button>
+						</div>
+					)}
+				</section>
+			)}
+
 			{order.packagingPreference === "separate_spicy" && (
 				<section className="merchant-packaging-preference" aria-label="包裝方式">
 					<strong>包裝方式</strong>
@@ -108,19 +179,22 @@ export function MerchantOrderCard({
 				</section>
 			)}
 
-			<footer className="merchant-order-footer">
+			{!isActiveOrder && <footer className="merchant-order-footer">
 				<div>
-					<span>{order.customerName}</span>
-					<a href={`tel:${order.customerPhone}`}>{order.customerPhone}</a>
+					{orderSource === "onsite" ? (
+						<span>現場點餐（免留聯絡資料）</span>
+					) : (
+						<><span>{order.customerName}</span><a href={`tel:${order.customerPhone}`}>{order.customerPhone}</a></>
+					)}
 				</div>
 				<strong>NT$ {order.total}</strong>
-			</footer>
+			</footer>}
 
-			<div className="merchant-actions">
+			{isActiveOrder && <div className={`merchant-actions merchant-actions-${order.status}`}>
 				{order.status === "pending" ? (
 					<>
-						<button type="button" disabled={isProcessing} onClick={() => onAction("accept")}>
-							接單
+						<button className="accept-button" type="button" disabled={isProcessing} onClick={() => onAction("accept")}>
+							{processingAction === "accept" ? "接單處理中…" : "接單"}
 						</button>
 						<button
 							className="reject-button"
@@ -128,15 +202,15 @@ export function MerchantOrderCard({
 							disabled={isProcessing}
 							onClick={() => onAction("reject")}
 						>
-							拒單
+							{processingAction === "reject" ? "拒單處理中…" : "拒單"}
 						</button>
 					</>
-				) : (
+				) : order.status === "accepted" ? (
 					<button type="button" disabled={isProcessing} onClick={() => onAction("complete")}>
-						完成
+						{processingAction === "complete" ? "完成處理中…" : "完成"}
 					</button>
-				)}
-			</div>
+				) : null}
+			</div>}
 		</article>
 	);
 }
@@ -155,7 +229,7 @@ function AvailabilityRows({
 			{items.map((item) => {
 				const controlKey = `item-${item.id}`;
 				return (
-					<li key={item.id}>
+					<li key={item.id} className={item.isAvailable ? undefined : "is-sold-out"}>
 						<div>
 							<strong>{item.name}</strong>
 							<span className={item.isAvailable ? "available" : "sold-out"}>

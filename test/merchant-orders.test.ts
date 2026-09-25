@@ -59,6 +59,7 @@ async function insertOrder({
 	itemName = "雞排快照",
 	customerNote = null,
 	packagingPreference = "together",
+	orderSource = "online",
 }: {
 	id: string;
 	status: OrderStatus;
@@ -67,6 +68,7 @@ async function insertOrder({
 	itemName?: string;
 	customerNote?: string | null;
 	packagingPreference?: "together" | "separate_spicy";
+	orderSource?: "online" | "onsite";
 }) {
 	const acceptedAt = status === "accepted" || status === "completed" ? "2026-09-06T04:10:00.000Z" : null;
 	const completedAt = status === "completed" ? "2026-09-06T04:30:00.000Z" : null;
@@ -76,16 +78,17 @@ async function insertOrder({
 		env.DB
 			.prepare(
 				`INSERT INTO orders (
-					id, public_lookup_token, order_number, status, total_amount, estimated_ready_at, created_at,
+					id, public_lookup_token, order_number, status, order_source, total_amount, estimated_ready_at, created_at,
 					accepted_at, completed_at, rejected_at, customer_name, customer_phone,
 					customer_note, packaging_preference, special_order, idempotency_key, request_fingerprint
-				) VALUES (?, ?, ?, ?, 90, ?, ?, ?, ?, ?, '王小明', '0912345678', ?, ?, 0, ?, ?)`,
+				) VALUES (?, ?, ?, ?, ?, 90, ?, ?, ?, ?, ?, '王小明', '0912345678', ?, ?, 0, ?, ?)`,
 			)
 			.bind(
 				id,
 				lookupToken(id),
 				`ORDER-${id}`,
 				status,
+				orderSource,
 				estimatedReadyAt,
 				createdAt,
 				acceptedAt,
@@ -194,6 +197,40 @@ describe("Merchant Order state machine", () => {
 		});
 	});
 
+	it("re-evaluates only pending onsite deadlines after an early completion", async () => {
+		await env.DB.prepare(
+			"UPDATE store_settings SET base_prep_minutes = 15, normal_order_minutes = 5, special_extra_minutes = 10 WHERE id = 1",
+		).run();
+		await insertOrder({
+			id: "completed-capacity",
+			status: "accepted",
+			estimatedReadyAt: "2026-09-06T05:20:00.000Z",
+		});
+		await insertOrder({
+			id: "fixed-online",
+			status: "pending",
+			estimatedReadyAt: "2026-09-06T05:40:00.000Z",
+		});
+		await insertOrder({
+			id: "waiting-onsite",
+			status: "pending",
+			orderSource: "onsite",
+			estimatedReadyAt: "2026-09-06T05:45:00.000Z",
+		});
+
+		await transitionMerchantOrder(env.DB, "completed-capacity", "complete", fixedNow);
+
+		expect((await readStatus("waiting-onsite"))?.estimated_ready_at).toBe(
+			"2026-09-06T05:05:00.000Z",
+		);
+		expect((await readStatus("fixed-online"))?.estimated_ready_at).toBe(
+			"2026-09-06T05:40:00.000Z",
+		);
+		expect((await readStatus("completed-capacity"))?.estimated_ready_at).toBe(
+			"2026-09-06T05:20:00.000Z",
+		);
+	});
+
 	it.each<[OrderStatus, MerchantOrderAction]>([
 		["pending", "complete"],
 		["accepted", "reject"],
@@ -231,6 +268,33 @@ describe("Merchant Order state machine", () => {
 		await transitionMerchantOrder(env.DB, "reject-wins", "reject", fixedNow);
 		await expectIllegal("reject-wins", "accept");
 		expect((await readStatus("reject-wins"))?.status).toBe("rejected");
+	});
+
+	it("allows exactly one of concurrent accept and reject operations to win", async () => {
+		await insertOrder({ id: "concurrent-decision", status: "pending" });
+		const results = await Promise.allSettled([
+			transitionMerchantOrder(env.DB, "concurrent-decision", "accept", fixedNow),
+			transitionMerchantOrder(env.DB, "concurrent-decision", "reject", fixedNow),
+		]);
+
+		expect(results.filter((result) => result.status === "fulfilled")).toHaveLength(1);
+		const rejected = results.find((result) => result.status === "rejected");
+		expect(rejected?.status === "rejected" ? rejected.reason : null).toMatchObject({
+			code: "ILLEGAL_ORDER_TRANSITION",
+		});
+		expect(["accepted", "rejected"]).toContain((await readStatus("concurrent-decision"))?.status);
+	});
+
+	it("completes an accepted Order once under a concurrent double tap", async () => {
+		await insertOrder({ id: "concurrent-complete", status: "accepted" });
+		const results = await Promise.allSettled([
+			transitionMerchantOrder(env.DB, "concurrent-complete", "complete", fixedNow),
+			transitionMerchantOrder(env.DB, "concurrent-complete", "complete", fixedNow),
+		]);
+
+		expect(results.filter((result) => result.status === "fulfilled")).toHaveLength(1);
+		expect(results.filter((result) => result.status === "rejected")).toHaveLength(1);
+		expect((await readStatus("concurrent-complete"))?.status).toBe("completed");
 	});
 
 	it("returns 404 for a missing Order", async () => {
@@ -288,6 +352,11 @@ describe("Merchant Order API", () => {
 					modifiers: Array<{ groupName: string; name: string; priceDelta: number }>;
 				}>;
 			}>;
+			history: Array<{
+				id: string;
+				status: OrderStatus;
+				items: Array<{ name: string; unitPrice: number }>;
+			}>;
 		};
 
 		expect(response.status).toBe(200);
@@ -299,6 +368,11 @@ describe("Merchant Order API", () => {
 			unitPrice: 90,
 			modifiers: [{ groupName: "辣度快照", name: "小辣快照", priceDelta: 5 }],
 		});
+		expect(result.history.map((order) => [order.id, order.status])).toEqual([
+			["completed", "completed"],
+			["rejected", "rejected"],
+		]);
+		expect(result.history[0].items[0]).toMatchObject({ name: "雞排快照", unitPrice: 90 });
 	});
 
 	it("exposes guarded explicit action endpoints", async () => {

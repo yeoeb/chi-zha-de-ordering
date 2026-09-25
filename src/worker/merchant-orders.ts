@@ -1,10 +1,19 @@
-export type OrderStatus = "pending" | "accepted" | "completed" | "rejected";
+import { advancePendingOnsiteOrders } from "./order-scheduling";
+import { getStoreSettings } from "./store-settings";
+
+export type OrderStatus = "pending" | "accepted" | "completed" | "rejected" | "cancelled";
 
 export type MerchantOrder = {
 	id: string;
 	orderNumber: string;
 	status: OrderStatus;
+	orderSource: "online" | "onsite";
 	total: number;
+	originalTotal: number;
+	shortagePolicy: "continue_available" | "cancel_entire_order";
+	shortageRevision: number;
+	cancelledAt: string | null;
+	cancellationReason: "customer_cancelled" | "shortage_cancelled" | "all_items_unavailable" | null;
 	estimatedReadyAt: string;
 	createdAt: string;
 	acceptedAt: string | null;
@@ -16,6 +25,7 @@ export type MerchantOrder = {
 	packagingPreference: "together" | "separate_spicy";
 	specialOrder: boolean;
 	items: Array<{
+		id: string;
 		menuItemId: number;
 		name: string;
 		unitPrice: number;
@@ -27,6 +37,12 @@ export type MerchantOrder = {
 			name: string;
 			priceDelta: number;
 		}>;
+	}>;
+	shortages: Array<{
+		orderItemId: string;
+		name: string;
+		quantity: number;
+		amountDeducted: number;
 	}>;
 };
 
@@ -49,7 +65,13 @@ type MerchantOrderRow = {
 	orderId: string;
 	orderNumber: string;
 	orderStatus: OrderStatus;
+	orderSource: "online" | "onsite";
 	totalAmount: number;
+	originalTotalAmount: number | null;
+	shortagePolicy: MerchantOrder["shortagePolicy"];
+	shortageRevision: number;
+	cancelledAt: string | null;
+	cancellationReason: MerchantOrder["cancellationReason"];
 	estimatedReadyAt: string;
 	createdAt: string;
 	acceptedAt: string | null;
@@ -66,6 +88,8 @@ type MerchantOrderRow = {
 	unitPrice: number | null;
 	quantity: number | null;
 	lineTotal: number | null;
+	unavailableQuantity: number | null;
+	amountDeducted: number | null;
 	modifierOptionId: number | null;
 	modifierGroupName: string | null;
 	modifierOptionName: string | null;
@@ -76,7 +100,13 @@ const SNAPSHOT_SELECT = `SELECT
 	orders.id AS orderId,
 	orders.order_number AS orderNumber,
 	orders.status AS orderStatus,
+	orders.order_source AS orderSource,
 	orders.total_amount AS totalAmount,
+	orders.original_total_amount AS originalTotalAmount,
+	orders.shortage_policy AS shortagePolicy,
+	orders.shortage_revision AS shortageRevision,
+	orders.cancelled_at AS cancelledAt,
+	orders.cancellation_reason AS cancellationReason,
 	orders.estimated_ready_at AS estimatedReadyAt,
 	orders.created_at AS createdAt,
 	orders.accepted_at AS acceptedAt,
@@ -93,12 +123,15 @@ const SNAPSHOT_SELECT = `SELECT
 	order_items.unit_price AS unitPrice,
 	order_items.quantity AS quantity,
 	order_items.line_total AS lineTotal,
+	order_item_shortages.unavailable_quantity AS unavailableQuantity,
+	order_item_shortages.amount_deducted AS amountDeducted,
 	order_item_modifiers.modifier_option_id AS modifierOptionId,
 	order_item_modifiers.modifier_group_name AS modifierGroupName,
 	order_item_modifiers.modifier_option_name AS modifierOptionName,
 	order_item_modifiers.price_delta AS modifierPriceDelta
 FROM orders
 LEFT JOIN order_items ON order_items.order_id = orders.id
+LEFT JOIN order_item_shortages ON order_item_shortages.order_item_id = order_items.id
 LEFT JOIN order_item_modifiers ON order_item_modifiers.order_item_id = order_items.id`;
 
 const SNAPSHOT_ORDER = `ORDER BY
@@ -124,8 +157,14 @@ function buildMerchantOrders(rows: MerchantOrderRow[]) {
 			const order: MerchantOrder = {
 				id: row.orderId,
 				orderNumber: row.orderNumber,
-				status: row.orderStatus,
+				status: row.cancelledAt ? "cancelled" : row.orderStatus,
+				orderSource: row.orderSource,
 				total: row.totalAmount,
+				originalTotal: row.originalTotalAmount ?? row.totalAmount,
+				shortagePolicy: row.shortagePolicy,
+				shortageRevision: row.shortageRevision,
+				cancelledAt: row.cancelledAt,
+				cancellationReason: row.cancellationReason,
 				estimatedReadyAt: row.estimatedReadyAt,
 				createdAt: row.createdAt,
 				acceptedAt: row.acceptedAt,
@@ -137,6 +176,7 @@ function buildMerchantOrders(rows: MerchantOrderRow[]) {
 				packagingPreference: row.packagingPreference,
 				specialOrder: Boolean(row.specialOrder),
 				items: [],
+				shortages: [],
 			};
 			entry = { order, items: new Map() };
 			ordersById.set(row.orderId, entry);
@@ -157,16 +197,27 @@ function buildMerchantOrders(rows: MerchantOrderRow[]) {
 		let item = entry.items.get(row.orderItemId);
 
 		if (!item) {
+			const unavailableQuantity = row.unavailableQuantity ?? 0;
+			const remainingQuantity = Math.max(0, row.quantity - unavailableQuantity);
 			item = {
+				id: row.orderItemId,
 				menuItemId: row.menuItemId,
 				name: row.itemName,
 				unitPrice: row.unitPrice,
-				quantity: row.quantity,
-				lineTotal: row.lineTotal,
+				quantity: remainingQuantity,
+				lineTotal: row.unitPrice * remainingQuantity,
 				modifiers: [],
 			};
 			entry.items.set(row.orderItemId, item);
-			entry.order.items.push(item);
+			if (remainingQuantity > 0) entry.order.items.push(item);
+			if (unavailableQuantity > 0) {
+				entry.order.shortages.push({
+					orderItemId: row.orderItemId,
+					name: row.itemName,
+					quantity: unavailableQuantity,
+					amountDeducted: row.amountDeducted ?? row.unitPrice * unavailableQuantity,
+				});
+			}
 		}
 
 		if (
@@ -190,6 +241,32 @@ function buildMerchantOrders(rows: MerchantOrderRow[]) {
 export async function listActiveMerchantOrders(db: D1Database) {
 	const { results } = await db
 		.prepare(`${SNAPSHOT_SELECT} WHERE orders.status IN ('pending', 'accepted') ${SNAPSHOT_ORDER}`)
+		.all<MerchantOrderRow>();
+
+	return buildMerchantOrders(results);
+}
+
+export async function listRecentMerchantOrderHistory(db: D1Database, limit = 50) {
+	const safeLimit = Math.max(1, Math.min(100, Math.trunc(limit)));
+	const { results } = await db
+		.prepare(
+			`${SNAPSHOT_SELECT}
+			WHERE orders.id IN (
+				SELECT id
+				FROM orders
+				WHERE status IN ('completed', 'rejected')
+				ORDER BY COALESCE(completed_at, rejected_at, created_at) DESC, id DESC
+				LIMIT ?
+			)
+			ORDER BY
+				COALESCE(orders.completed_at, orders.rejected_at, orders.created_at) DESC,
+				orders.id DESC,
+				order_items.sort_order ASC,
+				order_items.id ASC,
+				order_item_modifiers.sort_order ASC,
+				order_item_modifiers.id ASC`,
+		)
+		.bind(safeLimit)
 		.all<MerchantOrderRow>();
 
 	return buildMerchantOrders(results);
@@ -280,6 +357,22 @@ export async function transitionMerchantOrder(
 			"ILLEGAL_ORDER_TRANSITION",
 			`Cannot ${action} an Order with status ${existing.status}`,
 		);
+	}
+
+	if (action === "complete" || action === "reject") {
+		try {
+			const store = await getStoreSettings(db);
+			if (store) {
+				await advancePendingOnsiteOrders(db, {
+					basePrepMinutes: store.base_prep_minutes,
+					normalOrderMinutes: store.normal_order_minutes,
+					specialExtraMinutes: store.special_extra_minutes,
+				}, now);
+			}
+		} catch {
+			// The state transition is already authoritative. A stale schedule snapshot is
+			// deliberately left unchanged instead of risking an unsafe deadline move.
+		}
 	}
 
 	const order = await getOrderSnapshotById(db, orderId);

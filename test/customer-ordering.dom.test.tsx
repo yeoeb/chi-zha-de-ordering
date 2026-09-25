@@ -1,8 +1,20 @@
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { readFileSync } from "node:fs";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { CustomerApp } from "../src/react-app/App";
 import { CART_DRAFT_STORAGE_KEY, CART_DRAFT_TTL_MS } from "../src/react-app/cart-draft";
+import {
+	ORDER_ATTEMPT_STORAGE_KEY,
+	ORDER_FORM_SESSION_KEY,
+} from "../src/react-app/order-attempt";
+import {
+	ACTIVE_CUSTOMER_ORDER_STORAGE_KEY,
+	CUSTOMER_ORDER_HISTORY_STORAGE_KEY,
+} from "../src/react-app/active-customer-orders";
+
+const appCss = readFileSync("src/react-app/App.css", "utf8");
+const indexCss = readFileSync("src/react-app/index.css", "utf8");
 
 type MenuItemFixture = {
 	id: number;
@@ -45,7 +57,7 @@ const fries: MenuItemFixture = {
 
 const sweetPotatoFries: MenuItemFixture = {
 	id: 10,
-	name: "地瓜薯條",
+	name: "甘梅地瓜",
 	description: "香甜酥脆",
 	price: 55,
 	isAvailable: true,
@@ -195,6 +207,7 @@ function createFetchMock(
 				}, 0),
 				estimatedReadyAt: "2026-09-16T05:30:00.000Z",
 				leadMinutes: 15,
+				quoteFingerprint: "c".repeat(64),
 			});
 		}
 		if (url === "/api/orders") {
@@ -241,7 +254,7 @@ async function openCartView() {
 
 async function openCheckoutFromMenu() {
 	await openCartView();
-	await userEvent.click(screen.getByRole("button", { name: "下一步：確認訂單" }));
+	await userEvent.click(screen.getByRole("button", { name: "去結帳" }));
 }
 
 function productCard(itemName: string) {
@@ -256,6 +269,7 @@ afterEach(() => {
 	vi.restoreAllMocks();
 	vi.unstubAllGlobals();
 	localStorage.clear();
+	sessionStorage.clear();
 });
 
 describe("customer ordering redesign", () => {
@@ -421,8 +435,9 @@ describe("customer ordering redesign", () => {
 		const fetchMock = await renderCustomer();
 		await userEvent.click(screen.getByRole("button", { name: "加入 薯條" }));
 		await openCheckoutFromMenu();
-		await screen.findByRole("heading", { name: "結帳報價" });
+		await screen.findByRole("heading", { name: "確認訂單" });
 		expect(fetchMock.mock.calls.some(([input]) => requestUrl(input as RequestInfo | URL) === "/api/checkout/quote")).toBe(true);
+		expect(screen.getByText("13:30")).toBeTruthy();
 		expect(screen.queryByText("查看購物車")).toBeNull();
 		await userEvent.click(screen.getByRole("button", { name: "← 返回購物車" }));
 		expect(screen.getByRole("heading", { name: "購物車" })).toBeTruthy();
@@ -434,6 +449,11 @@ describe("customer ordering redesign", () => {
 		expect(document.querySelector("main.customer-page")).toBeTruthy();
 		expect(document.querySelector("main.customer-page")?.classList.contains("merchant-page")).toBe(false);
 		expect(document.querySelector("main.customer-page")?.classList.contains("admin-page")).toBe(false);
+		expect(indexCss).toMatch(/html,[\s\S]*body,[\s\S]*#root[\s\S]*background(?:-color)?:\s*#fff/i);
+		expect(appCss).toMatch(/--customer-background:\s*#fff/i);
+		expect(appCss).toMatch(/\.customer-page,[\s\S]*\.order-status-page[\s\S]*background:\s*var\(--customer-background\)/i);
+		expect(appCss).toMatch(/\.order-note-field textarea[\s\S]*resize:\s*none/i);
+		expect(document.querySelector(".header-cart-button svg.header-action-icon")).toBeTruthy();
 	});
 
 	it("keeps the price visible on every product card", async () => {
@@ -449,7 +469,7 @@ describe("customer ordering redesign", () => {
 		]);
 		const friesImage = productCard("薯條").querySelector<HTMLImageElement>(".product-image");
 		expect(friesImage?.getAttribute("src")).toBe("https://images.example.com/fries.jpg");
-		expect(within(productCard("地瓜薯條")).getByLabelText("地瓜薯條 暫無圖片")).toBeTruthy();
+		expect(within(productCard("甘梅地瓜")).getByLabelText("甘梅地瓜 暫無圖片")).toBeTruthy();
 
 		if (!friesImage) throw new Error("Missing configured product image");
 		fireEvent.error(friesImage);
@@ -457,20 +477,23 @@ describe("customer ordering redesign", () => {
 		expect(productCard("薯條").querySelector(".product-image")).toBeNull();
 	});
 
-	it("shows the 熱門 badge only from API-backed presentation metadata", async () => {
+	it("shows the 熱門推薦 badge only from API-backed presentation metadata", async () => {
 		await renderCustomer([
 			{ ...fries, isPopular: false },
 			{ ...sweetPotatoFries, isPopular: true },
 		]);
-		expect(within(productCard("薯條")).queryByText("熱門")).toBeNull();
-		expect(within(productCard("地瓜薯條")).getByText("熱門")).toBeTruthy();
+		expect(within(productCard("薯條")).queryByText("熱門推薦")).toBeNull();
+		expect(within(productCard("甘梅地瓜")).getByText("熱門推薦")).toBeTruthy();
 	});
 
 	it("keeps sold-out items visible, disabled, and after available items", async () => {
 		await renderCustomer();
 		const soldOutButton = screen.getByRole("button", { name: "加入 雞皮" }) as HTMLButtonElement;
 		expect(soldOutButton.disabled).toBe(true);
-		expect(within(productCard("雞皮")).getAllByText("售完")).toHaveLength(2);
+		await userEvent.click(soldOutButton);
+		expect(screen.queryByText("雞皮已加入購物車")).toBeNull();
+		expect(within(productCard("雞皮")).getAllByText("已售完")).toHaveLength(2);
+		expect(productCard("雞皮").classList.contains("sold-out")).toBe(true);
 		const cards = [...document.querySelectorAll(".product-card")];
 		expect(cards.at(-1)).toBe(productCard("雞皮"));
 	});
@@ -478,8 +501,46 @@ describe("customer ordering redesign", () => {
 	it("shows the sticky cart bar when the cart becomes non-empty", async () => {
 		await renderCustomer();
 		expect(screen.queryByText("查看購物車")).toBeNull();
-		await userEvent.click(screen.getByRole("button", { name: "加入 薯條" }));
+		const addButton = screen.getByRole("button", { name: "加入 薯條" });
+		await userEvent.click(addButton);
+		expect(screen.getByText("薯條已加入購物車")).toBeTruthy();
+		expect(addButton.textContent).toBe("✓");
+		expect((addButton as HTMLButtonElement).disabled).toBe(false);
+		expect(screen.getByRole("button", { name: "購物車共 1 件" })).toBeTruthy();
 		expect(screen.getByText("查看購物車")).toBeTruthy();
+	});
+
+	it("keeps two rapid quick-add clicks and associates feedback with the correct products", async () => {
+		await renderCustomer();
+		const friesButton = screen.getByRole("button", { name: "加入 薯條" });
+		friesButton.click();
+		friesButton.click();
+		await waitFor(() => expect(screen.getByRole("button", { name: "購物車共 2 件" })).toBeTruthy());
+		expect(screen.getByText("薯條已加入購物車")).toBeTruthy();
+
+		const sweetButton = screen.getByRole("button", { name: "加入 甘梅地瓜" });
+		await userEvent.click(sweetButton);
+		expect(screen.getByText("甘梅地瓜已加入購物車")).toBeTruthy();
+		expect(friesButton.textContent).toBe("✓");
+		expect(sweetButton.textContent).toBe("✓");
+		expect(screen.getByRole("button", { name: "購物車共 3 件" })).toBeTruthy();
+
+		await openCartView();
+		expect(screen.getByText("薯條 × 2")).toBeTruthy();
+		expect(screen.getByText("甘梅地瓜 × 1")).toBeTruthy();
+	});
+
+	it("does not show add success when the matching line is already at 99", async () => {
+		localStorage.setItem(CART_DRAFT_STORAGE_KEY, JSON.stringify({
+			version: 1,
+			updatedAt: Date.now(),
+			items: [{ menuItemId: 9, quantity: 99, modifierOptionIds: [16] }],
+		}));
+		await renderCustomer();
+		await userEvent.click(screen.getByRole("button", { name: "加入 薯條" }));
+		expect(screen.getByText("同一選項單筆最多 99 份，請先調整購物車。")).toBeTruthy();
+		expect(screen.queryByText("薯條已加入購物車")).toBeNull();
+		expect(screen.getByRole("button", { name: "購物車共 99 件" })).toBeTruthy();
 	});
 
 	it("quick-add uses defaults without expanding or opening customization", async () => {
@@ -517,7 +578,7 @@ describe("customer ordering redesign", () => {
 
 	it("defaults sweet potato fries seasoning to 梅粉", async () => {
 		await renderCustomer();
-		const card = productCard("地瓜薯條");
+		const card = productCard("甘梅地瓜");
 		await userEvent.click(within(card).getByRole("button", { name: /調味：梅粉/ }));
 		expect((within(card).getByRole("radio", { name: "梅粉" }) as HTMLInputElement).checked).toBe(true);
 	});
@@ -532,7 +593,7 @@ describe("customer ordering redesign", () => {
 	it("changes only the targeted product selection state", async () => {
 		await renderCustomer();
 		const friesCard = productCard("薯條");
-		const sweetCard = productCard("地瓜薯條");
+		const sweetCard = productCard("甘梅地瓜");
 		await userEvent.click(within(friesCard).getByRole("button", { name: /調味：/ }));
 		await userEvent.click(within(sweetCard).getByRole("button", { name: /調味：/ }));
 		await userEvent.click(within(sweetCard).getByRole("radio", { name: "不加調味" }));
@@ -541,10 +602,10 @@ describe("customer ordering redesign", () => {
 		expect((within(friesCard).getByRole("radio", { name: "胡椒" }) as HTMLInputElement).checked).toBe(true);
 
 		await userEvent.click(within(friesCard).getByRole("button", { name: "加入 薯條" }));
-		await userEvent.click(within(sweetCard).getByRole("button", { name: "加入 地瓜薯條" }));
+		await userEvent.click(within(sweetCard).getByRole("button", { name: "加入 甘梅地瓜" }));
 		await openCartView();
 		const friesLine = screen.getByText("薯條 × 1").closest("li");
-		const sweetLine = screen.getByText("地瓜薯條 × 1").closest("li");
+		const sweetLine = screen.getByText("甘梅地瓜 × 1").closest("li");
 		if (!friesLine || !sweetLine) throw new Error("Missing cart lines");
 		expect(within(friesLine).getByText("胡椒")).toBeTruthy();
 		expect(within(sweetLine).getByText("不加調味")).toBeTruthy();
@@ -591,7 +652,7 @@ describe("customer ordering redesign", () => {
 			modifierGroups: [],
 		}]);
 		const card = productCard("新品雞塊");
-		expect(within(card).getByText("熱門")).toBeTruthy();
+		expect(within(card).getByText("熱門推薦")).toBeTruthy();
 		expect(card.querySelector(".inline-option-group")).toBeNull();
 		await userEvent.click(within(card).getByRole("button", { name: "加入 新品雞塊" }));
 		await openCartView();
@@ -603,8 +664,8 @@ describe("customer ordering redesign", () => {
 		expect(screen.queryByLabelText(/訂單備註/)).toBeNull();
 		await userEvent.click(screen.getByRole("button", { name: "加入 薯條" }));
 		await openCheckoutFromMenu();
-		await screen.findByRole("heading", { name: "結帳報價" });
-		const checkoutNote = screen.getByPlaceholderText("例如：其他不影響價格或份量的需求") as HTMLTextAreaElement;
+		await screen.findByRole("heading", { name: "確認訂單" });
+		const checkoutNote = screen.getByPlaceholderText("例如：不放蒜頭、炸酥一點") as HTMLTextAreaElement;
 		await userEvent.type(checkoutNote, "薯條不要鹽");
 		expect(checkoutNote.value).toBe("薯條不要鹽");
 
@@ -692,7 +753,11 @@ describe("customer ordering redesign", () => {
 		await userEvent.click(screen.getByRole("button", { name: "加入 鹹酥雞" }));
 		await userEvent.click(screen.getByRole("button", { name: "加入 薯條" }));
 		await openCartView();
+		expect(screen.getByText("全部一致：不辣")).toBeTruthy();
+		expect(screen.getByRole("button", { name: "不辣" }).getAttribute("aria-pressed")).toBe("true");
 		await userEvent.click(screen.getByRole("button", { name: "中辣" }));
+		expect(screen.getByText("已套用中辣")).toBeTruthy();
+		expect(screen.getByRole("button", { name: "中辣" }).getAttribute("aria-pressed")).toBe("true");
 
 		const cutletLine = screen.getByText("香雞排 × 1").closest("li");
 		const spicyLine = screen.getByText("鹹酥雞 × 1").closest("li");
@@ -705,8 +770,78 @@ describe("customer ordering redesign", () => {
 
 		await userEvent.click(within(spicyLine).getByRole("button", { name: /辣度：中辣/ }));
 		await userEvent.click(within(spicyLine).getByRole("radio", { name: "大辣" }));
+		expect(screen.getByText("目前混合辣度")).toBeTruthy();
+		expect(screen.getByRole("button", { name: "中辣" }).getAttribute("aria-pressed")).toBe("false");
 		expect(within(screen.getByText("香雞排 × 1").closest("li") as HTMLElement).getByRole("button", { name: /辣度：中辣/ })).toBeTruthy();
 		expect(within(screen.getByText("鹹酥雞 × 1").closest("li") as HTMLElement).getByRole("button", { name: /辣度：大辣/ })).toBeTruthy();
+	});
+
+	it("labels a partially supported bulk spice and leaves unsupported lines unchanged", async () => {
+		const limitedChicken: MenuItemFixture = {
+			...spicyChicken,
+			id: 40,
+			name: "限辣雞塊",
+			modifierGroups: [{
+				...spicyChicken.modifierGroups[0]!,
+				id: 30,
+				options: spicyChicken.modifierGroups[0]!.options
+					.filter((option) => option.name !== "大辣")
+					.map((option) => ({ ...option, id: option.id + 100 })),
+			}],
+		};
+		await renderCustomer([chickenCutlet, limitedChicken]);
+		await userEvent.click(screen.getByRole("button", { name: "加入 香雞排" }));
+		await userEvent.click(screen.getByRole("button", { name: "加入 限辣雞塊" }));
+		await openCartView();
+
+		const partialButton = screen.getByRole("button", { name: "大辣（部分）" });
+		expect(partialButton.title).toBe("部分商品沒有該選項");
+		await userEvent.click(partialButton);
+		expect(screen.getByText("已套用大辣；部分餐點不支援，未變更。")).toBeTruthy();
+		expect(partialButton.getAttribute("aria-pressed")).toBe("false");
+		const cutletLine = screen.getByText("香雞排 × 1").closest("li") as HTMLElement;
+		const limitedLine = screen.getByText("限辣雞塊 × 1").closest("li") as HTMLElement;
+		expect(within(cutletLine).getByRole("button", { name: /辣度：大辣/ })).toBeTruthy();
+		expect(within(limitedLine).getByRole("button", { name: /辣度：不辣/ })).toBeTruthy();
+	});
+
+	it("rejects a bulk spice merge over 99 without changing quantities", async () => {
+		localStorage.setItem(CART_DRAFT_STORAGE_KEY, JSON.stringify({
+			version: 1,
+			updatedAt: Date.now(),
+			items: [
+				{ menuItemId: 4, quantity: 60, modifierOptionIds: [7] },
+				{ menuItemId: 4, quantity: 50, modifierOptionIds: [9] },
+			],
+		}));
+		await renderCustomer([spicyChicken]);
+		await openCartView();
+		await userEvent.click(screen.getByRole("button", { name: "小辣" }));
+
+		expect(screen.getByText("套用後相同餐點會超過單筆 99 份，未變更任何餐點。")).toBeTruthy();
+		expect(screen.getByText("鹹酥雞 × 60")).toBeTruthy();
+		expect(screen.getByText("鹹酥雞 × 50")).toBeTruthy();
+		expect(screen.queryByText("鹹酥雞 × 110")).toBeNull();
+		expect(screen.getByText("NT$ 6600")).toBeTruthy();
+	});
+
+	it("merges equalized spice lines without losing quantity or total", async () => {
+		await renderCustomer([spicyChicken]);
+		await userEvent.click(screen.getByRole("button", { name: "加入 鹹酥雞" }));
+		await openCartView();
+		const firstLine = screen.getByText("鹹酥雞 × 1").closest("li") as HTMLElement;
+		await userEvent.click(within(firstLine).getByRole("button", { name: /辣度：不辣/ }));
+		await userEvent.click(within(firstLine).getByRole("radio", { name: "中辣" }));
+		await userEvent.click(screen.getByRole("button", { name: "← 繼續點餐" }));
+		await userEvent.click(screen.getByRole("button", { name: "加入 鹹酥雞" }));
+		await openCartView();
+		expect(screen.getAllByText("鹹酥雞 × 1")).toHaveLength(2);
+
+		await userEvent.click(screen.getByRole("button", { name: "小辣" }));
+		const mergedLine = screen.getByText("鹹酥雞 × 2").closest("li") as HTMLElement;
+		expect(screen.queryByText("鹹酥雞 × 1")).toBeNull();
+		expect(within(mergedLine).getByText("NT$ 120")).toBeTruthy();
+		expect(within(mergedLine).getByRole("button", { name: /辣度：小辣/ })).toBeTruthy();
 	});
 
 	it("serializes the default fries seasoning modifier into the quote", async () => {
@@ -722,7 +857,7 @@ describe("customer ordering redesign", () => {
 
 	it("serializes the default sweet-potato seasoning modifier into the quote", async () => {
 		const fetchMock = await renderCustomer();
-		await userEvent.click(screen.getByRole("button", { name: "加入 地瓜薯條" }));
+		await userEvent.click(screen.getByRole("button", { name: "加入 甘梅地瓜" }));
 		await openCheckoutFromMenu();
 		await waitFor(() => {
 			const quoteCall = fetchMock.mock.calls.find(
@@ -739,10 +874,10 @@ describe("customer ordering redesign", () => {
 		expect(within(card).getByRole("button", { name: /切法：不切/ })).toBeTruthy();
 		await userEvent.click(within(card).getByRole("button", { name: "加入 香雞排" }));
 		await openCheckoutFromMenu();
-		await screen.findByRole("heading", { name: "結帳報價" });
+		await screen.findByRole("heading", { name: "確認訂單" });
 		await userEvent.type(screen.getByLabelText("姓名"), "王小明");
 		await userEvent.type(screen.getByLabelText("電話"), "0912345678");
-		await userEvent.click(screen.getByRole("button", { name: "送出訂單" }));
+		await userEvent.click(screen.getByRole("button", { name: "確認下單" }));
 
 		await waitFor(() => {
 			const quoteCall = fetchMock.mock.calls.find(
@@ -827,14 +962,14 @@ describe("customer ordering redesign", () => {
 		await userEvent.click(within(card).getByRole("radio", { name: "梅粉" }));
 		await userEvent.click(within(card).getByRole("button", { name: "加入 薯條" }));
 		await openCheckoutFromMenu();
-		await screen.findByRole("heading", { name: "結帳報價" });
+		await screen.findByRole("heading", { name: "確認訂單" });
 		await userEvent.type(screen.getByLabelText("姓名"), "王小明");
 		await userEvent.type(screen.getByLabelText("電話"), "0912345678");
 		await userEvent.type(
 			screen.getByLabelText(/訂單備註/),
 			"薯條不要鹽",
 		);
-		await userEvent.click(screen.getByRole("button", { name: "送出訂單" }));
+		await userEvent.click(screen.getByRole("button", { name: "確認下單" }));
 
 		await waitFor(() => {
 			const orderCall = fetchMock.mock.calls.find(
@@ -843,13 +978,143 @@ describe("customer ordering redesign", () => {
 			expect(orderCall).toBeTruthy();
 			const body = JSON.parse(String(orderCall?.[1]?.body));
 			expect(body.customerNote).toBe("薯條不要鹽");
+			expect(body.quoteFingerprint).toBe("c".repeat(64));
 			expect(body.items).toEqual([
 				{ menuItemId: 9, quantity: 1, modifierOptionIds: [15] },
 			]);
 		});
 	});
 
-	it("persists explicit packaging separately from notes and only performs phone format validation", async () => {
+	it("turns two synchronous submit clicks into one Order request", async () => {
+		const fetchMock = await renderCustomer();
+		await userEvent.click(within(productCard("薯條")).getByRole("button", { name: "加入 薯條" }));
+		await openCheckoutFromMenu();
+		await screen.findByRole("heading", { name: "確認訂單" });
+		await userEvent.type(screen.getByLabelText("姓名"), "王小明");
+		await userEvent.type(screen.getByLabelText("電話"), "0912345678");
+
+		const submit = screen.getByRole("button", { name: "確認下單" });
+		submit.click();
+		submit.click();
+
+		await screen.findByText("等待店家接單");
+		expect(screen.getByText("13:30")).toBeTruthy();
+		const orderCalls = fetchMock.mock.calls.filter(
+			([input]) => requestUrl(input as RequestInfo | URL) === "/api/orders",
+		);
+		expect(orderCalls).toHaveLength(1);
+	});
+
+	it("refreshes a changed quote without losing checkout fields and waits for explicit reconfirmation", async () => {
+		const fetchMock = await renderCustomer();
+		await userEvent.click(within(productCard("薯條")).getByRole("button", { name: "加入 薯條" }));
+		await openCheckoutFromMenu();
+		await screen.findByRole("heading", { name: "確認訂單" });
+		await userEvent.type(screen.getByLabelText("姓名"), "王小明");
+		await userEvent.type(screen.getByLabelText("電話"), "0912345678");
+		await userEvent.type(screen.getByLabelText(/訂單備註/), "炸酥一點");
+
+		const original = fetchMock.getMockImplementation();
+		let orderAttempts = 0;
+		const attemptKeys: string[] = [];
+		fetchMock.mockImplementation(async (input, init) => {
+			const url = requestUrl(input as RequestInfo | URL);
+			if (url === "/api/orders") {
+				orderAttempts += 1;
+				attemptKeys.push(new Headers(init?.headers).get("Idempotency-Key") ?? "");
+				if (orderAttempts === 1) {
+					return json({ error: { code: "QUOTE_CHANGED" } }, 409);
+				}
+			}
+			if (url === "/api/checkout/quote" && orderAttempts === 1) {
+				if (!original) throw new Error("Missing fetch implementation");
+				const response = await original(input, init);
+				const current = (await response.json()) as Record<string, unknown> & {
+					items: Array<Record<string, unknown>>;
+				};
+				return json({
+					...current,
+					items: current.items.map((item) => ({ ...item, unitPrice: 45, lineTotal: 45 })),
+					total: 45,
+					quoteFingerprint: "d".repeat(64),
+				});
+			}
+			if (!original) throw new Error("Missing fetch implementation");
+			return original(input, init);
+		});
+
+		await userEvent.click(screen.getByRole("button", { name: "確認下單" }));
+		await screen.findByText("價格或餐點選項已更新，請確認新金額後再次確認下單。");
+		expect(screen.getAllByText("NT$ 45")).toHaveLength(2);
+		expect((screen.getByLabelText("姓名") as HTMLInputElement).value).toBe("王小明");
+		expect((screen.getByLabelText("電話") as HTMLInputElement).value).toBe("0912345678");
+		expect((screen.getByLabelText(/訂單備註/) as HTMLTextAreaElement).value).toBe("炸酥一點");
+		expect(orderAttempts).toBe(1);
+
+		await userEvent.click(screen.getByRole("button", { name: "確認下單" }));
+		await screen.findByText("等待店家接單");
+		expect(orderAttempts).toBe(2);
+		expect(attemptKeys[0]).not.toBe("");
+		expect(attemptKeys[1]).not.toBe("");
+		expect(attemptKeys[1]).not.toBe(attemptKeys[0]);
+		const orderBodies = fetchMock.mock.calls
+			.filter(([input]) => requestUrl(input as RequestInfo | URL) === "/api/orders")
+			.map(([, init]) => JSON.parse(String(init?.body)) as { quoteFingerprint: string });
+		expect(orderBodies.map((body) => body.quoteFingerprint)).toEqual([
+			"c".repeat(64),
+			"d".repeat(64),
+		]);
+	});
+
+	it("treats 429 as a confirmed non-order and reports Retry-After", async () => {
+		const fetchMock = await renderCustomer();
+		await userEvent.click(screen.getByRole("button", { name: "加入 薯條" }));
+		await openCheckoutFromMenu();
+		await userEvent.type(screen.getByLabelText("姓名"), "王小明");
+		await userEvent.type(screen.getByLabelText("電話"), "0912345678");
+		const original = fetchMock.getMockImplementation();
+		fetchMock.mockImplementation(async (input, init) => {
+			if (requestUrl(input as RequestInfo | URL) === "/api/orders") {
+				return Promise.resolve(new Response(
+					JSON.stringify({ error: { code: "RATE_LIMITED" } }),
+					{
+						status: 429,
+						headers: { "content-type": "application/json", "Retry-After": "45" },
+					},
+				));
+			}
+			if (!original) throw new Error("Missing fetch implementation");
+			return original(input, init);
+		});
+
+		await userEvent.click(screen.getByRole("button", { name: "確認下單" }));
+		await screen.findByText("送單過於頻繁，本次未建立訂單。請於 45 秒後再試。");
+		expect(localStorage.getItem(ORDER_ATTEMPT_STORAGE_KEY)).toBeNull();
+		expect((screen.getByLabelText("姓名") as HTMLInputElement).disabled).toBe(false);
+	});
+
+	it("clears the pending attempt after a confirmed 422 rejection", async () => {
+		const fetchMock = await renderCustomer();
+		await userEvent.click(screen.getByRole("button", { name: "加入 薯條" }));
+		await openCheckoutFromMenu();
+		await userEvent.type(screen.getByLabelText("姓名"), "王小明");
+		await userEvent.type(screen.getByLabelText("電話"), "0912345678");
+		const original = fetchMock.getMockImplementation();
+		fetchMock.mockImplementation(async (input, init) => {
+			if (requestUrl(input as RequestInfo | URL) === "/api/orders") {
+				return json({ error: { code: "UNAVAILABLE_ITEM" } }, 422);
+			}
+			if (!original) throw new Error("Missing fetch implementation");
+			return original(input, init);
+		});
+
+		await userEvent.click(screen.getByRole("button", { name: "確認下單" }));
+		await screen.findByText("本次未建立訂單。餐點供應或選項可能已變更，請返回購物車確認後再試。");
+		expect(localStorage.getItem(ORDER_ATTEMPT_STORAGE_KEY)).toBeNull();
+		expect((screen.getByRole("button", { name: "← 返回購物車" }) as HTMLButtonElement).disabled).toBe(false);
+	});
+
+	it("uses explicit Taiwan mobile validation and removes order-level packaging choices", async () => {
 		const fetchMock = await renderCustomer([spicyChicken]);
 		await userEvent.click(screen.getByRole("button", { name: "加入 鹹酥雞" }));
 		await openCartView();
@@ -860,20 +1125,25 @@ describe("customer ordering redesign", () => {
 		await userEvent.click(screen.getByRole("button", { name: "← 繼續點餐" }));
 		await userEvent.click(screen.getByRole("button", { name: "加入 鹹酥雞" }));
 		await openCheckoutFromMenu();
-		await screen.findByRole("heading", { name: "結帳報價" });
+		await screen.findByRole("heading", { name: "確認訂單" });
 
 		const phone = screen.getByLabelText("電話") as HTMLInputElement;
-		expect(phone.pattern).toBe("[0-9+()\\-\\s]{7,30}");
+		expect(phone.type).toBe("tel");
+		expect(phone.inputMode).toBe("numeric");
+		expect(phone.maxLength).toBe(10);
+		expect(phone.hasAttribute("pattern")).toBe(false);
+		expect(document.querySelectorAll(".required-label")).toHaveLength(2);
 		expect(document.body.textContent).not.toContain("已驗證");
 		expect(document.body.textContent).not.toContain("驗證成功");
 		expect(document.body.textContent).not.toContain("手機認證");
-		expect((screen.getByRole("radio", { name: "一起裝" }) as HTMLInputElement).checked).toBe(true);
-		await userEvent.click(screen.getByRole("radio", { name: "辣／不辣分袋" }));
-		expect(screen.queryByText(/特殊訂單（需要較多準備時間）/)).toBeNull();
+		expect(screen.queryByRole("group", { name: "包裝方式" })).toBeNull();
+		expect(screen.queryByRole("radio", { name: "一起裝" })).toBeNull();
+		expect(screen.queryByRole("radio", { name: "辣／不辣分袋" })).toBeNull();
+		expect(screen.queryByText(/包裝方式請使用上方選項/)).toBeNull();
 
 		await userEvent.type(screen.getByLabelText("姓名"), "王小明");
 		await userEvent.type(phone, "0912345678");
-		await userEvent.click(screen.getByRole("button", { name: "送出訂單" }));
+		await userEvent.click(screen.getByRole("button", { name: "確認下單" }));
 
 		await waitFor(() => {
 			const orderCall = fetchMock.mock.calls.find(
@@ -881,9 +1151,73 @@ describe("customer ordering redesign", () => {
 			);
 			const body = JSON.parse(String(orderCall?.[1]?.body));
 			expect(body.customerNote).toBeNull();
-			expect(body.packagingPreference).toBe("separate_spicy");
+			expect(body.packagingPreference).toBe("together");
 			expect(body.specialOrder).toBe(false);
 		});
+	});
+
+	it("blocks an invalid phone before POST and clears the field error after correction", async () => {
+		const fetchMock = await renderCustomer();
+		await userEvent.click(screen.getByRole("button", { name: "加入 薯條" }));
+		await openCheckoutFromMenu();
+		await userEvent.type(screen.getByLabelText("姓名"), "王小明");
+		const phone = screen.getByLabelText("電話") as HTMLInputElement;
+		await userEvent.type(phone, "09123456");
+		await userEvent.click(screen.getByRole("button", { name: "確認下單" }));
+
+		expect(await screen.findByText("請輸入 09 開頭的 10 位手機號碼")).toBeTruthy();
+		expect(phone.getAttribute("aria-invalid")).toBe("true");
+		expect(fetchMock.mock.calls.filter(
+			([input]) => requestUrl(input as RequestInfo | URL) === "/api/orders",
+		)).toHaveLength(0);
+
+		await userEvent.clear(phone);
+		await userEvent.type(phone, "0912345678");
+		expect(screen.queryByText("請輸入 09 開頭的 10 位手機號碼")).toBeNull();
+		expect(phone.getAttribute("aria-invalid")).toBe("false");
+		await userEvent.click(screen.getByRole("button", { name: "確認下單" }));
+		await screen.findByText("等待店家接單");
+		expect(fetchMock.mock.calls.filter(
+			([input]) => requestUrl(input as RequestInfo | URL) === "/api/orders",
+		)).toHaveLength(1);
+	});
+
+	it("maps a confirmed backend phone rejection to the field and permits a corrected retry", async () => {
+		const fetchMock = await renderCustomer();
+		await userEvent.click(screen.getByRole("button", { name: "加入 薯條" }));
+		await openCheckoutFromMenu();
+		await userEvent.type(screen.getByLabelText("姓名"), "王小明");
+		const phone = screen.getByLabelText("電話") as HTMLInputElement;
+		await userEvent.type(phone, "0912345678");
+
+		const original = fetchMock.getMockImplementation();
+		const attemptKeys: string[] = [];
+		let orderAttempts = 0;
+		fetchMock.mockImplementation(async (input, init) => {
+			if (requestUrl(input as RequestInfo | URL) === "/api/orders") {
+				orderAttempts += 1;
+				attemptKeys.push(new Headers(init?.headers).get("Idempotency-Key") ?? "");
+				if (orderAttempts === 1) {
+					return json({ error: { code: "INVALID_CUSTOMER_PHONE" } }, 400);
+				}
+			}
+			if (!original) throw new Error("Missing fetch implementation");
+			return original(input, init);
+		});
+
+		await userEvent.click(screen.getByRole("button", { name: "確認下單" }));
+		expect(await screen.findByText("請輸入 09 開頭的 10 位手機號碼")).toBeTruthy();
+		expect(screen.queryByText(/餐點供應或選項可能已變更/)).toBeNull();
+
+		await userEvent.clear(phone);
+		await userEvent.type(phone, "0987654321");
+		expect(screen.queryByText("請輸入 09 開頭的 10 位手機號碼")).toBeNull();
+		await userEvent.click(screen.getByRole("button", { name: "確認下單" }));
+		await screen.findByText("等待店家接單");
+		expect(orderAttempts).toBe(2);
+		expect(attemptKeys[0]).not.toBe("");
+		expect(attemptKeys[1]).not.toBe("");
+		expect(attemptKeys[1]).not.toBe(attemptKeys[0]);
 	});
 
 	it("persists 辣粉另包 as a per-line modifier while keeping fries seasoning unchanged", async () => {
@@ -905,12 +1239,12 @@ describe("customer ordering redesign", () => {
 		if (!friesLine) throw new Error("Missing fries line");
 		expect(within(friesLine).getByText("胡椒")).toBeTruthy();
 
-		await userEvent.click(screen.getByRole("button", { name: "下一步：確認訂單" }));
-		await screen.findByRole("heading", { name: "結帳報價" });
+		await userEvent.click(screen.getByRole("button", { name: "去結帳" }));
+		await screen.findByRole("heading", { name: "確認訂單" });
 		expect(screen.queryByRole("checkbox", { name: "辣粉另包" })).toBeNull();
 		await userEvent.type(screen.getByLabelText("姓名"), "王小明");
 		await userEvent.type(screen.getByLabelText("電話"), "0912345678");
-		await userEvent.click(screen.getByRole("button", { name: "送出訂單" }));
+		await userEvent.click(screen.getByRole("button", { name: "確認下單" }));
 
 		await waitFor(() => {
 			const quoteCall = fetchMock.mock.calls.find(
@@ -1018,28 +1352,285 @@ describe("customer ordering redesign", () => {
 		expect(screen.getByText("鹹酥雞 × 1")).toBeTruthy();
 	});
 
-	it("clears the cart draft only after a successful order and retains it on failure", async () => {
+	it("removes all precisely identified invalid quote lines, preserves modifiers, and only re-quotes", async () => {
+		const fetchMock = await renderCustomer([fries, sweetPotatoFries, chickenCutlet]);
+		await userEvent.click(screen.getByRole("button", { name: "加入 薯條" }));
+		await userEvent.click(screen.getByRole("button", { name: "加入 甘梅地瓜" }));
+		await userEvent.click(screen.getByRole("button", { name: "加入 香雞排" }));
+
+		const original = fetchMock.getMockImplementation();
+		let quoteCalls = 0;
+		fetchMock.mockImplementation(async (input, init) => {
+			if (requestUrl(input as RequestInfo | URL) === "/api/checkout/quote") {
+				quoteCalls += 1;
+				if (quoteCalls === 1) {
+					return json({ error: { code: "UNAVAILABLE_ITEM", lineIssues: [
+						{ itemIndex: 0, menuItemId: 9, code: "UNAVAILABLE_ITEM" },
+						{ itemIndex: 2, menuItemId: 1, code: "INACTIVE_MODIFIER_OPTION", modifierOptionId: 5 },
+					] } }, 422);
+				}
+			}
+			if (!original) throw new Error("Missing fetch implementation");
+			return original(input, init);
+		});
+
+		await openCheckoutFromMenu();
+		await screen.findByText("薯條 × 1：商品已售完");
+		expect(screen.getByText("香雞排 × 1：餐點選項已停用")).toBeTruthy();
+		expect(screen.getByText("甘梅地瓜 × 1")).toBeTruthy();
+		expect(screen.getByText("梅粉")).toBeTruthy();
+		expect(screen.getAllByText("NT$ 55")).toHaveLength(2);
+		expect(quoteCalls).toBe(2);
+		expect(fetchMock.mock.calls.some(([input]) => requestUrl(input as RequestInfo | URL) === "/api/orders")).toBe(false);
+	});
+
+	it("uses the quote request snapshot so an old invalid-line response cannot delete a changed Cart", async () => {
+		const fetchMock = await renderCustomer([fries]);
+		await userEvent.click(screen.getByRole("button", { name: "加入 薯條" }));
+		let resolveQuote: ((response: Response) => void) | undefined;
+		const original = fetchMock.getMockImplementation();
+		fetchMock.mockImplementation(async (input, init) => {
+			if (requestUrl(input as RequestInfo | URL) === "/api/checkout/quote") {
+				return new Promise<Response>((resolve) => { resolveQuote = resolve; });
+			}
+			if (!original) throw new Error("Missing fetch implementation");
+			return original(input, init);
+		});
+
+		await openCartView();
+		await userEvent.click(screen.getByRole("button", { name: "去結帳" }));
+		await screen.findByRole("heading", { name: "確認訂單" });
+		await userEvent.click(screen.getByRole("button", { name: "← 返回購物車" }));
+		await userEvent.click(screen.getByRole("button", { name: "增加 薯條 數量" }));
+		resolveQuote?.(new Response(JSON.stringify({ error: {
+			code: "UNAVAILABLE_ITEM",
+			lineIssues: [{ itemIndex: 0, menuItemId: 9, code: "UNAVAILABLE_ITEM" }],
+		} }), { status: 422, headers: { "content-type": "application/json" } }));
+
+		await waitFor(() => expect(screen.getByText("薯條 × 2")).toBeTruthy());
+		expect(screen.queryByText("薯條 × 1：商品已售完")).toBeNull();
+	});
+
+	it("removes only the invalid configuration when the same product has different modifiers", async () => {
+		localStorage.setItem(CART_DRAFT_STORAGE_KEY, JSON.stringify({
+			version: 1,
+			updatedAt: Date.now(),
+			items: [
+				{ menuItemId: 1, quantity: 1, modifierOptionIds: [1, 5] },
+				{ menuItemId: 1, quantity: 2, modifierOptionIds: [2, 5] },
+			],
+		}));
+		const fetchMock = await renderCustomer([chickenCutlet]);
+		await screen.findByText(/已依最新菜單還原購物車/);
+		const original = fetchMock.getMockImplementation();
+		let quoteCalls = 0;
+		fetchMock.mockImplementation(async (input, init) => {
+			if (requestUrl(input as RequestInfo | URL) === "/api/checkout/quote") {
+				quoteCalls += 1;
+				if (quoteCalls === 1) {
+					return json({ error: { code: "INACTIVE_MODIFIER_OPTION", lineIssues: [
+						{ itemIndex: 1, menuItemId: 1, code: "INACTIVE_MODIFIER_OPTION", modifierOptionId: 2 },
+					] } }, 422);
+				}
+			}
+			if (!original) throw new Error("Missing fetch implementation");
+			return original(input, init);
+		});
+
+		await openCheckoutFromMenu();
+		await screen.findByText("香雞排 × 2：餐點選項已停用");
+		expect(screen.getByText("香雞排 × 1")).toBeTruthy();
+		expect(screen.getByText("不辣 / 不切")).toBeTruthy();
+		expect(screen.queryByText("小辣 / 不切")).toBeNull();
+	});
+
+	it("returns to an empty Cart when every quoted line is authoritatively invalid", async () => {
+		const fetchMock = await renderCustomer([fries]);
+		await userEvent.click(screen.getByRole("button", { name: "加入 薯條" }));
+		const original = fetchMock.getMockImplementation();
+		fetchMock.mockImplementation(async (input, init) => {
+			if (requestUrl(input as RequestInfo | URL) === "/api/checkout/quote") {
+				return json({ error: { code: "UNAVAILABLE_ITEM", lineIssues: [
+					{ itemIndex: 0, menuItemId: 9, code: "UNAVAILABLE_ITEM" },
+				] } }, 422);
+			}
+			if (!original) throw new Error("Missing fetch implementation");
+			return original(input, init);
+		});
+
+		await openCheckoutFromMenu();
+		await screen.findByText("尚未加入餐點");
+		expect(screen.getByText("薯條 × 1：商品已售完")).toBeTruthy();
+		expect(screen.queryByRole("button", { name: "去結帳" })).toBeNull();
+	});
+
+	it("does not remove Cart lines for a quote rate limit", async () => {
+		const fetchMock = await renderCustomer([fries]);
+		await userEvent.click(screen.getByRole("button", { name: "加入 薯條" }));
+		const original = fetchMock.getMockImplementation();
+		fetchMock.mockImplementation(async (input, init) => {
+			if (requestUrl(input as RequestInfo | URL) === "/api/checkout/quote") {
+				return new Response(JSON.stringify({ error: { code: "RATE_LIMITED" } }), {
+					status: 429,
+					headers: { "content-type": "application/json", "Retry-After": "15" },
+				});
+			}
+			if (!original) throw new Error("Missing fetch implementation");
+			return original(input, init);
+		});
+
+		await openCheckoutFromMenu();
+		await screen.findByText("報價請求過於頻繁，請於 15 秒後再試。");
+		await userEvent.click(screen.getByRole("button", { name: "← 返回購物車" }));
+		expect(screen.getByText("薯條 × 1")).toBeTruthy();
+	});
+
+	it("removes an invalid line rejected during Order creation without automatic resubmission", async () => {
+		const fetchMock = await renderCustomer([fries, sweetPotatoFries]);
+		await userEvent.click(screen.getByRole("button", { name: "加入 薯條" }));
+		await userEvent.click(screen.getByRole("button", { name: "加入 甘梅地瓜" }));
+		await openCheckoutFromMenu();
+		await userEvent.type(screen.getByLabelText("姓名"), "王小明");
+		await userEvent.type(screen.getByLabelText("電話"), "0912345678");
+		await userEvent.type(screen.getByLabelText(/訂單備註/), "炸酥一點");
+		const original = fetchMock.getMockImplementation();
+		let orderCalls = 0;
+		fetchMock.mockImplementation(async (input, init) => {
+			if (requestUrl(input as RequestInfo | URL) === "/api/orders") {
+				orderCalls += 1;
+				return json({ error: { code: "UNAVAILABLE_ITEM", lineIssues: [
+					{ itemIndex: 0, menuItemId: 9, code: "UNAVAILABLE_ITEM" },
+				] } }, 422);
+			}
+			if (!original) throw new Error("Missing fetch implementation");
+			return original(input, init);
+		});
+
+		await userEvent.click(screen.getByRole("button", { name: "確認下單" }));
+		await screen.findByText("薯條 × 1：商品已售完");
+		expect(screen.getByText("甘梅地瓜 × 1")).toBeTruthy();
+		expect((screen.getByLabelText("姓名") as HTMLInputElement).value).toBe("王小明");
+		expect((screen.getByLabelText("電話") as HTMLInputElement).value).toBe("0912345678");
+		expect((screen.getByLabelText(/訂單備註/) as HTMLTextAreaElement).value).toBe("炸酥一點");
+		expect(orderCalls).toBe(1);
+	});
+
+	it("recovers the same pending Idempotency-Key after an uncertain response and reload", async () => {
 		const fetchMock = await renderCustomer([spicyChicken]);
 		await userEvent.click(screen.getByRole("button", { name: "加入 鹹酥雞" }));
 		await waitFor(() => expect(localStorage.getItem(CART_DRAFT_STORAGE_KEY)).not.toBeNull());
 		await openCheckoutFromMenu();
-		await screen.findByRole("heading", { name: "結帳報價" });
+		await screen.findByRole("heading", { name: "確認訂單" });
 		await userEvent.type(screen.getByLabelText("姓名"), "王小明");
 		await userEvent.type(screen.getByLabelText("電話"), "0912345678");
 
 		const original = fetchMock.getMockImplementation();
+		let failedAttemptKey = "";
 		fetchMock.mockImplementation(async (input, init) => {
-			if (requestUrl(input as RequestInfo | URL) === "/api/orders") return json({}, 503);
+			if (requestUrl(input as RequestInfo | URL) === "/api/orders") {
+				failedAttemptKey = new Headers(init?.headers).get("Idempotency-Key") ?? "";
+				return json({}, 503);
+			}
 			if (!original) throw new Error("Missing fetch implementation");
 			return original(input, init);
 		});
-		await userEvent.click(screen.getByRole("button", { name: "送出訂單" }));
+		await userEvent.click(screen.getByRole("button", { name: "確認下單" }));
 		await screen.findByRole("alert");
 		expect(localStorage.getItem(CART_DRAFT_STORAGE_KEY)).not.toBeNull();
+		expect(localStorage.getItem(ORDER_ATTEMPT_STORAGE_KEY)).not.toBeNull();
+		expect(failedAttemptKey).not.toBe("");
 
-		fetchMock.mockImplementation(original!);
-		await userEvent.click(screen.getByRole("button", { name: "送出訂單" }));
-		await screen.findByText("等待店家確認");
+		cleanup();
+		const retryFetchMock = await renderCustomer([spicyChicken]);
+		await screen.findByText(/已依最新菜單還原購物車/);
+		await openCheckoutFromMenu();
+		await screen.findByRole("heading", { name: "確認訂單" });
+		const restoredName = screen.getByLabelText("姓名") as HTMLInputElement;
+		const restoredPhone = screen.getByLabelText("電話") as HTMLInputElement;
+		expect(restoredName.value).toBe("王小明");
+		expect(restoredPhone.value).toBe("0912345678");
+		expect(restoredName.disabled).toBe(true);
+		expect(restoredPhone.disabled).toBe(true);
+		expect(sessionStorage.getItem(ORDER_FORM_SESSION_KEY)).not.toBeNull();
+		const retryOriginal = retryFetchMock.getMockImplementation();
+		let recoveredAttemptKey = "";
+		retryFetchMock.mockImplementation(async (input, init) => {
+			if (requestUrl(input as RequestInfo | URL) === "/api/orders") {
+				recoveredAttemptKey = new Headers(init?.headers).get("Idempotency-Key") ?? "";
+				if (!retryOriginal) throw new Error("Missing retry fetch implementation");
+				const replay = await retryOriginal(input, init);
+				return new Response(await replay.text(), {
+					status: 200,
+					headers: { "content-type": "application/json" },
+				});
+			}
+			if (!retryOriginal) throw new Error("Missing retry fetch implementation");
+			return retryOriginal(input, init);
+		});
+		await userEvent.click(screen.getByRole("button", { name: "確認下單" }));
+		await screen.findByText("等待店家接單");
+		expect(recoveredAttemptKey).toBe(failedAttemptKey);
 		expect(localStorage.getItem(CART_DRAFT_STORAGE_KEY)).toBeNull();
+		expect(localStorage.getItem(ORDER_ATTEMPT_STORAGE_KEY)).toBeNull();
+	});
+
+	it("separates active Orders from history and loads history only after the Customer opens it", async () => {
+		const pendingToken = "a".repeat(64);
+		const acceptedToken = "b".repeat(64);
+		const completedToken = "c".repeat(64);
+		localStorage.setItem(
+			ACTIVE_CUSTOMER_ORDER_STORAGE_KEY,
+			JSON.stringify([pendingToken, acceptedToken]),
+		);
+		localStorage.setItem(CUSTOMER_ORDER_HISTORY_STORAGE_KEY, JSON.stringify([completedToken]));
+		const baseFetch = createFetchMock([fries]);
+		const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+			const url = requestUrl(input);
+			if (url.startsWith("/api/orders/by-token/")) {
+				const token = decodeURIComponent(url.slice("/api/orders/by-token/".length));
+				const status = token === pendingToken ? "pending" : token === acceptedToken ? "accepted" : "completed";
+				return json({ order: {
+					publicLookupToken: token,
+					orderNumber: token === pendingToken ? "PENDING" : token === acceptedToken ? "ACCEPTED" : "DONE",
+					status,
+					customerName: "王小明",
+					customerNote: null,
+					packagingPreference: "together",
+					createdAt: "2026-09-16T05:00:00.000Z",
+					estimatedReadyAt: "2026-09-16T05:30:00.000Z",
+					total: 40,
+					items: token === completedToken ? [{
+						name: "薯條", unitPrice: 35, quantity: 1, lineTotal: 35, modifiers: [{ groupName: "調味", name: "胡椒", priceDelta: 0 }],
+					}] : [],
+					reorderItems: token === completedToken ? [{ menuItemId: 9, quantity: 1, modifierOptionIds: [16] }] : [],
+				} });
+			}
+			return baseFetch(input, init);
+		});
+		vi.stubGlobal("fetch", fetchMock);
+		render(<CustomerApp />);
+		await screen.findByRole("heading", { name: "炸物" });
+		const orderEntry = await screen.findByRole("button", { name: "我的訂單 2" });
+		expect(fetchMock.mock.calls.some(([input]) => requestUrl(input as RequestInfo | URL).endsWith(completedToken))).toBe(false);
+
+		await userEvent.click(screen.getByRole("button", { name: "加入 薯條" }));
+		expect(screen.getByRole("button", { name: "我的訂單 2" })).toBeTruthy();
+		await userEvent.click(orderEntry);
+		expect(screen.getAllByRole("button", { name: "查看訂單" })).toHaveLength(2);
+		expect(screen.queryByText("餐點已完成")).toBeNull();
+		await userEvent.click(screen.getByRole("button", { name: /歷史訂單/ }));
+		expect(await screen.findByRole("heading", { name: "歷史訂單" })).toBeTruthy();
+		expect(await screen.findByText("餐點已完成")).toBeTruthy();
+		expect(screen.getByText("9 月 16 日")).toBeTruthy();
+		await userEvent.click(screen.getByRole("button", { name: "重新訂購" }));
+		expect(screen.getByRole("heading", { name: "購物車" })).toBeTruthy();
+		expect(screen.getByText("薯條 × 1")).toBeTruthy();
+		expect(screen.getAllByText("NT$ 40").length).toBeGreaterThan(0);
+		expect(screen.getByText("已依目前菜單與價格加入購物車，請重新確認後結帳。")).toBeTruthy();
+		expect(fetchMock.mock.calls.some(([input]) => requestUrl(input as RequestInfo | URL).endsWith(completedToken))).toBe(true);
+		expect(JSON.parse(localStorage.getItem(ACTIVE_CUSTOMER_ORDER_STORAGE_KEY) ?? "[]")).toEqual([
+			pendingToken,
+			acceptedToken,
+		]);
 	});
 });

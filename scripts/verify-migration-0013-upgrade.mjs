@@ -70,6 +70,9 @@ function installMigration(number) {
 		11: "0011_add_customer_note.sql",
 		12: "0012_add_admin_menu_metadata.sql",
 		13: "0013_add_order_packaging_preference.sql",
+		14: "0014_add_order_source.sql",
+		15: "0015_add_order_shortage_and_cancellation.sql",
+		16: "0016_add_shortage_request_fingerprint.sql",
 	};
 	const name = names[number];
 	copyFileSync(join(root, "migrations", name), join(migrationDirectory, name));
@@ -104,6 +107,9 @@ try {
 	installMigration(11);
 	installMigration(12);
 	installMigration(13);
+	installMigration(14);
+	installMigration(15);
+	installMigration(16);
 	runWrangler(["d1", "migrations", "apply", "DB"]);
 
 	const upgraded = firstResult(runWrangler([
@@ -119,17 +125,22 @@ try {
 			(SELECT COUNT(*) FROM order_items WHERE id = 'upgrade-line' AND item_name = '升級雞排'
 				AND unit_price = 80 AND line_total = 80) AS preservedSnapshotCount,
 			(SELECT COUNT(*) FROM orders WHERE id = 'upgrade-order' AND customer_note IS NULL
-				AND packaging_preference = 'together') AS preservedOrderCount,
+				AND packaging_preference = 'together' AND order_source = 'online'
+				AND shortage_policy = 'continue_available' AND shortage_revision = 0
+				AND cancelled_at IS NULL AND cancellation_reason IS NULL) AS preservedOrderCount,
 			(SELECT COUNT(*) FROM store_settings WHERE id = 1 AND origin_disclosure IS NULL) AS preservedStoreCount,
+			(SELECT COUNT(*) FROM pragma_table_info('order_shortage_requests')
+				WHERE name = 'request_fingerprint' AND "notnull" = 1) AS shortageRequestFingerprintCount,
 			(SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' AND name = 'menu_items_customer_visibility_sort_idx') AS visibilityIndexCount`,
 	], true));
 
 	for (const [key, expected] of Object.entries({
-		migrationCount: 13,
+		migrationCount: 16,
 		preservedItemCount: 1,
 		preservedSnapshotCount: 1,
 		preservedOrderCount: 1,
 		preservedStoreCount: 1,
+		shortageRequestFingerprintCount: 1,
 		visibilityIndexCount: 1,
 	})) {
 		if (upgraded[key] !== expected) {
@@ -141,13 +152,13 @@ try {
 	const secondHistory = firstResult(runWrangler([
 		"d1", "execute", "DB", "--json", "--command", "SELECT COUNT(*) AS migrationCount FROM d1_migrations",
 	], true));
-	if (secondHistory.migrationCount !== 13) throw new Error("Second upgrade apply changed migration history");
+	if (secondHistory.migrationCount !== 16) throw new Error("Second upgrade apply changed migration history");
 	const quickCheck = firstResult(runWrangler([
 		"d1", "execute", "DB", "--json", "--command", "PRAGMA quick_check",
 	], true));
 	if (quickCheck.quick_check !== "ok") throw new Error("Upgrade D1 quick_check failed");
 
-	console.log("Migrations 0011+0012+0013 upgrade PASS: pre-0011 menu/order data preserved, customer_note, Admin metadata, and packaging default verified, second apply idempotent, and quick_check passed.");
+	console.log("Migrations 0011-0016 upgrade PASS: pre-0011 data preserved, customer_note, Admin metadata, packaging/source/shortage defaults and shortage request fingerprints verified, second apply idempotent, and quick_check passed.");
 } finally {
 	const resolvedVerifierRoot = resolve(verifierRoot);
 	const resolvedTempRoot = resolve(safeTempRoot);

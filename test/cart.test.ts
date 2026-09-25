@@ -5,6 +5,8 @@ import {
 	createCartLine,
 	getCartLineSubtotal,
 	getCartTotal,
+	MAX_CART_LINE_QUANTITY,
+	reconfigureCartLines,
 	type CartLine,
 	type SelectedModifier,
 } from "../src/react-app/cart";
@@ -128,6 +130,44 @@ describe("cart identity and transitions", () => {
 		});
 		expect(merged).toHaveLength(1);
 		expect(merged[0]?.quantity).toBe(2);
+	});
+
+	it("bulk reconfiguration preserves non-spice modifiers and merges all quantities", () => {
+		const mildLine: CartLine = { ...createCartLine(item, [mild, sliced]), quantity: 2 };
+		const hotLine: CartLine = { ...createCartLine(item, [verySpicy, sliced]), quantity: 3 };
+		const result = reconfigureCartLines([mildLine, hotLine], [
+			{ lineId: mildLine.id, selectedModifiers: [notSpicy, sliced] },
+			{ lineId: hotLine.id, selectedModifiers: [notSpicy, sliced] },
+		]);
+
+		expect(result.exceededQuantityLimit).toBe(false);
+		expect(result.lines).toHaveLength(1);
+		expect(result.lines[0]).toMatchObject({ quantity: 5, unitPrice: 85 });
+		expect(result.lines[0]?.selectedModifiers).toEqual([notSpicy, sliced]);
+	});
+
+	it("rejects an all-line spice merge that would exceed the backend line limit", () => {
+		const mildLine: CartLine = { ...createCartLine(item, [mild, sliced]), quantity: 60 };
+		const hotLine: CartLine = { ...createCartLine(item, [verySpicy, sliced]), quantity: 50 };
+		const original = [mildLine, hotLine];
+		const result = reconfigureCartLines(original, [
+			{ lineId: mildLine.id, selectedModifiers: [notSpicy, sliced] },
+			{ lineId: hotLine.id, selectedModifiers: [notSpicy, sliced] },
+		]);
+
+		expect(result).toEqual({ lines: original, exceededQuantityLimit: true });
+		expect(getCartTotal(result.lines)).toBe(getCartTotal(original));
+		expect(result.lines.reduce((total, line) => total + line.quantity, 0)).toBe(110);
+	});
+
+	it("never increases an existing cart line beyond 99", () => {
+		const line: CartLine = {
+			...createCartLine(item, [mild, sliced]),
+			quantity: MAX_CART_LINE_QUANTITY,
+		};
+
+		expect(cartReducer([line], { type: "increase", lineId: line.id })).toEqual([line]);
+		expect(cartReducer([line], { type: "add", line })).toEqual([line]);
 	});
 
 	it("keeps API-backed seasoning selections in cart-line identity without affecting price", () => {

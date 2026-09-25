@@ -17,6 +17,7 @@ import {
 } from "./admin-menu";
 import {
 	CheckoutQuoteError,
+	createQuoteFingerprint,
 	parseCheckoutQuoteRequest,
 	validateAndPriceCart,
 } from "./checkout-quote";
@@ -30,6 +31,7 @@ import {
 } from "./order-creation";
 import {
 	listActiveMerchantOrders,
+	listRecentMerchantOrderHistory,
 	MerchantOrderError,
 	transitionMerchantOrder,
 } from "./merchant-orders";
@@ -70,6 +72,13 @@ import {
 	saveMerchantPushSubscription,
 	type WebPushBindings,
 } from "./web-push";
+import type { OrderSource } from "../shared/order-source";
+import {
+	cancelCustomerOrder,
+	markOrderShortage,
+	OrderAdjustmentError,
+	parseShortageRequest,
+} from "./order-adjustments";
 
 type AppEnvironment = {
 	Bindings: Env & SecurityBindings & WebPushBindings & StoreOperationBindings;
@@ -269,6 +278,26 @@ app.get("/api/menu", async (c) => {
 });
 
 app.post("/api/checkout/quote", async (c) => {
+	const clientAddress = c.req.header("CF-Connecting-IP");
+
+	if (
+		c.env.PUBLIC_WRITE_RATE_LIMIT_DEV_BYPASS !== "true" &&
+		c.env.ORDER_RATE_LIMITER
+	) {
+		const allowed = await isRateLimitAllowed(
+			c.env.ORDER_RATE_LIMITER,
+			`checkout-quote:${clientAddress ?? "unknown"}`,
+		);
+
+		if (!allowed) {
+			c.header("Retry-After", "60");
+			return c.json(
+				{ error: { code: "RATE_LIMITED", message: "Too many Checkout Quote requests" } },
+				429,
+			);
+		}
+	}
+
 	let requestBody: unknown;
 
 	try {
@@ -315,25 +344,43 @@ app.post("/api/checkout/quote", async (c) => {
 			);
 		}
 
-		const pricedCart = await validateAndPriceCart(c.env.DB, selections);
+		const [pricedCart, queueCounts] = await Promise.all([
+			validateAndPriceCart(c.env.DB, selections),
+			c.env.DB
+				.prepare(
+					`SELECT
+						COUNT(*) AS ordersAhead,
+						COALESCE(SUM(CASE WHEN special_order = 1 THEN 1 ELSE 0 END), 0)
+							AS specialOrdersAhead
+					FROM orders
+					WHERE status IN ('pending', 'accepted')`,
+				)
+				.first<{ ordersAhead: number; specialOrdersAhead: number }>(),
+		]);
 
 		const preparationTime = getPreparationTimeEstimate(
 			{
 				basePrepMinutes: store.base_prep_minutes,
 				normalOrderMinutes: store.normal_order_minutes,
 				specialExtraMinutes: store.special_extra_minutes,
-				// A Quote is a preview; only Order creation uses the live queue.
-				ordersAhead: 0,
-				specialOrdersAhead: 0,
+				ordersAhead: queueCounts?.ordersAhead ?? 0,
+				specialOrdersAhead: queueCounts?.specialOrdersAhead ?? 0,
 			},
 			new Date(),
 		);
+		const quoteFingerprint = await createQuoteFingerprint(pricedCart);
 
-		return c.json({ ...pricedCart, ...preparationTime });
+		return c.json({ ...pricedCart, ...preparationTime, quoteFingerprint });
 	} catch (error) {
 		if (error instanceof CheckoutQuoteError) {
 			return c.json(
-				{ error: { code: error.code, message: error.message } },
+				{
+					error: {
+						code: error.code,
+						message: error.message,
+						...(error.lineIssues.length > 0 ? { lineIssues: error.lineIssues } : {}),
+					},
+				},
 				error.status,
 			);
 		}
@@ -342,7 +389,7 @@ app.post("/api/checkout/quote", async (c) => {
 	}
 });
 
-app.post("/api/orders", async (c) => {
+async function handleCreateOrder(c: Context<AppEnvironment>, orderSource: OrderSource) {
 	const clientAddress = c.req.header("CF-Connecting-IP");
 
 	if (
@@ -388,7 +435,7 @@ app.post("/api/orders", async (c) => {
 
 	try {
 		const idempotencyKey = parseIdempotencyKey(c.req.header("Idempotency-Key"));
-		const request = parseCreateOrderRequest(requestBody);
+		const request = parseCreateOrderRequest(requestBody, orderSource);
 		const result = await createOrder(c.env.DB, request, idempotencyKey, new Date());
 
 		if (!result.replayed) {
@@ -409,18 +456,38 @@ app.post("/api/orders", async (c) => {
 	} catch (error) {
 		if (error instanceof CheckoutQuoteError || error instanceof OrderCreationError) {
 			return c.json(
-				{ error: { code: error.code, message: error.message } },
+				{
+					error: {
+						code: error.code,
+						message: error.message,
+						...(error instanceof CheckoutQuoteError && error.lineIssues.length > 0
+							? { lineIssues: error.lineIssues }
+							: {}),
+					},
+				},
 				error.status,
 			);
 		}
 
 		throw error;
 	}
-});
+}
+
+app.post("/api/orders", (c) => handleCreateOrder(c, "online"));
+app.post("/api/onsite/orders", (c) => handleCreateOrder(c, "onsite"));
 
 app.get("/api/orders/by-token/:token", async (c) => {
 	c.header("Cache-Control", "no-store");
-	const order = await getCustomerOrder(c.env.DB, c.req.param("token"));
+	const token = c.req.param("token");
+
+	if (!/^[a-f0-9]{64}$/.test(token)) {
+		return c.json(
+			{ error: { code: "ORDER_NOT_FOUND", message: "Order not found" } },
+			404,
+		);
+	}
+
+	const order = await getCustomerOrder(c.env.DB, token);
 
 	if (!order) {
 		return c.json(
@@ -430,6 +497,40 @@ app.get("/api/orders/by-token/:token", async (c) => {
 	}
 
 	return c.json({ order });
+});
+
+app.post("/api/orders/by-token/:token/cancel", async (c) => {
+	const token = c.req.param("token");
+	if (!/^[a-f0-9]{64}$/.test(token)) {
+		return c.json({ error: { code: "ORDER_NOT_FOUND", message: "Order not found" } }, 404);
+	}
+	let origin: URL;
+	try {
+		origin = new URL(c.req.header("Origin") ?? "invalid:");
+	} catch {
+		return c.json({ error: { code: "ORIGIN_DENIED", message: "Customer mutation is not authorized" } }, 403);
+	}
+	if (origin.origin !== new URL(c.req.url).origin || c.req.header("Sec-Fetch-Site") !== "same-origin") {
+		return c.json({ error: { code: "ORIGIN_DENIED", message: "Customer mutation is not authorized" } }, 403);
+	}
+	try {
+		const body = await readBoundedJson(c.req.raw);
+		if (
+			typeof body !== "object" || body === null || Array.isArray(body) ||
+			Object.keys(body).length !== 1 || !("confirm" in body) || body.confirm !== true
+		) {
+			return c.json({ error: { code: "INVALID_CANCELLATION_REQUEST", message: "Cancellation confirmation is required" } }, 400);
+		}
+		const result = await cancelCustomerOrder(c.env.DB, token, new Date());
+		return c.json({ order: toCustomerOrder(result.order, token), replayed: result.replayed });
+	} catch (error) {
+		if (error instanceof RequestBodyError || error instanceof OrderAdjustmentError) {
+			const status = error instanceof OrderAdjustmentError ? error.status : 400;
+			const code = error instanceof OrderAdjustmentError ? error.code : "INVALID_CANCELLATION_REQUEST";
+			return c.json({ error: { code, message: error.message } }, status);
+		}
+		throw error;
+	}
 });
 
 app.use("/api/admin/*", async (c, next) => {
@@ -583,7 +684,9 @@ app.use("/api/merchant/*", async (c, next) => {
 	if (
 		!isMerchantMutationRequestAllowed({
 			method: c.req.method,
+			devBypass: c.env.MERCHANT_DEV_BYPASS,
 			expectedHostname: c.env.MERCHANT_HOSTNAME,
+			requestUrl: c.req.url,
 			origin: c.req.header("Origin"),
 			secFetchSite: c.req.header("Sec-Fetch-Site"),
 		})
@@ -598,8 +701,11 @@ app.use("/api/merchant/*", async (c, next) => {
 });
 
 app.get("/api/merchant/orders", async (c) => {
-	const orders = await listActiveMerchantOrders(c.env.DB);
-	return c.json({ orders });
+	const [orders, history] = await Promise.all([
+		listActiveMerchantOrders(c.env.DB),
+		listRecentMerchantOrderHistory(c.env.DB),
+	]);
+	return c.json({ orders, history });
 });
 
 app.get("/api/merchant/notifications", async (c) => {
@@ -800,6 +906,21 @@ app.post("/api/merchant/orders/:id/complete", async (c) => {
 			return c.json({ error: { code: error.code, message: error.message } }, error.status);
 		}
 
+		throw error;
+	}
+});
+
+app.post("/api/merchant/orders/:id/shortages", async (c) => {
+	try {
+		const request = parseShortageRequest(await readBoundedJson(c.req.raw));
+		const result = await markOrderShortage(c.env.DB, c.req.param("id"), request, new Date());
+		return c.json(result);
+	} catch (error) {
+		if (error instanceof RequestBodyError || error instanceof OrderAdjustmentError) {
+			const status = error instanceof OrderAdjustmentError ? error.status : 400;
+			const code = error instanceof OrderAdjustmentError ? error.code : "INVALID_SHORTAGE_REQUEST";
+			return c.json({ error: { code, message: error.message } }, status);
+		}
 		throw error;
 	}
 });

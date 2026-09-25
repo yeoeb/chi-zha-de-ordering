@@ -54,7 +54,8 @@ type ProductModifierPresentation = {
 // Stable IDs from the human-approved 43-item production menu configuration.
 const productModifierPresentation: Record<number, ProductModifierPresentation> = {
 	1: { defaultOptionIds: { 1: 1, 2: 5 }, mainGroupIds: [2], spiceGroupId: 1 },
-	4: { defaultOptionIds: { 3: 7 }, mainGroupIds: [], spiceGroupId: 3 },
+	3: { defaultOptionIds: { 8: 29 }, mainGroupIds: [8] },
+	4: { defaultOptionIds: { 3: 7, 7: 27 }, mainGroupIds: [7], spiceGroupId: 3 },
 	6: { defaultOptionIds: { 4: 11 }, mainGroupIds: [], spiceGroupId: 4 },
 	9: { defaultOptionIds: { 5: 16 }, mainGroupIds: [5] },
 	10: { defaultOptionIds: { 6: 18 }, mainGroupIds: [6] },
@@ -63,7 +64,7 @@ const productModifierPresentation: Record<number, ProductModifierPresentation> =
 export const spiceChoices = ["不辣", "微辣", "小辣", "中辣", "大辣", "辣粉另包"] as const;
 export type SpiceChoice = (typeof spiceChoices)[number];
 
-const mainOptionGroupNames = new Set(["調味", "調味料", "切法"]);
+const mainOptionGroupNames = new Set(["份量", "調味", "調味料", "切法"]);
 const seasoningOffLabels = new Set(["不加調味", "原味"]);
 
 export function isPopularItem(item: MenuItem) {

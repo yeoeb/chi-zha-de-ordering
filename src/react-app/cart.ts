@@ -16,6 +16,8 @@ export type CartLine = {
 	quantity: number;
 };
 
+export const MAX_CART_LINE_QUANTITY = 99;
+
 export type CartAction =
 	| { type: "add"; line: Omit<CartLine, "quantity"> }
 	| { type: "increase"; lineId: string }
@@ -53,9 +55,11 @@ export function createCartLine(
 }
 
 function mergeMatchingLines(cart: CartLine[]) {
-	return cart.reduce<CartLine[]>((merged, line) => {
+	return cart.reduce<CartLine[] | null>((merged, line) => {
+		if (!merged) return null;
 		const existing = merged.find((candidate) => candidate.id === line.id);
 		if (!existing) return [...merged, line];
+		if (existing.quantity + line.quantity > MAX_CART_LINE_QUANTITY) return null;
 		return merged.map((candidate) =>
 			candidate.id === line.id
 				? { ...candidate, quantity: candidate.quantity + line.quantity }
@@ -64,12 +68,37 @@ function mergeMatchingLines(cart: CartLine[]) {
 	}, []);
 }
 
+export function reconfigureCartLines(
+	cart: CartLine[],
+	reconfigurations: ReadonlyArray<{ lineId: string; selectedModifiers: SelectedModifier[] }>,
+) {
+	const updates = new Map(
+		reconfigurations.map((update) => [update.lineId, update.selectedModifiers]),
+	);
+	const changed = cart.map((line) => {
+		const selectedModifiers = updates.get(line.id);
+		if (!selectedModifiers) return line;
+		return {
+			...line,
+			...createCartLine(
+				{ id: line.menuItemId, name: line.itemName, price: line.basePrice },
+				selectedModifiers,
+			),
+		};
+	});
+	const merged = mergeMatchingLines(changed);
+	return merged
+		? { lines: merged, exceededQuantityLimit: false as const }
+		: { lines: cart, exceededQuantityLimit: true as const };
+}
+
 export function cartReducer(cart: CartLine[], action: CartAction): CartLine[] {
 	switch (action.type) {
 		case "add": {
 			const existingLine = cart.find((line) => line.id === action.line.id);
 
 			if (existingLine) {
+				if (existingLine.quantity >= MAX_CART_LINE_QUANTITY) return cart;
 				return cart.map((line) =>
 					line.id === action.line.id ? { ...line, quantity: line.quantity + 1 } : line,
 				);
@@ -79,7 +108,9 @@ export function cartReducer(cart: CartLine[], action: CartAction): CartLine[] {
 		}
 		case "increase":
 			return cart.map((line) =>
-				line.id === action.lineId ? { ...line, quantity: line.quantity + 1 } : line,
+				line.id === action.lineId && line.quantity < MAX_CART_LINE_QUANTITY
+					? { ...line, quantity: line.quantity + 1 }
+					: line,
 			);
 		case "decrease":
 			return cart.map((line) =>
@@ -90,7 +121,7 @@ export function cartReducer(cart: CartLine[], action: CartAction): CartLine[] {
 		case "remove":
 			return cart.filter((line) => line.id !== action.lineId);
 		case "restore":
-			return cart.some((line) => line.id === action.line.id)
+			return action.line.quantity > MAX_CART_LINE_QUANTITY || cart.some((line) => line.id === action.line.id)
 				? cart
 				: [...cart, action.line];
 		case "hydrate":
@@ -98,18 +129,10 @@ export function cartReducer(cart: CartLine[], action: CartAction): CartLine[] {
 		case "clear":
 			return [];
 		case "reconfigure":
-			return mergeMatchingLines(
-				cart.map((line) => {
-					if (line.id !== action.lineId) return line;
-					return {
-						...line,
-						...createCartLine(
-							{ id: line.menuItemId, name: line.itemName, price: line.basePrice },
-							action.selectedModifiers,
-						),
-					};
-				}),
-			);
+			return reconfigureCartLines(cart, [{
+				lineId: action.lineId,
+				selectedModifiers: action.selectedModifiers,
+			}]).lines;
 	}
 }
 

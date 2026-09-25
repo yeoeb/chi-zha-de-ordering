@@ -41,7 +41,13 @@ function postQuote() {
 	});
 }
 
-function postOrder(idempotencyKey: string) {
+async function postOrder(idempotencyKey: string) {
+	let quoteFingerprint = "0".repeat(64);
+	const quoteResponse = await postQuote();
+	if (quoteResponse.ok) {
+		quoteFingerprint = ((await quoteResponse.json()) as { quoteFingerprint: string })
+			.quoteFingerprint;
+	}
 	return exports.default.fetch("https://example.com/api/orders", {
 		method: "POST",
 		headers: {
@@ -51,6 +57,7 @@ function postOrder(idempotencyKey: string) {
 		body: JSON.stringify({
 			customerName: "王小明",
 			customerPhone: "0912345678",
+			quoteFingerprint,
 			items: orderItems,
 		}),
 	});
@@ -93,6 +100,16 @@ async function getMenuItem(itemId: number) {
 }
 
 describe("Merchant item availability", () => {
+	it("keeps concurrent same-target sold-out operations idempotent", async () => {
+		const responses = await Promise.all([
+			postAction("/api/merchant/menu-items/1/sold-out"),
+			postAction("/api/merchant/menu-items/1/sold-out"),
+		]);
+
+		expect(responses.map((response) => response.status)).toEqual([200, 200]);
+		expect((await getMenuItem(1)).item?.isAvailable).toBe(false);
+	});
+
 	it("marks an item sold out, keeps it visible, rejects new checkout, and restores it", async () => {
 		expect((await getMenuItem(1)).item?.isAvailable).toBe(true);
 

@@ -168,6 +168,16 @@ describe("GET /api/orders/by-token/:token", () => {
 		expect(await response.json()).toMatchObject({ error: { code: "ORDER_NOT_FOUND" } });
 	});
 
+	it("rejects malformed lookup tokens without exposing a different error", async () => {
+		const response = await exports.default.fetch(
+			"https://example.com/api/orders/by-token/not-a-token",
+		);
+
+		expect(response.status).toBe(404);
+		expect(response.headers.get("Cache-Control")).toContain("no-store");
+		expect(await response.json()).toMatchObject({ error: { code: "ORDER_NOT_FOUND" } });
+	});
+
 	it("reflects Merchant transitions while keeping the persisted ETA", async () => {
 		await insertOrder("transition-order");
 

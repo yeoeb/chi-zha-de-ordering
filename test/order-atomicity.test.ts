@@ -1,5 +1,9 @@
 import { env } from "cloudflare:workers";
 import { beforeAll, describe, expect, it } from "vitest";
+import {
+	createQuoteFingerprint,
+	validateAndPriceCart,
+} from "../src/worker/checkout-quote";
 import { createOrder } from "../src/worker/order-creation";
 
 beforeAll(async () => {
@@ -18,6 +22,10 @@ beforeAll(async () => {
 
 describe("Order atomicity", () => {
 	it("rolls back the Order when a required snapshot write fails", async () => {
+		const items = [{ menuItemId: 1, quantity: 1, modifierOptionIds: [] }];
+		const quoteFingerprint = await createQuoteFingerprint(
+			await validateAndPriceCart(env.DB, items),
+		);
 		await expect(
 			createOrder(
 				env.DB,
@@ -25,7 +33,8 @@ describe("Order atomicity", () => {
 					customerName: "測試顧客",
 					customerPhone: "0912345678",
 					specialOrder: false,
-					items: [{ menuItemId: 1, quantity: 1, modifierOptionIds: [] }],
+					quoteFingerprint,
+					items,
 				},
 				"atomic-failure-key",
 				new Date("2026-09-06T04:00:00.000Z"),

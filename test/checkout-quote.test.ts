@@ -115,21 +115,88 @@ describe("authoritative checkout pricing", () => {
 			total: number;
 			leadMinutes: number;
 			estimatedReadyAt: string;
+			quoteFingerprint: string;
 		};
 
 		expect(response.status).toBe(200);
 		expect(quote).toMatchObject({
 			items: [{ name: "雞排", unitPrice: 85, lineTotal: 170 }],
 			total: 170,
-			leadMinutes: 15,
+			leadMinutes: 20,
 		});
 		const estimatedReadyAt = Date.parse(quote.estimatedReadyAt);
-		expect(estimatedReadyAt).toBeGreaterThanOrEqual(before + 15 * 60_000);
-		expect(estimatedReadyAt).toBeLessThanOrEqual(after + 15 * 60_000);
+		expect(estimatedReadyAt).toBeGreaterThanOrEqual(before + 20 * 60_000);
+		expect(estimatedReadyAt).toBeLessThanOrEqual(after + 25 * 60_000);
+		expect(new Date(estimatedReadyAt).getUTCMinutes() % 5).toBe(0);
+		expect(quote.quoteFingerprint).toMatch(/^[0-9a-f]{64}$/);
+	});
+
+	it("includes the current web-order queue in the preview ETA", async () => {
+		await env.DB.batch([
+			env.DB.prepare(
+				`INSERT INTO orders (
+					id, public_lookup_token, order_number, status, total_amount,
+					estimated_ready_at, created_at, customer_name, customer_phone,
+					special_order, idempotency_key, request_fingerprint
+				) VALUES ('quote-queue-normal', ?, 'QUOTE-Q1', 'pending', 0,
+					'2026-09-23T01:15:00.000Z', '2026-09-23T01:00:00.000Z',
+					'Queue', '0900000000', 0, 'quote-queue-normal', ?)`,
+			).bind("1".repeat(64), "a".repeat(64)),
+			env.DB.prepare(
+				`INSERT INTO orders (
+					id, public_lookup_token, order_number, status, total_amount,
+					estimated_ready_at, created_at, customer_name, customer_phone,
+					special_order, idempotency_key, request_fingerprint
+				) VALUES ('quote-queue-special', ?, 'QUOTE-Q2', 'accepted', 0,
+					'2026-09-23T01:25:00.000Z', '2026-09-23T01:00:00.000Z',
+					'Queue', '0900000000', 1, 'quote-queue-special', ?)`,
+			).bind("2".repeat(64), "b".repeat(64)),
+		]);
+		const response = await exports.default.fetch("https://example.com/api/checkout/quote", {
+			method: "POST",
+			headers: { "content-type": "application/json" },
+			body: JSON.stringify({ items: [selection(3, [])] }),
+		});
+		const quote = (await response.json()) as { leadMinutes: number };
+
+		expect(response.status).toBe(200);
+		expect(quote.leadMinutes).toBe(40);
 	});
 });
 
 describe("checkout selection validation", () => {
+	it("reports every identifiable invalid Cart line with its request index", async () => {
+		const response = await exports.default.fetch("https://example.com/api/checkout/quote", {
+			method: "POST",
+			headers: { "content-type": "application/json" },
+			body: JSON.stringify({
+				items: [
+					selection(2, []),
+					selection(1, [10]),
+					selection(1, [10, 40]),
+					selection(999, []),
+				],
+			}),
+		});
+
+		expect(response.status).toBe(422);
+		expect(await response.json()).toMatchObject({
+			error: {
+				code: "UNAVAILABLE_ITEM",
+				lineIssues: [
+					{ itemIndex: 0, menuItemId: 2, code: "UNAVAILABLE_ITEM" },
+					{
+						itemIndex: 2,
+						menuItemId: 1,
+						code: "INVALID_MODIFIER_OPTION",
+						modifierOptionId: 40,
+					},
+					{ itemIndex: 3, menuItemId: 999, code: "UNKNOWN_ITEM" },
+				],
+			},
+		});
+	});
+
 	it("rejects an unavailable item", () =>
 		expectQuoteError(selection(2, []), "UNAVAILABLE_ITEM"));
 

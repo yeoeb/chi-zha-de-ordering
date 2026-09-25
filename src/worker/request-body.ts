@@ -32,14 +32,27 @@ export async function readBoundedJson(request: Request): Promise<unknown> {
 		);
 	}
 
-	const body = await request.text();
+	const reader = request.body?.getReader();
+	const decoder = new TextDecoder();
+	let body = "";
+	let receivedBytes = 0;
 
-	if (new TextEncoder().encode(body).byteLength > MAX_PUBLIC_REQUEST_BODY_BYTES) {
-		throw new RequestBodyError(
-			413,
-			"REQUEST_BODY_TOO_LARGE",
-			`Request body must not exceed ${MAX_PUBLIC_REQUEST_BODY_BYTES} bytes`,
-		);
+	if (reader) {
+		while (true) {
+			const { done, value } = await reader.read();
+			if (done) break;
+			receivedBytes += value.byteLength;
+			if (receivedBytes > MAX_PUBLIC_REQUEST_BODY_BYTES) {
+				await reader.cancel();
+				throw new RequestBodyError(
+					413,
+					"REQUEST_BODY_TOO_LARGE",
+					`Request body must not exceed ${MAX_PUBLIC_REQUEST_BODY_BYTES} bytes`,
+				);
+			}
+			body += decoder.decode(value, { stream: true });
+		}
+		body += decoder.decode();
 	}
 
 	try {

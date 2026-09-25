@@ -106,7 +106,7 @@ try {
 	);
 
 	if (
-		summary.migrationCount !== 13 ||
+		summary.migrationCount !== 16 ||
 		summary.storeCount !== 1 ||
 		summary.menuItemCount !== 6 ||
 		summary.seasoningGroupCount !== 2 ||
@@ -193,6 +193,25 @@ try {
 	}
 	if (!orderColumns?.some((column) => column.name === "packaging_preference")) {
 		throw new Error("Fresh D1 is missing orders.packaging_preference");
+	}
+	if (!orderColumns?.some((column) => column.name === "order_source")) {
+		throw new Error("Fresh D1 is missing orders.order_source");
+	}
+	for (const name of ["shortage_policy", "original_total_amount", "shortage_revision", "cancelled_at", "cancellation_reason"]) {
+		if (!orderColumns?.some((column) => column.name === name)) {
+			throw new Error(`Fresh D1 is missing orders.${name}`);
+		}
+	}
+	const shortageRequestColumns = runWrangler([
+		"d1",
+		"execute",
+		database,
+		"--json",
+		"--command",
+		"PRAGMA table_info(order_shortage_requests)",
+	], true)?.[0]?.results;
+	if (!shortageRequestColumns?.some((column) => column.name === "request_fingerprint" && column.notnull === 1)) {
+		throw new Error("Fresh D1 is missing the required shortage request fingerprint");
 	}
 	const menuItemColumns = runWrangler([
 		"d1",
@@ -285,6 +304,39 @@ try {
 		destructiveMigrationPattern.test(packagingMigration)
 	) {
 		throw new Error("Migration 0013 is missing the additive packaging preference schema or contains a forbidden write");
+	}
+	const orderSourceMigration = readFileSync(
+		join(root, "migrations", "0014_add_order_source.sql"),
+		"utf8",
+	);
+	if (
+		!orderSourceMigration.includes("ADD COLUMN order_source") ||
+		!orderSourceMigration.includes("'online', 'onsite'") ||
+		destructiveMigrationPattern.test(orderSourceMigration)
+	) {
+		throw new Error("Migration 0014 is missing the additive order source schema or contains a forbidden write");
+	}
+	const shortageMigration = readFileSync(
+		join(root, "migrations", "0015_add_order_shortage_and_cancellation.sql"),
+		"utf8",
+	);
+	if (
+		!shortageMigration.includes("ADD COLUMN shortage_policy") ||
+		!shortageMigration.includes("CREATE TABLE order_item_shortages") ||
+		!shortageMigration.includes("CREATE TABLE order_shortage_requests") ||
+		destructiveMigrationPattern.test(shortageMigration)
+	) {
+		throw new Error("Migration 0015 is missing additive shortage/cancellation schema or contains a forbidden write");
+	}
+	const shortageFingerprintMigration = readFileSync(
+		join(root, "migrations", "0016_add_shortage_request_fingerprint.sql"),
+		"utf8",
+	);
+	if (
+		!shortageFingerprintMigration.includes("ADD COLUMN request_fingerprint TEXT NOT NULL") ||
+		destructiveMigrationPattern.test(shortageFingerprintMigration)
+	) {
+		throw new Error("Migration 0016 is missing the additive shortage request fingerprint or contains a forbidden write");
 	}
 	const pushFixtureCounts = firstResult(
 		runWrangler([
@@ -393,7 +445,7 @@ try {
 		"--command",
 		"SELECT COUNT(*) AS migrationCount FROM d1_migrations",
 	], true);
-	if (firstResult(secondHistory).migrationCount !== 13) {
+	if (firstResult(secondHistory).migrationCount !== 16) {
 		throw new Error("Second fresh D1 migration apply changed migration history");
 	}
 	if (firstResult(runWrangler(["d1", "execute", database, "--json", "--command", "PRAGMA quick_check"], true)).quick_check !== "ok") {
@@ -401,7 +453,7 @@ try {
 	}
 
 	console.log(
-		"Fresh D1 PASS: 13 sequential migrations, additive packaging preference, Admin menu metadata and customer_note schema, API-backed fries seasoning and spice fixtures, Store state version/audit constraints, idempotent second apply, required store row, replaceable development seed, untouched historical LINE tables, additive Web Push tables, no Store/Push fixtures, and quick_check verified.",
+		"Fresh D1 PASS: 16 sequential migrations, additive order source, packaging preference, shortage/cancellation ledgers and request fingerprints, Admin menu metadata and customer_note schema, API-backed fries seasoning and spice fixtures, Store state version/audit constraints, idempotent second apply, required store row, replaceable development seed, untouched historical LINE tables, additive Web Push tables, no Store/Push fixtures, and quick_check verified.",
 	);
 } finally {
 	const resolvedPersistence = resolve(persistenceDirectory);

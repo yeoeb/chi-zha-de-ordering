@@ -1,0 +1,138 @@
+import { cleanup, render, screen, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import CustomerOrderStatus from "../src/react-app/CustomerOrderStatus";
+import { MerchantOrderCard } from "../src/react-app/MerchantComponents";
+import { CustomerHeader } from "../src/react-app/CustomerComponents";
+import type { CustomerOrder } from "../src/react-app/order-status";
+import type { MerchantOrder } from "../src/react-app/merchant-operations";
+
+const token = "a".repeat(64);
+
+function customerOrder(overrides: Partial<CustomerOrder> = {}): CustomerOrder {
+	return {
+		publicLookupToken: token,
+		orderNumber: "CZ-001",
+		status: "pending",
+		orderSource: "online",
+		customerName: "王小明",
+		customerNote: "<img src=x onerror=alert(1)>",
+		packagingPreference: "together",
+		createdAt: "2026-09-25T03:50:00.000Z",
+		estimatedReadyAt: new Date(Date.now() + 9 * 60_000).toISOString(),
+		total: 100,
+		originalTotal: 170,
+		shortagePolicy: "continue_available",
+		shortageRevision: 1,
+		cancelledAt: null,
+		cancellationReason: null,
+		items: [{ name: "雞排", unitPrice: 100, quantity: 1, lineTotal: 100, modifiers: [] }],
+		reorderItems: [{ menuItemId: 1, quantity: 1, modifierOptionIds: [] }],
+		shortages: [{ name: "薯條", quantity: 1, amountDeducted: 70 }],
+		...overrides,
+	};
+}
+
+function merchantOrder(): MerchantOrder {
+	return {
+		id: "order-1", orderNumber: "001", status: "pending", orderSource: "online",
+		total: 170, originalTotal: 170, shortagePolicy: "continue_available", shortageRevision: 0,
+		cancelledAt: null, cancellationReason: null,
+		estimatedReadyAt: "2026-09-25T05:00:00.000Z", createdAt: "2026-09-25T04:00:00.000Z",
+		customerName: "王小明", customerPhone: "0912345678", customerNote: null,
+		packagingPreference: "together", specialOrder: false, shortages: [],
+		items: [
+			{ id: "line-a", name: "雞排", quantity: 2, lineTotal: 140, modifiers: [] },
+			{ id: "line-b", name: "薯條", quantity: 1, lineTotal: 30, modifiers: [] },
+		],
+	};
+}
+
+beforeEach(() => {
+	localStorage.clear();
+	vi.stubGlobal("fetch", vi.fn());
+});
+
+afterEach(() => {
+	cleanup();
+	vi.restoreAllMocks();
+});
+
+describe("release Customer and Merchant Order features", () => {
+	it("shows an unread badge on the persistent My Orders entry", () => {
+		render(<CustomerHeader
+			displayName="吃炸的"
+			isAcceptingOrders
+			cartItemCount={0}
+			onCartClick={() => undefined}
+			hasUnreadOrderUpdate
+			onOrdersClick={() => undefined}
+		/>);
+		expect(screen.getByRole("button", { name: "我的訂單，有未讀變更" })).toBeTruthy();
+		expect(screen.getByText("!")).toBeTruthy();
+	});
+
+	it("shows the adjusted payable amount, shortage history, countdown, and renders hostile notes as text", async () => {
+		render(<CustomerOrderStatus publicLookupToken={token} initialOrder={customerOrder()} />);
+		const alert = screen.getByRole("alert");
+		expect(within(alert).getByText("最新應付金額 NT$ 100")).toBeTruthy();
+		expect(within(alert).getByText(/原價 NT\$ 170/)).toBeTruthy();
+		expect(screen.getByText(/即將可以取餐/)).toBeTruthy();
+		expect(screen.getByText("<img src=x onerror=alert(1)>")).toBeTruthy();
+		expect(document.querySelector("img")).toBeNull();
+		await userEvent.click(within(alert).getByRole("button", { name: "我知道了" }));
+		expect(screen.queryByText("部分餐點已售完")).toBeNull();
+		expect(screen.getByText("餐點調整紀錄")).toBeTruthy();
+	});
+
+	it("requires cancellation confirmation and applies the authoritative cancelled snapshot", async () => {
+		vi.spyOn(window, "confirm").mockReturnValue(true);
+		const cancelled = customerOrder({ status: "cancelled", total: 0, cancelledAt: new Date().toISOString(), cancellationReason: "customer_cancelled" });
+		const fetchMock = vi.mocked(fetch).mockResolvedValue(new Response(JSON.stringify({ order: cancelled }), { status: 200, headers: { "Content-Type": "application/json" } }));
+		render(<CustomerOrderStatus publicLookupToken={token} initialOrder={customerOrder({ shortages: [], shortageRevision: 0, originalTotal: 100 })} />);
+		await userEvent.click(screen.getByRole("button", { name: "取消訂單" }));
+		expect(fetchMock).toHaveBeenCalledTimes(1);
+		expect(await screen.findByRole("heading", { name: "訂單已取消" })).toBeTruthy();
+		expect(screen.getByText("NT$ 0")).toBeTruthy();
+	});
+
+	it("lets Merchant submit an exact partial shortage quantity", async () => {
+		const onShortage = vi.fn(async () => true);
+		render(<MerchantOrderCard order={merchantOrder()} isNew={false} isProcessing={false} onAction={() => undefined} onShortage={onShortage} />);
+		await userEvent.click(screen.getByRole("button", { name: "品項不足" }));
+		const panel = screen.getByText("請填寫本次無法供應的數量。").parentElement as HTMLElement;
+		await userEvent.selectOptions(within(panel).getAllByRole("combobox")[0]!, "1");
+		await userEvent.click(within(panel).getByRole("button", { name: "確認品項不足" }));
+		expect(onShortage).toHaveBeenCalledWith([{ orderItemId: "line-a", quantity: 1 }]);
+	});
+
+	it("keeps the current Merchant total prominent and marks adjusted Orders briefly", () => {
+		render(<MerchantOrderCard
+			order={{
+				...merchantOrder(),
+				status: "accepted",
+				total: 100,
+				shortageRevision: 1,
+				shortages: [{ orderItemId: "line-b", name: "薯條", quantity: 1, amountDeducted: 70 }],
+			}}
+			isNew={false}
+			isProcessing={false}
+			onAction={() => undefined}
+		/>);
+		expect(screen.getByText("NT$ 100")).toBeTruthy();
+		expect(screen.getByText("已調整")).toBeTruthy();
+		expect(screen.getByText("餐點調整")).toBeTruthy();
+	});
+
+	it("renders a hostile Customer note as text in the Merchant Order card", () => {
+		const hostileNote = "<script>window.__merchant_xss = true</script>";
+		render(<MerchantOrderCard
+			order={{ ...merchantOrder(), customerNote: hostileNote }}
+			isNew={false}
+			isProcessing={false}
+			onAction={() => undefined}
+		/>);
+		expect(screen.getByText(hostileNote)).toBeTruthy();
+		expect(document.querySelector("script")).toBeNull();
+	});
+});
