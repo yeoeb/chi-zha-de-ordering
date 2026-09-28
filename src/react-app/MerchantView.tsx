@@ -116,11 +116,9 @@ export default function MerchantView() {
 	const [menuCategories, setMenuCategories] = useState<MerchantMenuCategory[]>([]);
 	const [activeView, setActiveView] = useState<MerchantViewName>("orders");
 	const [workflowView, setWorkflowView] = useState<MerchantWorkflowView>("pending");
-	const [pendingDisplay, setPendingDisplay] = useState<"focus" | "list">("focus");
-	const [selectedPendingId, setSelectedPendingId] = useState<string | null>(null);
-	const [selectedAcceptedId, setSelectedAcceptedId] = useState<string | null>(null);
 	const [selectedHistoryId, setSelectedHistoryId] = useState<string | null>(null);
 	const [lastAcceptedOrderId, setLastAcceptedOrderId] = useState<string | null>(null);
+	const [rejectCandidate, setRejectCandidate] = useState<MerchantOrder | null>(null);
 	const [actionFeedback, setActionFeedback] = useState<MerchantActionFeedback | null>(null);
 	const [processingAction, setProcessingAction] = useState<MerchantAction | null>(null);
 	const [largeText, setLargeText] = useState(readLargeTextPreference);
@@ -144,12 +142,8 @@ export default function MerchantView() {
 	const newestStoreVersion = useRef(-1);
 	const ordersRef = useRef<MerchantOrder[]>([]);
 	const historyOrdersRef = useRef<MerchantOrder[]>([]);
-	const selectedPendingIdRef = useRef<string | null>(null);
-	const selectedAcceptedIdRef = useRef<string | null>(null);
 	ordersRef.current = orders;
 	historyOrdersRef.current = historyOrders;
-	selectedPendingIdRef.current = selectedPendingId;
-	selectedAcceptedIdRef.current = selectedAcceptedId;
 
 	useEffect(() => {
 		try {
@@ -282,27 +276,14 @@ export default function MerchantView() {
 				if (discovered.length > 0) {
 					setNewOrderIds((current) => new Set([...current, ...discovered]));
 				}
-				const previouslySelectedPending = ordersRef.current.find(
-					(order) => order.id === selectedPendingIdRef.current && order.status === "pending",
+				const changedOrder = ordersRef.current.find((previous) =>
+					(previous.status === "pending" || previous.status === "accepted") &&
+					!ordersResult.orders.some((current) => current.id === previous.id && current.status === previous.status),
 				);
-				const previouslySelectedAccepted = ordersRef.current.find(
-					(order) => order.id === selectedAcceptedIdRef.current && order.status === "accepted",
-				);
-				const pendingStillCurrent = previouslySelectedPending
-					? ordersResult.orders.some(
-						(order) => order.id === previouslySelectedPending.id && order.status === "pending",
-					)
-					: true;
-				const acceptedStillCurrent = previouslySelectedAccepted
-					? ordersResult.orders.some(
-						(order) => order.id === previouslySelectedAccepted.id && order.status === "accepted",
-					)
-					: true;
-				if (!orderActionInFlightRef.current && (!pendingStillCurrent || !acceptedStillCurrent)) {
-					const changedOrder = previouslySelectedPending ?? previouslySelectedAccepted;
+				if (!orderActionInFlightRef.current && changedOrder) {
 					setActionFeedback({
 						tone: "warning",
-						message: `#${changedOrder?.orderNumber ?? "訂單"} 已由其他裝置更新，畫面已同步最新狀態。`,
+						message: `#${changedOrder.orderNumber} 已由其他裝置更新，畫面已同步最新狀態。`,
 					});
 				}
 				ordersRef.current = ordersResult.orders;
@@ -344,20 +325,6 @@ export default function MerchantView() {
 	}, [refreshVersion]);
 
 	useEffect(() => {
-		const pending = sortOrdersByReadyDeadline(orders.filter((order) => order.status === "pending"));
-		setSelectedPendingId((current) =>
-			current && pending.some((order) => order.id === current) ? current : pending[0]?.id ?? null,
-		);
-	}, [orders]);
-
-	useEffect(() => {
-		const accepted = sortOrdersByReadyDeadline(orders.filter((order) => order.status === "accepted"));
-		setSelectedAcceptedId((current) =>
-			current && accepted.some((order) => order.id === current) ? current : accepted[0]?.id ?? null,
-		);
-	}, [orders]);
-
-	useEffect(() => {
 		setSelectedHistoryId((current) =>
 			current && historyOrders.some((order) => order.id === current)
 				? current
@@ -396,11 +363,6 @@ export default function MerchantView() {
 
 		if (action === "accept") {
 			setLastAcceptedOrderId(updatedOrder.id);
-			setSelectedAcceptedId(updatedOrder.id);
-			setSelectedPendingId(
-				nextActive.find((order) => order.status === "pending")?.id ?? null,
-			);
-			setPendingDisplay("focus");
 			setActionFeedback({
 				tone: "success",
 				message: `已接單 #${updatedOrder.orderNumber}`,
@@ -415,14 +377,8 @@ export default function MerchantView() {
 		historyOrdersRef.current = nextHistory;
 		setHistoryOrders(nextHistory);
 		if (action === "reject") {
-			setSelectedPendingId(
-				nextActive.find((order) => order.status === "pending")?.id ?? null,
-			);
 			setActionFeedback({ tone: "success", message: `已拒單 #${updatedOrder.orderNumber}` });
 		} else {
-			setSelectedAcceptedId(
-				nextActive.find((order) => order.status === "accepted")?.id ?? null,
-			);
 			setActionFeedback({ tone: "success", message: `已完成 #${updatedOrder.orderNumber}` });
 		}
 	}
@@ -455,11 +411,8 @@ export default function MerchantView() {
 		}
 	}
 
-	async function performAction(order: MerchantOrder, action: MerchantAction) {
+	async function executeOrderAction(order: MerchantOrder, action: MerchantAction) {
 		if (orderActionInFlightRef.current) return;
-		if (action === "reject" && !window.confirm(`確定拒絕訂單 #${order.orderNumber}？`)) {
-			return;
-		}
 
 		orderActionInFlightRef.current = true;
 		const orderId = order.id;
@@ -514,6 +467,14 @@ export default function MerchantView() {
 		}
 	}
 
+	function requestOrderAction(order: MerchantOrder, action: MerchantAction) {
+		if (action === "reject") {
+			setRejectCandidate(order);
+			return;
+		}
+		void executeOrderAction(order, action);
+	}
+
 	async function performShortage(order: MerchantOrder, items: Array<{ orderItemId: string; quantity: number }>) {
 		if (orderActionInFlightRef.current) return false;
 		const attemptKey = `${order.id}:${JSON.stringify(items)}`;
@@ -539,11 +500,15 @@ export default function MerchantView() {
 			shortageAttemptIdsRef.current.delete(attemptKey);
 			const result = await response.json() as { order: MerchantOrder };
 			applyOrderCollections(await fetchOrderCollections());
+			setRefreshVersion((current) => current + 1);
+			const shortageNames = items.map((item) =>
+				order.items.find((candidate) => candidate.id === item.orderItemId)?.name,
+			).filter((name): name is string => Boolean(name));
 			setActionFeedback({
 				tone: "success",
 				message: result.order.status === "cancelled"
-					? `#${order.orderNumber} 已依顧客選擇取消`
-					: `#${order.orderNumber} 已更新，應付 NT$ ${result.order.total}`,
+					? `#${order.orderNumber} 已依顧客選擇取消；${shortageNames.join("、")}已停售`
+					: `#${order.orderNumber} 已更新，${shortageNames.join("、")}已停售，應付 NT$ ${result.order.total}`,
 			});
 			return true;
 		} catch {
@@ -876,13 +841,6 @@ export default function MerchantView() {
 	const acceptedOrders = sortOrdersByReadyDeadline(
 		orders.filter((order) => order.status === "accepted"),
 	);
-	const selectedPendingOrder =
-		pendingOrders.find((order) => order.id === selectedPendingId) ?? pendingOrders[0] ?? null;
-	const selectedPendingIndex = selectedPendingOrder
-		? pendingOrders.findIndex((order) => order.id === selectedPendingOrder.id)
-		: -1;
-	const selectedAcceptedOrder =
-		acceptedOrders.find((order) => order.id === selectedAcceptedId) ?? acceptedOrders[0] ?? null;
 	const selectedHistoryOrder =
 		historyOrders.find((order) => order.id === selectedHistoryId) ?? historyOrders[0] ?? null;
 	return (
@@ -920,6 +878,45 @@ export default function MerchantView() {
 					else { setActiveView("orders"); setWorkflowView(next); }
 				}}
 			/>
+
+			{store && (
+				<section
+					className={`merchant-store-status-panel ${store.is_accepting_orders ? "accepting" : "paused"}`}
+					aria-label="全店接單狀態"
+					data-testid="store-control"
+				>
+					<div>
+						<span className="merchant-store-state-label">
+							<span className="merchant-store-state-dot" aria-hidden="true" />
+							<strong>{store.is_accepting_orders ? "接單中" : "已暫停接單"}</strong>
+						</span>
+						<small className="store-sync-status">
+							權威狀態版本 {store.stateVersion}・最後同步 {lastSyncAt ? formatDateTime(lastSyncAt.toISOString()) : "尚未同步"}
+							{lastStoreOperation ? `・最近操作 ${lastStoreOperation.outcome}` : ""}
+						</small>
+					</div>
+					<div className="merchant-store-actions">
+						<button
+							type="button"
+							className="pause-store-button"
+							hidden={!store.is_accepting_orders}
+							disabled={storeMutationInFlight || !store.is_accepting_orders}
+							onClick={() => void pauseStore()}
+						>
+							{storeMutationInFlight ? "處理中…" : "暫停接單"}
+						</button>
+						<button
+							type="button"
+							className="resume-store-button"
+							hidden={store.is_accepting_orders}
+							disabled={storeMutationInFlight || store.is_accepting_orders || !merchantAccessHealthy}
+							onClick={() => void resumeStore()}
+						>
+							{storeMutationInFlight ? "處理中…" : "恢復接單"}
+						</button>
+					</div>
+				</section>
+			)}
 
 			{SHOW_NOTIFICATION_CONTROLS && <section
 				className={`merchant-connection-status ${connectionState}`}
@@ -986,7 +983,10 @@ export default function MerchantView() {
 									className="recent-order-link"
 									onClick={() => {
 										setWorkflowView("accepted");
-										setSelectedAcceptedId(lastAcceptedOrderId);
+										window.setTimeout(() => {
+											const element = document.getElementById(`merchant-order-${lastAcceptedOrderId}`);
+											if (element && typeof element.scrollIntoView === "function") element.scrollIntoView({ block: "start" });
+										}, 0);
 									}}
 								>
 									查看剛接的訂單
@@ -997,17 +997,7 @@ export default function MerchantView() {
 						{workflowView === "pending" && (
 							<section className="merchant-workflow-panel" aria-labelledby="pending-orders-heading">
 								<header className="merchant-workflow-heading">
-									<div>
-										<h2 id="pending-orders-heading">待接單</h2>
-										{selectedPendingIndex >= 0 && pendingDisplay === "focus" && (
-											<p>待接單 {selectedPendingIndex + 1}／{pendingOrders.length}</p>
-										)}
-									</div>
-									{pendingOrders.length > 0 && (
-										<button type="button" onClick={() => setPendingDisplay((current) => current === "focus" ? "list" : "focus")}>
-											{pendingDisplay === "focus" ? "返回待接單清單" : "查看目前訂單"}
-										</button>
-									)}
+									<div><h2 id="pending-orders-heading">待接單</h2><p>依預計完成時間排序，共 {pendingOrders.length} 筆</p></div>
 								</header>
 
 								{!isLoading && pendingOrders.length === 0 && (
@@ -1018,37 +1008,21 @@ export default function MerchantView() {
 									</div>
 								)}
 
-								{pendingDisplay === "list" && pendingOrders.length > 0 && (
-									<ul className="merchant-order-picker" aria-label="待接單清單">
+								{pendingOrders.length > 0 && (
+									<div className="merchant-order-card-list" aria-label="待接單清單">
 										{pendingOrders.map((order) => (
-											<li key={order.id}>
-												<button type="button" onClick={() => {
-													setSelectedPendingId(order.id);
-													setPendingDisplay("focus");
-												}}>
-													<strong>{formatTaipeiDeadlineTime(order.estimatedReadyAt) ?? "截止時間未記錄"}</strong>
-											<span>{order.items.reduce((total, item) => total + item.quantity, 0)} 份</span>
-												</button>
-											</li>
+											<div id={`merchant-order-${order.id}`} key={order.id}>
+												<MerchantOrderCard
+													order={order}
+													isNew={newOrderIds.has(order.id)}
+													isProcessing={processingControl === `order-${order.id}`}
+													processingAction={processingControl === `order-${order.id}` ? processingAction : null}
+													onAction={(action) => requestOrderAction(order, action)}
+													onShortage={(items) => performShortage(order, items)}
+												/>
+											</div>
 										))}
-									</ul>
-								)}
-
-								{pendingDisplay === "focus" && selectedPendingOrder && (
-									<>
-										<div className="merchant-order-pager" aria-label="切換待接單">
-											<button type="button" disabled={selectedPendingIndex <= 0} onClick={() => setSelectedPendingId(pendingOrders[selectedPendingIndex - 1]?.id ?? null)}>上一筆</button>
-											<button type="button" disabled={selectedPendingIndex >= pendingOrders.length - 1} onClick={() => setSelectedPendingId(pendingOrders[selectedPendingIndex + 1]?.id ?? null)}>下一筆</button>
-										</div>
-										<MerchantOrderCard
-											order={selectedPendingOrder}
-											isNew={newOrderIds.has(selectedPendingOrder.id)}
-											isProcessing={processingControl === `order-${selectedPendingOrder.id}`}
-											processingAction={processingControl === `order-${selectedPendingOrder.id}` ? processingAction : null}
-											onAction={(action) => void performAction(selectedPendingOrder, action)}
-											onShortage={(items) => performShortage(selectedPendingOrder, items)}
-										/>
-									</>
+									</div>
 								)}
 							</section>
 						)}
@@ -1061,28 +1035,20 @@ export default function MerchantView() {
 								{acceptedOrders.length === 0 ? (
 									<div className="merchant-empty-workflow"><strong>目前沒有製作中訂單</strong></div>
 								) : (
-									<>
-										<ul className="merchant-order-picker" aria-label="製作中訂單清單">
-											{acceptedOrders.map((order) => (
-												<li key={order.id}>
-													<button type="button" aria-current={selectedAcceptedOrder?.id === order.id ? "true" : undefined} onClick={() => setSelectedAcceptedId(order.id)}>
-														<strong>{formatTaipeiDeadlineTime(order.estimatedReadyAt) ?? "截止時間未記錄"}{lastAcceptedOrderId === order.id ? " · 剛接" : ""}</strong>
-												<span>{order.items.reduce((total, item) => total + item.quantity, 0)} 份</span>
-													</button>
-												</li>
-											))}
-										</ul>
-										{selectedAcceptedOrder && (
+									<div className="merchant-order-card-list" aria-label="製作中訂單清單">
+										{acceptedOrders.map((order) => (
+											<div id={`merchant-order-${order.id}`} key={order.id}>
 											<MerchantOrderCard
-												order={selectedAcceptedOrder}
+												order={order}
 												isNew={false}
-												isProcessing={processingControl === `order-${selectedAcceptedOrder.id}`}
-												processingAction={processingControl === `order-${selectedAcceptedOrder.id}` ? processingAction : null}
-												onAction={(action) => void performAction(selectedAcceptedOrder, action)}
-												onShortage={(items) => performShortage(selectedAcceptedOrder, items)}
+												isProcessing={processingControl === `order-${order.id}`}
+												processingAction={processingControl === `order-${order.id}` ? processingAction : null}
+												onAction={(action) => requestOrderAction(order, action)}
+												onShortage={(items) => performShortage(order, items)}
 											/>
-										)}
-									</>
+											</div>
+										))}
+									</div>
 								)}
 							</section>
 						)}
@@ -1105,43 +1071,6 @@ export default function MerchantView() {
 							</section>
 						)}
 					</section>
-
-					{store && (
-						<section className="merchant-controls merchant-secondary-controls" aria-labelledby="operations-heading">
-							<h2 id="operations-heading">接單安全控制</h2>
-							<div className="store-control" data-testid="store-control">
-								<div>
-									<h3>全店接單狀態</h3>
-									<strong className={store.is_accepting_orders ? "accepting" : "paused"}>
-										{store.is_accepting_orders ? "接單中" : "暫停接單"}
-									</strong>
-								</div>
-								<div className="store-actions">
-									<button
-										type="button"
-										className="pause-store-button"
-										disabled={storeMutationInFlight || !store.is_accepting_orders}
-										onClick={() => void pauseStore()}
-									>
-										暫停接單
-									</button>
-									<button
-										type="button"
-										className="resume-store-button"
-										disabled={storeMutationInFlight || store.is_accepting_orders || !merchantAccessHealthy}
-										onClick={() => void resumeStore()}
-									>
-										營業中
-									</button>
-								</div>
-							</div>
-							<p className="store-sync-status">
-								權威狀態版本：{store.stateVersion}；最後同步：
-								{lastSyncAt ? formatDateTime(lastSyncAt.toISOString()) : "尚未同步"}
-								{lastStoreOperation ? `；最近操作：${lastStoreOperation.outcome}` : ""}
-							</p>
-						</section>
-					)}
 
 					{SHOW_NOTIFICATION_CONTROLS && <section className="merchant-notifications" aria-labelledby="notifications-heading">
 						<h2 id="notifications-heading">通知狀態</h2>
@@ -1168,6 +1097,28 @@ export default function MerchantView() {
 						)}
 					</section>}
 				</>
+			)}
+
+			{rejectCandidate && (
+				<div className="merchant-dialog-backdrop" role="presentation">
+					<section className="merchant-confirm-dialog" role="dialog" aria-modal="true" aria-labelledby="reject-dialog-title" aria-describedby="reject-dialog-description">
+						<h2 id="reject-dialog-title">確定拒絕這筆訂單？</h2>
+						<p id="reject-dialog-description">拒單後，這筆訂單將不再製作。</p>
+						<p className="merchant-dialog-summary">
+							預計完成 {formatTaipeiDeadlineTime(rejectCandidate.estimatedReadyAt) ?? "時間未記錄"}・
+							{rejectCandidate.items.slice(0, 3).map((item) => `${item.name} ×${item.quantity}`).join("、")}
+							{rejectCandidate.items.length > 3 ? ` 等 ${rejectCandidate.items.length} 項` : ""}
+						</p>
+						<div className="merchant-dialog-actions">
+							<button type="button" disabled={processingAction === "reject"} onClick={() => setRejectCandidate(null)}>返回</button>
+							<button type="button" className="danger" disabled={processingAction === "reject"} onClick={() => {
+								const order = rejectCandidate;
+								setRejectCandidate(null);
+								void executeOrderAction(order, "reject");
+							}}>確認拒單</button>
+						</div>
+					</section>
+				</div>
 			)}
 
 			<p className="merchant-security-note">店家頁已啟用身分驗證。</p>

@@ -134,13 +134,15 @@ export async function markOrderShortage(
 
 	const placeholders = request.items.map(() => "?").join(", ");
 	const { results } = await db.prepare(
-		`SELECT order_items.id, order_items.item_name AS name, order_items.unit_price AS unitPrice,
+		`SELECT order_items.id, order_items.menu_item_id AS menuItemId,
+			order_items.item_name AS name, order_items.unit_price AS unitPrice,
 			order_items.quantity, COALESCE(order_item_shortages.unavailable_quantity, 0) AS unavailableQuantity
 		FROM order_items
 		LEFT JOIN order_item_shortages ON order_item_shortages.order_item_id = order_items.id
 		WHERE order_items.order_id = ? AND order_items.id IN (${placeholders})`,
 	).bind(orderId, ...request.items.map((item) => item.orderItemId)).all<{
 		id: string;
+		menuItemId: number;
 		name: string;
 		unitPrice: number;
 		quantity: number;
@@ -194,6 +196,14 @@ export async function markOrderShortage(
 				amount_deducted = order_item_shortages.amount_deducted + excluded.amount_deducted,
 				updated_at = excluded.updated_at`,
 		).bind(item.orderItemId, item.quantity, row.unitPrice * item.quantity, timestamp, orderId, newRevision));
+	}
+	for (const menuItemId of new Set(request.items.map((item) => rows.get(item.orderItemId)!.menuItemId))) {
+		statements.push(db.prepare(
+			`UPDATE menu_items SET is_available = 0
+			WHERE id = ? AND EXISTS (
+				SELECT 1 FROM orders WHERE id = ? AND shortage_revision = ?
+			)`,
+		).bind(menuItemId, orderId, newRevision));
 	}
 	statements.push(db.prepare(
 		`INSERT INTO order_shortage_requests (id, order_id, request_fingerprint, created_at)

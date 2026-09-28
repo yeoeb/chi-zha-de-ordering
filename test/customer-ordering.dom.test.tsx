@@ -1003,6 +1003,11 @@ describe("customer ordering redesign", () => {
 			([input]) => requestUrl(input as RequestInfo | URL) === "/api/orders",
 		);
 		expect(orderCalls).toHaveLength(1);
+		await userEvent.click(screen.getByRole("button", { name: "← 返回菜單" }));
+		expect(screen.getByRole("heading", { name: "炸物" })).toBeTruthy();
+		await userEvent.click(screen.getByRole("button", { name: "我的訂單" }));
+		expect(screen.getByRole("heading", { name: "我的訂單" })).toBeTruthy();
+		expect(screen.getByRole("button", { name: "查看訂單" })).toBeTruthy();
 	});
 
 	it("refreshes a changed quote without losing checkout fields and waits for explicit reconfirmation", async () => {
@@ -1618,11 +1623,19 @@ describe("customer ordering redesign", () => {
 		await userEvent.click(orderEntry);
 		expect(screen.getAllByRole("button", { name: "查看訂單" })).toHaveLength(2);
 		expect(screen.queryByText("餐點已完成")).toBeNull();
+		await userEvent.click(screen.getAllByRole("button", { name: "查看訂單" })[0]!);
+		expect(await screen.findByRole("button", { name: "← 返回我的訂單" })).toBeTruthy();
+		await userEvent.click(screen.getByRole("button", { name: "← 返回我的訂單" }));
+		expect(screen.getByRole("heading", { name: "我的訂單" })).toBeTruthy();
 		await userEvent.click(screen.getByRole("button", { name: /歷史訂單/ }));
 		expect(await screen.findByRole("heading", { name: "歷史訂單" })).toBeTruthy();
 		expect(await screen.findByText("餐點已完成")).toBeTruthy();
 		expect(screen.getByText("9 月 16 日")).toBeTruthy();
-		await userEvent.click(screen.getByRole("button", { name: "重新訂購" }));
+		await userEvent.click(screen.getByRole("button", { name: "查看明細" }));
+		expect(await screen.findByRole("button", { name: "← 返回歷史訂單" })).toBeTruthy();
+		await userEvent.click(screen.getByRole("button", { name: "← 返回歷史訂單" }));
+		expect(screen.getByRole("heading", { name: "歷史訂單" })).toBeTruthy();
+		await userEvent.click(screen.getByRole("button", { name: "再點一樣的" }));
 		expect(screen.getByRole("heading", { name: "購物車" })).toBeTruthy();
 		expect(screen.getByText("薯條 × 1")).toBeTruthy();
 		expect(screen.getAllByText("NT$ 40").length).toBeGreaterThan(0);

@@ -42,8 +42,8 @@ function merchantOrder(): MerchantOrder {
 		customerName: "王小明", customerPhone: "0912345678", customerNote: null,
 		packagingPreference: "together", specialOrder: false, shortages: [],
 		items: [
-			{ id: "line-a", name: "雞排", quantity: 2, lineTotal: 140, modifiers: [] },
-			{ id: "line-b", name: "薯條", quantity: 1, lineTotal: 30, modifiers: [] },
+			{ id: "line-a", menuItemId: 1, name: "雞排", quantity: 2, lineTotal: 140, modifiers: [] },
+			{ id: "line-b", menuItemId: 9, name: "薯條", quantity: 1, lineTotal: 30, modifiers: [] },
 		],
 	};
 }
@@ -72,6 +72,24 @@ describe("release Customer and Merchant Order features", () => {
 		expect(screen.getByText("!")).toBeTruthy();
 	});
 
+	it("renders authoritative accepting, paused, and unknown Customer Store states", () => {
+		const props = {
+			displayName: "吃炸的",
+			cartItemCount: 2,
+			onCartClick: () => undefined,
+		};
+		const { rerender } = render(<CustomerHeader {...props} isAcceptingOrders />);
+		expect(screen.getByText("營業中・可接單").classList.contains("accepting")).toBe(true);
+		const cartButton = screen.getByRole("button", { name: "購物車共 2 件" });
+		expect(cartButton.classList.contains("header-cart-button")).toBe(true);
+		expect(within(cartButton).getByText("2").classList.contains("cart-badge")).toBe(true);
+
+		rerender(<CustomerHeader {...props} isAcceptingOrders={false} />);
+		expect(screen.getByText("暫停接單").classList.contains("paused")).toBe(true);
+		rerender(<CustomerHeader {...props} isAcceptingOrders={null} />);
+		expect(screen.getByText("無法確認營業狀態").classList.contains("unknown")).toBe(true);
+	});
+
 	it("shows the adjusted payable amount, shortage history, countdown, and renders hostile notes as text", async () => {
 		render(<CustomerOrderStatus publicLookupToken={token} initialOrder={customerOrder()} />);
 		const alert = screen.getByRole("alert");
@@ -96,13 +114,14 @@ describe("release Customer and Merchant Order features", () => {
 		expect(screen.getByText("NT$ 0")).toBeTruthy();
 	});
 
-	it("lets Merchant submit an exact partial shortage quantity", async () => {
+	it("targets one stable Order item and submits an exact partial shortage quantity", async () => {
 		const onShortage = vi.fn(async () => true);
 		render(<MerchantOrderCard order={merchantOrder()} isNew={false} isProcessing={false} onAction={() => undefined} onShortage={onShortage} />);
-		await userEvent.click(screen.getByRole("button", { name: "品項不足" }));
-		const panel = screen.getByText("請填寫本次無法供應的數量。").parentElement as HTMLElement;
-		await userEvent.selectOptions(within(panel).getAllByRole("combobox")[0]!, "1");
-		await userEvent.click(within(panel).getByRole("button", { name: "確認品項不足" }));
+		await userEvent.click(screen.getAllByRole("button", { name: "缺貨" })[0]!);
+		const dialog = screen.getByRole("dialog", { name: "確認品項缺貨？" });
+		expect(within(dialog).getByText(/雞排/)).toBeTruthy();
+		await userEvent.selectOptions(within(dialog).getByRole("combobox"), "1");
+		await userEvent.click(within(dialog).getByRole("button", { name: "確認缺貨並停售" }));
 		expect(onShortage).toHaveBeenCalledWith([{ orderItemId: "line-a", quantity: 1 }]);
 	});
 

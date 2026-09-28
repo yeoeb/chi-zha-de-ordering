@@ -1,4 +1,4 @@
-import { useEffect, useReducer, useRef, useState, type FormEvent } from "react";
+import { useCallback, useEffect, useReducer, useRef, useState, type FormEvent } from "react";
 import {
 	cartReducer,
 	createCartLine,
@@ -277,6 +277,7 @@ export function CustomerApp({ orderSource = "online" }: { orderSource?: "online"
 		}
 	});
 	const [createdOrder, setCreatedOrder] = useState<CustomerOrder | null>(null);
+	const [orderStatusReturnView, setOrderStatusReturnView] = useState<"menu" | "orders" | "history">("menu");
 	const checkoutRequest = useRef<AbortController | null>(null);
 	const orderRequest = useRef<AbortController | null>(null);
 	const orderIdempotencyKey = useRef<string | null>(null);
@@ -289,6 +290,24 @@ export function CustomerApp({ orderSource = "online" }: { orderSource?: "online"
 	const cartHydrated = useRef(false);
 	const cartStateRef = useRef(cart);
 	cartStateRef.current = cart;
+
+	const handleOrderStatusChange = useCallback((updatedOrder: CustomerOrder) => {
+		setCreatedOrder((current) => current?.publicLookupToken === updatedOrder.publicLookupToken ? updatedOrder : current);
+		if (shouldPollOrderStatus(updatedOrder.status)) {
+			setActiveOrders((current) => [
+				updatedOrder,
+				...current.filter((order) => order.publicLookupToken !== updatedOrder.publicLookupToken),
+			]);
+			setHistoryOrders((current) => current.filter((order) => order.publicLookupToken !== updatedOrder.publicLookupToken));
+		} else {
+			setActiveOrders((current) => current.filter((order) => order.publicLookupToken !== updatedOrder.publicLookupToken));
+			setHistoryOrders((current) => [
+				updatedOrder,
+				...current.filter((order) => order.publicLookupToken !== updatedOrder.publicLookupToken),
+			]);
+		}
+		try { setHasUnreadOrderUpdate(readCustomerOrderUpdateTokens().length > 0); } catch { /* keep current badge */ }
+	}, []);
 
 	useEffect(() => {
 		const controller = new AbortController();
@@ -1151,6 +1170,7 @@ export function CustomerApp({ orderSource = "online" }: { orderSource?: "online"
 				result.order,
 				...current.filter((order) => order.publicLookupToken !== result.order.publicLookupToken),
 			]);
+			setOrderStatusReturnView("menu");
 			setCreatedOrder(result.order);
 			window.history.replaceState(
 				null,
@@ -1175,10 +1195,18 @@ export function CustomerApp({ orderSource = "online" }: { orderSource?: "online"
 	}
 
 	if (createdOrder) {
+		const returnPath = orderSource === "onsite" ? "/onsite" : "/";
 		return (
 			<CustomerOrderStatus
 				publicLookupToken={createdOrder.publicLookupToken}
 				initialOrder={createdOrder}
+				backLabel={orderStatusReturnView === "menu" ? "返回菜單" : orderStatusReturnView === "history" ? "返回歷史訂單" : "返回我的訂單"}
+				onOrderChange={handleOrderStatusChange}
+				onBack={() => {
+					setCreatedOrder(null);
+					setView(orderStatusReturnView);
+					window.history.replaceState(null, "", returnPath);
+				}}
 			/>
 		);
 	}
@@ -1211,6 +1239,7 @@ export function CustomerApp({ orderSource = "online" }: { orderSource?: "online"
 											: `預計取餐 ${formatReadyTime(order.estimatedReadyAt)}`}</span>
 									</div>
 									<button type="button" onClick={() => {
+										setOrderStatusReturnView("orders");
 										setCreatedOrder(order);
 										window.history.replaceState(null, "", `/orders/${encodeURIComponent(order.publicLookupToken)}`);
 									}}>查看訂單</button>
@@ -1256,7 +1285,7 @@ export function CustomerApp({ orderSource = "online" }: { orderSource?: "online"
 										{order.items.map((item, index) => <li key={`${order.publicLookupToken}-${index}`}>{item.name} × {item.quantity}</li>)}
 									</ul>
 									<div className="history-order-actions">
-										<button type="button" onClick={() => { setCreatedOrder(order); window.history.replaceState(null, "", `/orders/${encodeURIComponent(order.publicLookupToken)}`); }}>查看明細</button>
+										<button type="button" onClick={() => { setOrderStatusReturnView("history"); setCreatedOrder(order); window.history.replaceState(null, "", `/orders/${encodeURIComponent(order.publicLookupToken)}`); }}>查看明細</button>
 										<button type="button" onClick={() => reorderHistory(order)}>再點一樣的</button>
 									</div>
 								</li>

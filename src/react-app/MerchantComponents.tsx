@@ -1,5 +1,6 @@
 import { useState } from "react";
 import {
+	groupMerchantItemsBySpice,
 	type MerchantMenuCategory,
 	type MerchantMenuItem,
 	type MerchantModifier,
@@ -73,13 +74,17 @@ export function MerchantOrderCard({
 	onAction: (action: "accept" | "reject" | "complete") => void;
 	onShortage?: (items: Array<{ orderItemId: string; quantity: number }>) => Promise<boolean>;
 }) {
-	const [shortageOpen, setShortageOpen] = useState(false);
-	const [shortageQuantities, setShortageQuantities] = useState<Record<string, number>>({});
+	const [shortageItemId, setShortageItemId] = useState<string | null>(null);
+	const [shortageQuantity, setShortageQuantity] = useState(1);
 	const itemQuantity = order.items.reduce((total, item) => total + item.quantity, 0);
 	const isActiveOrder = order.status === "pending" || order.status === "accepted";
 	const deadlineTime = formatTaipeiDeadlineTime(order.estimatedReadyAt);
 	const deadlineDateTime = formatTaipeiDeadlineDateTime(order.estimatedReadyAt);
 	const orderSource = order.orderSource ?? "online";
+	const spiceGroups = groupMerchantItemsBySpice(order.items);
+	const shortageItem = shortageItemId
+		? order.items.find((item) => item.id === shortageItemId) ?? null
+		: null;
 
 	return (
 		<article
@@ -116,19 +121,52 @@ export function MerchantOrderCard({
 				</div>
 			</header>
 
-			<ul className="merchant-item-list">
-				{order.items.map((item, index) => (
-					<li key={`${order.id}-${index}`}>
-						<div>
-							<strong>{item.name} ×{item.quantity}</strong>
-							{item.modifiers.length > 0 && (
-								<p>{item.modifiers.map(modifierLabel).join(" · ")}</p>
-							)}
-						</div>
-						{!isActiveOrder && <span>NT$ {item.lineTotal}</span>}
-					</li>
-				))}
-			</ul>
+			{isActiveOrder ? (
+				<div className="merchant-spice-groups">
+					{spiceGroups.map((group) => (
+						<section className={`merchant-spice-group spice-${group.className}`} key={group.name}>
+							<h3>{group.name}</h3>
+							<ul className="merchant-item-list">
+								{group.items.map((item, index) => (
+									<li key={item.id ?? `${order.id}-${group.name}-${index}`}>
+										<div>
+											<strong>{item.name} ×{item.quantity}</strong>
+											{item.displayModifiers.length > 0 && (
+												<p>{item.displayModifiers.map(modifierLabel).join(" · ")}</p>
+											)}
+										</div>
+										{onShortage && item.id && (
+											<button
+												type="button"
+												className="merchant-item-shortage-button"
+												disabled={isProcessing}
+												onClick={() => {
+													setShortageItemId(item.id ?? null);
+													setShortageQuantity(1);
+												}}
+											>
+												缺貨
+											</button>
+										)}
+									</li>
+								))}
+							</ul>
+						</section>
+					))}
+				</div>
+			) : (
+				<ul className="merchant-item-list">
+					{order.items.map((item, index) => (
+						<li key={item.id ?? `${order.id}-${index}`}>
+							<div>
+								<strong>{item.name} ×{item.quantity}</strong>
+								{item.modifiers.length > 0 && <p>{item.modifiers.map(modifierLabel).join(" · ")}</p>}
+							</div>
+							<span>NT$ {item.lineTotal}</span>
+						</li>
+					))}
+				</ul>
+			)}
 
 			{order.customerNote && (
 				<section className="merchant-order-note" aria-label="訂單備註">
@@ -147,29 +185,32 @@ export function MerchantOrderCard({
 				</section>
 			)}
 
-			{isActiveOrder && onShortage && (
-				<section className="merchant-shortage-control">
-					<button type="button" className="secondary-button" disabled={isProcessing} aria-expanded={shortageOpen} onClick={() => setShortageOpen((value) => !value)}>品項不足</button>
-					{shortageOpen && (
-						<div className="merchant-shortage-panel">
-							<p>請填寫本次無法供應的數量。</p>
-							{order.items.map((item, index) => {
-								const itemKey = item.id ?? `${order.id}-${index}`;
-								return <label key={itemKey}><span>{item.name}（目前 {item.quantity} 份）</span><select value={shortageQuantities[itemKey] ?? 0} onChange={(event) => setShortageQuantities((current) => ({ ...current, [itemKey]: Number(event.target.value) }))}>{Array.from({ length: item.quantity + 1 }, (_, quantity) => <option key={quantity} value={quantity}>{quantity}</option>)}</select></label>;
-							})}
-							<button type="button" disabled={isProcessing || !order.items.some((item, index) => (shortageQuantities[item.id ?? `${order.id}-${index}`] ?? 0) > 0)} onClick={async () => {
-								const items = order.items.flatMap((item, index) => {
-									const quantity = shortageQuantities[item.id ?? `${order.id}-${index}`] ?? 0;
-									return item.id && quantity > 0 ? [{ orderItemId: item.id, quantity }] : [];
-								});
-								if (items.length > 0 && await onShortage(items)) {
-									setShortageOpen(false);
-									setShortageQuantities({});
+			{isActiveOrder && onShortage && shortageItem?.id && (
+				<div className="merchant-dialog-backdrop" role="presentation">
+					<section className="merchant-confirm-dialog" role="dialog" aria-modal="true" aria-labelledby={`shortage-title-${shortageItem.id}`}>
+						<h2 id={`shortage-title-${shortageItem.id}`}>確認品項缺貨？</h2>
+						<p><strong>{shortageItem.name}</strong> 會同步設為售罄，後續新訂單將無法購買。</p>
+						{shortageItem.quantity > 1 && (
+							<label>
+								<span>缺少數量</span>
+								<select value={shortageQuantity} onChange={(event) => setShortageQuantity(Number(event.target.value))}>
+									{Array.from({ length: shortageItem.quantity }, (_, index) => index + 1).map((quantity) => (
+										<option key={quantity} value={quantity}>{quantity}</option>
+									))}
+								</select>
+							</label>
+						)}
+						<div className="merchant-dialog-actions">
+							<button type="button" disabled={isProcessing} onClick={() => setShortageItemId(null)}>返回</button>
+							<button type="button" className="danger" disabled={isProcessing} onClick={async () => {
+								if (await onShortage([{ orderItemId: shortageItem.id!, quantity: shortageQuantity }])) {
+									setShortageItemId(null);
+									setShortageQuantity(1);
 								}
-							}}>確認品項不足</button>
+							}}>確認缺貨並停售</button>
 						</div>
-					)}
-				</section>
+					</section>
+				</div>
 			)}
 
 			{order.packagingPreference === "separate_spicy" && (

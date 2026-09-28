@@ -127,7 +127,9 @@ describe("Merchant Store safety DOM", () => {
 		vi.stubGlobal("fetch", mock);
 		vi.mocked(confirm).mockReturnValue(false);
 		render(<MerchantView />);
-		await screen.findByTestId("store-control");
+		const control = await screen.findByTestId("store-control");
+		expect(control.classList.contains("paused")).toBe(true);
+		expect(screen.getByRole("button", { name: "恢復接單" })).toBeTruthy();
 		const readsBefore = callsTo(mock, "/api/store", "GET").length;
 
 		await userEvent.click(button(".resume-store-button"));
@@ -431,6 +433,7 @@ describe("Merchant Store safety DOM", () => {
 		expect(screen.getByText("辣粉另包")).toBeTruthy();
 
 		await userEvent.click(reject);
+		await userEvent.click(screen.getByRole("button", { name: "確認拒單" }));
 
 		await waitFor(() => expect(document.querySelector(".reject-button")).toBeNull());
 		expect(screen.getByTestId("store-control")).toBe(controlBefore);

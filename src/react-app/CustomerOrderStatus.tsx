@@ -17,11 +17,17 @@ export const ORDER_STATUS_POLL_INTERVAL_MS = 4_000;
 type CustomerOrderStatusProps = {
 	publicLookupToken: string;
 	initialOrder?: CustomerOrder;
+	onBack?: () => void;
+	backLabel?: string;
+	onOrderChange?: (order: CustomerOrder) => void;
 };
 
 export default function CustomerOrderStatus({
 	publicLookupToken,
 	initialOrder,
+	onBack,
+	backLabel = "返回菜單",
+	onOrderChange,
 }: CustomerOrderStatusProps) {
 	const [order, setOrder] = useState<CustomerOrder | null>(initialOrder ?? null);
 	const [isLoading, setIsLoading] = useState(initialOrder === undefined);
@@ -108,7 +114,8 @@ export default function CustomerOrderStatus({
 		} catch {
 			// The status page remains usable when persistent browser storage is unavailable.
 		}
-	}, [order]);
+		onOrderChange?.(order);
+	}, [onOrderChange, order]);
 
 	useEffect(() => {
 		if (!order || order.orderSource === "onsite" || !shouldPollOrderStatus(order.status)) return;
@@ -177,8 +184,8 @@ export default function CustomerOrderStatus({
 				<h1>{isOnsite ? "現場點餐" : "訂單進度"}</h1>
 			</header>
 
-			<button className="status-back-button" type="button" onClick={() => window.location.assign(isOnsite ? "/onsite" : "/")}>
-				← 返回菜單
+			<button className="status-back-button" type="button" onClick={() => onBack ? onBack() : window.location.assign(isOnsite ? "/onsite" : "/")}>
+				← {backLabel}
 			</button>
 
 			{isLoading && (

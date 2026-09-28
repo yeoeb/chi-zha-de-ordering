@@ -24,6 +24,7 @@ beforeEach(async () => {
 		env.DB.prepare("DELETE FROM order_items"),
 		env.DB.prepare("DELETE FROM orders"),
 		env.DB.prepare("UPDATE store_settings SET is_accepting_orders = 1 WHERE id = 1"),
+		env.DB.prepare("UPDATE menu_items SET is_available = 1 WHERE id IN (930, 931)"),
 	]);
 });
 
@@ -89,11 +90,48 @@ describe("Order shortage and Customer cancellation", () => {
 		expect(first.order).toMatchObject({ total: 120, originalTotal: 200, shortageRevision: 1, status: "pending" });
 		expect(first.order.items.find((item) => item.name === "測試雞排")?.quantity).toBe(1);
 		expect(first.order.shortages).toEqual([{ orderItemId: "continue-a", name: "測試雞排", quantity: 1, amountDeducted: 80 }]);
+		expect(await env.DB.prepare("SELECT is_available AS isAvailable FROM menu_items WHERE id = 930").first()).toEqual({ isAvailable: 0 });
+		expect(await env.DB.prepare("SELECT is_available AS isAvailable FROM menu_items WHERE id = 931").first()).toEqual({ isAvailable: 1 });
 
 		const replay = await markOrderShortage(env.DB, "continue", request, now);
 		expect(replay.replayed).toBe(true);
 		expect(replay.order.total).toBe(120);
 		expect(await env.DB.prepare("SELECT COUNT(*) AS count FROM order_shortage_requests").first<{ count: number }>()).toEqual({ count: 1 });
+	});
+
+	it("atomically marks every targeted Menu Item sold out without touching unrelated products", async () => {
+		await insertOrder("multi-sold-out");
+		await markOrderShortage(env.DB, "multi-sold-out", {
+			requestId: "shortage-request-multi-sold-out",
+			items: [
+				{ orderItemId: "multi-sold-out-a", quantity: 1 },
+				{ orderItemId: "multi-sold-out-b", quantity: 1 },
+			],
+		}, now);
+		expect(await env.DB.prepare("SELECT id, is_available AS isAvailable FROM menu_items WHERE id IN (930, 931) ORDER BY id").all()).toMatchObject({
+			results: [{ id: 930, isAvailable: 0 }, { id: 931, isAvailable: 0 }],
+		});
+		expect(await env.DB.prepare("SELECT COUNT(*) AS count FROM order_item_shortages WHERE order_item_id LIKE 'multi-sold-out-%'").first()).toEqual({ count: 2 });
+	});
+
+	it("rolls back the shortage and request when the paired availability write fails", async () => {
+		await insertOrder("atomic-failure");
+		await env.DB.prepare(`CREATE TRIGGER force_shortage_availability_failure
+			BEFORE UPDATE OF is_available ON menu_items
+			WHEN NEW.id = 930 AND NEW.is_available = 0
+			BEGIN SELECT RAISE(ABORT, 'forced availability failure'); END`).run();
+		try {
+			await expect(markOrderShortage(env.DB, "atomic-failure", {
+				requestId: "shortage-request-atomic-failure",
+				items: [{ orderItemId: "atomic-failure-a", quantity: 1 }],
+			}, now)).rejects.toThrow();
+		} finally {
+			await env.DB.prepare("DROP TRIGGER IF EXISTS force_shortage_availability_failure").run();
+		}
+		expect(await env.DB.prepare("SELECT total_amount AS total, shortage_revision AS revision FROM orders WHERE id = 'atomic-failure'").first()).toEqual({ total: 200, revision: 0 });
+		expect(await env.DB.prepare("SELECT COUNT(*) AS count FROM order_item_shortages WHERE order_item_id = 'atomic-failure-a'").first()).toEqual({ count: 0 });
+		expect(await env.DB.prepare("SELECT COUNT(*) AS count FROM order_shortage_requests WHERE id = 'shortage-request-atomic-failure'").first()).toEqual({ count: 0 });
+		expect(await env.DB.prepare("SELECT is_available AS isAvailable FROM menu_items WHERE id = 930").first()).toEqual({ isAvailable: 1 });
 	});
 
 	it("rejects a reused shortage request ID when its payload differs", async () => {

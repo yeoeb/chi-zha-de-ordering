@@ -29,6 +29,8 @@ function order(overrides: Record<string, unknown> = {}) {
 		specialOrder: false,
 		items: [
 			{
+				id: "line-chicken-medium",
+				menuItemId: 1,
 				name: "香雞排",
 				quantity: 1,
 				lineTotal: 70,
@@ -38,6 +40,8 @@ function order(overrides: Record<string, unknown> = {}) {
 				],
 			},
 			{
+				id: "line-chicken-none",
+				menuItemId: 1,
 				name: "香雞排",
 				quantity: 1,
 				lineTotal: 70,
@@ -47,6 +51,8 @@ function order(overrides: Record<string, unknown> = {}) {
 				],
 			},
 			{
+				id: "line-fries",
+				menuItemId: 9,
 				name: "薯條",
 				quantity: 1,
 				lineTotal: 45,
@@ -121,6 +127,27 @@ function createFetchMock({
 			if (action !== "accept") history = [updated, ...history];
 			return json({ order: updated });
 		}
+		const shortageMatch = url.match(/^\/api\/merchant\/orders\/([^/]+)\/shortages$/);
+		if (shortageMatch && method === "POST") {
+			const body = JSON.parse(String(init?.body)) as { items: Array<{ orderItemId: string; quantity: number }> };
+			const current = activeOrders.find((candidate) => candidate.id === shortageMatch[1]);
+			if (!current) return json({ error: { code: "ORDER_NOT_FOUND" } }, 404);
+			const currentItems = current.items as Array<Record<string, unknown>>;
+			const shortage = body.items[0]!;
+			const targeted = currentItems.find((candidate) => candidate.id === shortage.orderItemId);
+			if (!targeted) return json({ error: { code: "ORDER_ITEM_NOT_FOUND" } }, 422);
+			const menuItemId = Number(targeted.menuItemId);
+			items = items.map((item) => item.id === menuItemId ? { ...item, isAvailable: false } : item);
+			const updated = {
+				...current,
+				total: Number(current.total) - (Number(targeted.lineTotal) / Number(targeted.quantity)) * shortage.quantity,
+				items: currentItems.map((candidate) => candidate.id === shortage.orderItemId
+					? { ...candidate, quantity: Number(candidate.quantity) - shortage.quantity }
+					: candidate),
+			};
+			activeOrders = activeOrders.map((candidate) => candidate.id === current.id ? updated : candidate);
+			return json({ order: updated });
+		}
 		if (url === "/api/merchant/menu-items/1/sold-out" && method === "POST") {
 			items = items.map((item) => item.id === 1 ? { ...item, isAvailable: false } : item);
 			return json({ item: items[0] });
@@ -192,14 +219,13 @@ describe("Merchant operations UI", () => {
 		render(<MerchantView />);
 		await screen.findByLabelText("訂單 #023");
 
-		expect(screen.getByText("待接單 1／2")).toBeTruthy();
-		expect(screen.getAllByText("19:56").length).toBeGreaterThan(0);
+		const cards = screen.getAllByLabelText(/訂單 #/);
+		expect(cards.map((card) => card.getAttribute("aria-label"))).toEqual(["訂單 #023", "訂單 #024"]);
+		expect(within(cards[0]!).getByText("19:56")).toBeTruthy();
 		expect(screen.queryByText("已逾時 4 分")).toBeNull();
-		await userEvent.click(screen.getByRole("button", { name: "下一筆" }));
-		expect(screen.getByText("待接單 2／2")).toBeTruthy();
-		expect(screen.getByLabelText("訂單 #024")).toBeTruthy();
-		expect(screen.getAllByText("20:15").length).toBeGreaterThan(0);
+		expect(within(cards[1]!).getByText("20:15")).toBeTruthy();
 		expect(screen.queryByText("剩 15 分")).toBeNull();
+		expect(screen.queryByRole("button", { name: "下一筆" })).toBeNull();
 	});
 
 	it("uses the actual deadline date in history and distinguishes equal times on different days", async () => {
@@ -227,12 +253,15 @@ describe("Merchant operations UI", () => {
 		render(<MerchantView />);
 		await screen.findByLabelText("訂單 #023");
 
-		expect(screen.getAllByText("辣度：中辣 · 切法：切").length).toBeGreaterThan(0);
-		expect(screen.getAllByText("辣度：不辣 · 切法：不切").length).toBeGreaterThan(0);
+		const noSpiceHeading = screen.getAllByRole("heading", { name: "不辣" })[0]!;
+		const mediumSpiceHeading = screen.getAllByRole("heading", { name: "中辣" })[0]!;
+		expect(noSpiceHeading.closest("section")?.classList.contains("spice-none")).toBe(true);
+		expect(mediumSpiceHeading.closest("section")?.classList.contains("spice-medium")).toBe(true);
+		expect(screen.getAllByText("切法：切").length).toBeGreaterThan(0);
+		expect(screen.getAllByText("切法：不切").length).toBeGreaterThan(0);
 		expect(screen.getAllByText("調味：胡椒 · 不加醬").length).toBeGreaterThan(0);
 		expect(screen.getByText("雞排不要切")).toBeTruthy();
 		expect(screen.getAllByText("辣／不辣分袋").length).toBeGreaterThan(0);
-		await userEvent.click(screen.getByRole("button", { name: "下一筆" }));
 		const noNoteCard = screen.getByLabelText("訂單 #024");
 		expect(noNoteCard && within(noNoteCard).queryByLabelText("訂單備註")).toBeNull();
 	});
@@ -262,7 +291,7 @@ describe("Merchant operations UI", () => {
 		expect(screen.getByLabelText("訂單 #023")).toBeTruthy();
 	});
 
-	it("lets the merchant inspect all five pending Orders before acting", async () => {
+	it("shows all five pending Orders as directly actionable vertical cards", async () => {
 		vi.stubGlobal("fetch", createFetchMock({
 			orders: Array.from({ length: 5 }, (_, index) => order({
 				id: `order-${index + 1}`,
@@ -273,17 +302,16 @@ describe("Merchant operations UI", () => {
 		render(<MerchantView />);
 		await screen.findByLabelText("訂單 #021");
 
-		for (let index = 1; index < 5; index += 1) {
-			expect(screen.getByText(`待接單 ${index}／5`)).toBeTruthy();
-			await userEvent.click(screen.getByRole("button", { name: "下一筆" }));
-			expect(screen.getByLabelText(`訂單 #02${index + 1}`)).toBeTruthy();
+		expect(screen.getByText("依預計完成時間排序，共 5 筆")).toBeTruthy();
+		for (let index = 1; index <= 5; index += 1) {
+			const card = screen.getByLabelText(`訂單 #02${index}`);
+			expect(within(card).getByRole("button", { name: "接單" })).toBeTruthy();
 		}
-		expect(screen.getByText("待接單 5／5")).toBeTruthy();
-		await userEvent.click(screen.getByRole("button", { name: "返回待接單清單" }));
-		expect(within(screen.getByLabelText("待接單清單")).getAllByRole("button")).toHaveLength(5);
+		expect(screen.queryByRole("button", { name: "下一筆" })).toBeNull();
+		expect(screen.queryByRole("button", { name: "返回待接單清單" })).toBeNull();
 	});
 
-	it("moves an accepted Order to production, advances pending focus, and reopens the last accepted detail", async () => {
+	it("moves an accepted Order to production without leaving the pending list and reopens it by shortcut", async () => {
 		const fetchMock = createFetchMock({
 			orders: [
 				order(),
@@ -296,6 +324,7 @@ describe("Merchant operations UI", () => {
 
 		await userEvent.click(within(firstCard).getByRole("button", { name: "接單" }));
 		await screen.findByText("已接單 #023");
+		expect(screen.getByRole("button", { name: /待接單 1/ }).getAttribute("aria-current")).toBe("page");
 		expect(screen.getByLabelText("訂單 #024")).toBeTruthy();
 		expect(screen.getByRole("button", { name: /製作中 1/ })).toBeTruthy();
 
@@ -317,20 +346,24 @@ describe("Merchant operations UI", () => {
 		expect(screen.getByRole("button", { name: "查看製作中訂單" })).toBeTruthy();
 	});
 
-	it("requires reject confirmation, sends nothing when cancelled, and keeps the rejected snapshot in history", async () => {
+	it("uses an in-site reject dialog, sends nothing when cancelled, and keeps the rejected snapshot in history", async () => {
 		const fetchMock = createFetchMock();
 		vi.stubGlobal("fetch", fetchMock);
-		const confirm = vi.spyOn(window, "confirm").mockReturnValueOnce(false).mockReturnValueOnce(true);
 		render(<MerchantView />);
 		const card = await screen.findByLabelText("訂單 #023");
 
 		await userEvent.click(within(card).getByRole("button", { name: "拒單" }));
+		const firstDialog = screen.getByRole("dialog", { name: "確定拒絕這筆訂單？" });
+		expect(within(firstDialog).getByText("拒單後，這筆訂單將不再製作。")).toBeTruthy();
+		expect(firstDialog.textContent).not.toContain("order-023");
+		await userEvent.click(within(firstDialog).getByRole("button", { name: "返回" }));
 		expect(fetchMock.mock.calls.filter(([input, init]) => String(input).endsWith("/reject") && init?.method === "POST")).toHaveLength(0);
 		expect(screen.getByLabelText("訂單 #023")).toBeTruthy();
 
 		await userEvent.click(within(card).getByRole("button", { name: "拒單" }));
+		await userEvent.click(within(screen.getByRole("dialog", { name: "確定拒絕這筆訂單？" })).getByRole("button", { name: "確認拒單" }));
 		await screen.findByText("已拒單 #023");
-		expect(confirm).toHaveBeenCalledTimes(2);
+		expect(screen.queryByRole("dialog", { name: "確定拒絕這筆訂單？" })).toBeNull();
 		await userEvent.click(screen.getByRole("button", { name: "歷史訂單" }));
 		const historyCard = screen.getByLabelText("訂單 #023");
 		expect(within(historyCard).getByText("已拒單")).toBeTruthy();
@@ -349,7 +382,7 @@ describe("Merchant operations UI", () => {
 		expect(fetchMock.mock.calls.filter(([input]) => String(input) === "/api/merchant/orders").length).toBeGreaterThan(1);
 	});
 
-	it("keeps the selected pending Order while polling discovers a newer Order", async () => {
+	it("keeps existing cards visible while polling discovers a newer Order", async () => {
 		vi.useFakeTimers({ shouldAdvanceTime: true });
 		const first = order();
 		const second = order({ id: "order-024", orderNumber: "024", estimatedReadyAt: "2026-09-16T12:20:00.000Z" });
@@ -361,6 +394,28 @@ describe("Merchant operations UI", () => {
 		await vi.advanceTimersByTimeAsync(10_100);
 		expect(screen.getByLabelText("訂單 #023")).toBeTruthy();
 		expect(screen.getByRole("button", { name: /待接單 3/ })).toBeTruthy();
+	});
+
+	it("targets the selected spice line for shortage and refreshes the shared Menu Item as sold out", async () => {
+		const fetchMock = createFetchMock();
+		vi.stubGlobal("fetch", fetchMock);
+		render(<MerchantView />);
+		const card = await screen.findByLabelText("訂單 #023");
+		const mediumGroup = within(card).getByRole("heading", { name: "中辣" }).closest("section");
+		if (!mediumGroup) throw new Error("Missing medium-spice group");
+		await userEvent.click(within(mediumGroup).getByRole("button", { name: "缺貨" }));
+		const dialog = screen.getByRole("dialog", { name: "確認品項缺貨？" });
+		expect(within(dialog).getByText(/香雞排/)).toBeTruthy();
+		expect(within(dialog).queryByRole("combobox")).toBeNull();
+		await userEvent.click(within(dialog).getByRole("button", { name: "確認缺貨並停售" }));
+		await screen.findByText(/香雞排已停售/);
+
+		const shortageCall = fetchMock.mock.calls.find(([input]) => String(input).endsWith("/shortages"));
+		expect(JSON.parse(String(shortageCall?.[1]?.body)).items).toEqual([
+			{ orderItemId: "line-chicken-medium", quantity: 1 },
+		]);
+		await userEvent.click(within(screen.getByRole("navigation", { name: "店家主要功能" })).getByRole("button", { name: "售罄" }));
+		expect(await screen.findByRole("button", { name: "恢復 香雞排" })).toBeTruthy();
 	});
 
 	it("persists large-text mode and keeps a long note visible", async () => {

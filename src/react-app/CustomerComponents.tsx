@@ -78,13 +78,13 @@ export function CustomerHeader({
 			<div>
 				<p className="customer-kicker">{orderMode === "onsite" ? "現場點餐" : "現點現炸"}</p>
 				<h1>{displayName}</h1>
-				<p className={`store-state ${isAcceptingOrders === false ? "paused" : ""}`}>
+				<p className={`store-state ${isAcceptingOrders === null ? "unknown" : isAcceptingOrders ? "accepting" : "paused"}`}>
 					<span aria-hidden="true" />
 					{isAcceptingOrders === null
-						? "營業狀態確認中"
+						? "無法確認營業狀態"
 						: isAcceptingOrders
-							? "營業中"
-							: "於下午5:30開始營業"}
+							? "營業中・可接單"
+							: "暫停接單"}
 				</p>
 			</div>
 			<div className="customer-header-actions">
