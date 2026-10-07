@@ -132,6 +132,8 @@ describe("authoritative checkout pricing", () => {
 	});
 
 	it("includes the current web-order queue in the preview ETA", async () => {
+		const createdAt = new Date().toISOString();
+		const readyAt = new Date(Date.now() + 25 * 60_000).toISOString();
 		await env.DB.batch([
 			env.DB.prepare(
 				`INSERT INTO orders (
@@ -139,18 +141,18 @@ describe("authoritative checkout pricing", () => {
 					estimated_ready_at, created_at, customer_name, customer_phone,
 					special_order, idempotency_key, request_fingerprint
 				) VALUES ('quote-queue-normal', ?, 'QUOTE-Q1', 'pending', 0,
-					'2026-09-23T01:15:00.000Z', '2026-09-23T01:00:00.000Z',
+					?, ?,
 					'Queue', '0900000000', 0, 'quote-queue-normal', ?)`,
-			).bind("1".repeat(64), "a".repeat(64)),
+			).bind("1".repeat(64), readyAt, createdAt, "a".repeat(64)),
 			env.DB.prepare(
 				`INSERT INTO orders (
 					id, public_lookup_token, order_number, status, total_amount,
 					estimated_ready_at, created_at, customer_name, customer_phone,
 					special_order, idempotency_key, request_fingerprint
 				) VALUES ('quote-queue-special', ?, 'QUOTE-Q2', 'accepted', 0,
-					'2026-09-23T01:25:00.000Z', '2026-09-23T01:00:00.000Z',
+					?, ?,
 					'Queue', '0900000000', 1, 'quote-queue-special', ?)`,
-			).bind("2".repeat(64), "b".repeat(64)),
+			).bind("2".repeat(64), readyAt, createdAt, "b".repeat(64)),
 		]);
 		const response = await exports.default.fetch("https://example.com/api/checkout/quote", {
 			method: "POST",

@@ -59,6 +59,9 @@ describe("onsite kitchen scheduling", () => {
 			"2026-09-25T04:40:00.000Z",
 		]);
 	});
+	it("keeps new identifiers on five-minute boundaries around an unaligned legacy reservation", () => {
+		expect(scheduleNewOnsiteOrder([scheduled("legacy", "2026-09-25T04:22:00.000Z")], settings, false, now)).toBe("2026-09-25T04:30:00.000Z");
+	});
 
 	it("queues after continuous reservations when no gap is large enough", () => {
 		const readyAt = scheduleNewOnsiteOrder([

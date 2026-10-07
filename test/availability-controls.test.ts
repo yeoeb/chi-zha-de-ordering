@@ -1,5 +1,6 @@
 import { env, exports } from "cloudflare:workers";
 import { beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { dailyTestSchedule } from "./business-hours-fixture";
 
 const orderItems = [{ menuItemId: 1, quantity: 1, modifierOptionIds: [10] }];
 
@@ -28,7 +29,8 @@ beforeEach(async () => {
 		env.DB.prepare("UPDATE store_settings SET is_accepting_orders = 1 WHERE id = 1"),
 		env.DB.prepare("UPDATE store_settings SET state_version = 0 WHERE id = 1"),
 		env.DB.prepare("DELETE FROM store_state_events"),
-		env.DB.prepare("UPDATE menu_items SET is_available = 1 WHERE id = 1"),
+		env.DB.prepare("UPDATE store_settings SET weekly_business_hours = ? WHERE id = 1").bind(JSON.stringify(dailyTestSchedule)),
+		env.DB.prepare("UPDATE menu_items SET is_available = 1, sold_out_business_date = NULL WHERE id = 1"),
 		env.DB.prepare("UPDATE menu_items SET is_available = 0 WHERE id = 2"),
 	]);
 });

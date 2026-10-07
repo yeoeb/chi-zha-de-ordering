@@ -45,5 +45,8 @@ describe("Order atomicity", () => {
 			.prepare("SELECT COUNT(*) AS count FROM orders")
 			.first<{ count: number }>();
 		expect(orderCount?.count).toBe(0);
+		for (const table of ["order_items", "order_item_modifiers", "web_push_notification_deliveries"]) {
+			expect(await env.DB.prepare(`SELECT COUNT(*) AS count FROM ${table}`).first()).toEqual({ count: 0 });
+		}
 	});
 });

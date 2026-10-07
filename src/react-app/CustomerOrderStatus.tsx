@@ -1,6 +1,8 @@
+import { uiCopy } from "./ui-copy";
 import { useEffect, useState } from "react";
 import {
 	CUSTOMER_STATUS_COPY,
+	isCustomerOrderActive,
 	shouldPollOrderStatus,
 	type CustomerOrder,
 } from "./order-status";
@@ -11,6 +13,8 @@ import {
 	readAcknowledgedShortageRevision,
 	rememberActiveCustomerOrder,
 } from "./active-customer-orders";
+import { DestructiveConfirmationDialog } from "./DestructiveConfirmationDialog";
+import { getCustomerHomeRoute } from "./return-navigation";
 
 export const ORDER_STATUS_POLL_INTERVAL_MS = 4_000;
 
@@ -26,7 +30,7 @@ export default function CustomerOrderStatus({
 	publicLookupToken,
 	initialOrder,
 	onBack,
-	backLabel = "返回菜單",
+	backLabel = uiCopy.customer.backToMenu,
 	onOrderChange,
 }: CustomerOrderStatusProps) {
 	const [order, setOrder] = useState<CustomerOrder | null>(initialOrder ?? null);
@@ -35,6 +39,7 @@ export default function CustomerOrderStatus({
 	const [now, setNow] = useState(() => Date.now());
 	const [isCancelling, setIsCancelling] = useState(false);
 	const [cancellationError, setCancellationError] = useState<string | null>(null);
+	const [cancelDialogOpen, setCancelDialogOpen] = useState(false);
 	const [acknowledgedRevision, setAcknowledgedRevision] = useState(() => {
 		try { return readAcknowledgedShortageRevision(publicLookupToken); } catch { return 0; }
 	});
@@ -129,7 +134,7 @@ export default function CustomerOrderStatus({
 	}, [order]);
 
 	async function cancelOrder() {
-		if (!order || isCancelling || !window.confirm("確定取消這筆訂單？取消後無法恢復。")) return;
+		if (!order || isCancelling) return;
 		setIsCancelling(true);
 		setCancellationError(null);
 		try {
@@ -142,31 +147,37 @@ export default function CustomerOrderStatus({
 			if (!response.ok || !result.order) {
 				const code = result.error?.code;
 				setCancellationError(code === "CANCELLATION_DEADLINE_PASSED"
-					? "已進入取餐前 10 分鐘，無法線上取消，請直接聯絡店家。"
+					? uiCopy.customer.cancelTooLate
 					: code === "CANCELLATION_NOT_ALLOWED"
-						? "店家已接單或訂單已結束，無法線上自行取消，請聯絡店家。"
-						: "取消結果尚未確認，請稍後重新查看訂單狀態。");
+						? uiCopy.customer.cancelUnavailable
+						: uiCopy.customer.cancelUnknown);
 				return;
 			}
 			setOrder(result.order);
+			setCancelDialogOpen(false);
 		} catch {
-			setCancellationError("取消結果尚未確認，請稍後重新查看訂單狀態。");
+			setCancellationError(uiCopy.customer.cancelUnknown);
 		} finally {
 			setIsCancelling(false);
 		}
 	}
 
 	const isOnsite = order?.orderSource === "onsite";
+	const deadlineReached = order ? !isCustomerOrderActive(order, now) && shouldPollOrderStatus(order.status) : false;
 	const statusCopy = order
-		? isOnsite
-			? {
-				pending: { heading: "等待店家接單", detail: "訂單已送出" },
-				accepted: { heading: "製作中", detail: "正在製作，請稍候" },
-				completed: { heading: "餐點已完成", detail: "可以取餐了" },
-				rejected: { heading: "訂單未成立", detail: "店家未接受這筆訂單" },
-				cancelled: { heading: "訂單已取消", detail: "這筆現場訂單不會繼續製作" },
-			}[order.status]
-			: CUSTOMER_STATUS_COPY[order.status]
+		? deadlineReached
+			? { heading: uiCopy.customer.pickupTimeReached, detail: uiCopy.customer.pickupTimeReachedDetail }
+			: isOnsite
+				? {
+					pending: { heading: uiCopy.customer.pending, detail: uiCopy.customer.orderSubmitted },
+					accepted: { heading: uiCopy.customer.preparing, detail: uiCopy.customer.preparingDetail },
+					completed: { heading: uiCopy.customer.completed, detail: uiCopy.customer.completedDetail },
+					rejected: { heading: uiCopy.customer.rejected, detail: uiCopy.customer.rejectedDetail },
+					cancelled: { heading: uiCopy.customer.cancelled, detail: uiCopy.onsite.cancelledDetail },
+				}[order.status]
+				: order.status === "rejected" && order.rejectionReason === "auto_rejected_unanswered"
+					? { heading: uiCopy.customer.rejected, detail: uiCopy.customer.autoRejectedDetail }
+					: CUSTOMER_STATUS_COPY[order.status]
 		: null;
 	const createdAt = order ? formatTaipeiDeadlineDateTime(order.createdAt) : null;
 	const estimatedReadyAt = order ? formatTaipeiDeadlineTime(order.estimatedReadyAt) : null;
@@ -180,101 +191,100 @@ export default function CustomerOrderStatus({
 	return (
 		<main className={`order-status-page${isOnsite ? " onsite-order-status" : ""}`}>
 			<header className="order-status-header">
-				<p className="eyebrow">吃炸的</p>
-				<h1>{isOnsite ? "現場點餐" : "訂單進度"}</h1>
+				<p className="eyebrow">{uiCopy.common.brand}</p>
+				<h1>{isOnsite ? uiCopy.onsite.title : uiCopy.customer.orderProgress}</h1>
 			</header>
 
-			<button className="status-back-button" type="button" onClick={() => onBack ? onBack() : window.location.assign(isOnsite ? "/onsite" : "/")}>
+			<button className="status-back-button" type="button" onClick={() => onBack ? onBack() : window.location.replace(getCustomerHomeRoute(isOnsite ? "onsite" : "online"))}>
 				← {backLabel}
 			</button>
 
 			{isLoading && (
 				<p className="status-message" role="status">
-					訂單載入中…
+					{uiCopy.common.orderLoading}
 				</p>
 			)}
 			{error === "not-found" && (
 				<p className="status-message status-error" role="alert">
-					找不到這筆訂單，請確認連結是否正確。
+					{uiCopy.customer.orderNotFound}
 				</p>
 			)}
 			{error === "temporary" && (
 				<p className="status-message status-warning" role="status">
-					暫時無法更新訂單狀態，系統會稍後再試。已顯示的訂單內容不會消失。
+					{uiCopy.customer.orderSyncFailed}
 				</p>
 			)}
 
 			{order && statusCopy && (
 				<article className={`customer-order-status status-${order.status}`}>
-					<p className="customer-order-number">訂單 #{order.orderNumber}</p>
+					<section className="customer-pickup-time" aria-label={uiCopy.customer.pickupTime}>
+						<span>{uiCopy.customer.pickup}</span>
+						<strong>{estimatedReadyAt ?? uiCopy.common.notRecorded}</strong>
+					</section>
 					<h2>{statusCopy.heading}</h2>
 					<p className="customer-status-detail">{statusCopy.detail}</p>
 
 					{hasUnreadShortage && (
 						<section className="customer-shortage-alert" role="alert">
-							<h3>部分餐點已售完</h3>
-							<strong>最新應付金額 NT$ {order.total}</strong>
-							<span>原價 NT$ {order.originalTotal ?? order.total}，已扣除 NT$ {(order.originalTotal ?? order.total) - order.total}</span>
+							<h3>{uiCopy.customer.partialSoldOut}</h3>
+							<strong>{uiCopy.customer.latestAmountPrefix} {order.total}</strong>
+							<span>{uiCopy.customer.originalPricePrefix} {order.originalTotal ?? order.total}{uiCopy.customer.deductedAmountPrefix} {(order.originalTotal ?? order.total) - order.total}</span>
 							<ul>{shortages.map((shortage, index) => <li key={`${shortage.name}-${index}`}>{shortage.name} × {shortage.quantity}</li>)}</ul>
 							<button type="button" onClick={() => {
 								try { acknowledgeShortageRevision(publicLookupToken, shortageRevision); } catch { /* keep in memory */ }
 								setAcknowledgedRevision(shortageRevision);
-							}}>我知道了</button>
+							}}>{uiCopy.customer.acknowledge}</button>
 						</section>
 					)}
 					{shortages.length > 0 && !hasUnreadShortage && (
 						<section className="customer-shortage-record">
-							<strong>餐點調整紀錄</strong>
-							<span>原始 NT$ {order.originalTotal ?? order.total}・總金額 NT$ {order.total}</span>
+							<strong>{uiCopy.customer.adjustmentHistory}</strong>
+							<span>{uiCopy.customer.originalAmountPrefix} {order.originalTotal ?? order.total}{uiCopy.customer.totalAmountPrefix} {order.total}</span>
 						</section>
 					)}
 
 					<dl className="customer-status-meta">
-						{!isOnsite && <div>
-							<dt>顧客</dt>
-							<dd>{order.customerName}</dd>
-						</div>}
 						<div>
-							<dt>送出時間</dt>
-							<dd>{createdAt ?? "時間未記錄"}</dd>
+							<dt>{uiCopy.customer.createdTime}</dt>
+							<dd>{createdAt ?? uiCopy.common.timeMissing}</dd>
 						</div>
 						{!isOnsite && <div>
-							<dt>預計取餐時間</dt>
-							<dd>{estimatedReadyAt ?? "預計完成時間未記錄"}</dd>
+							<dt>{uiCopy.customer.pickupTime}</dt>
+							<dd>{estimatedReadyAt ?? uiCopy.common.readyTimeMissing}</dd>
 						</div>}
 					</dl>
 
 					{isOnsite ? (
 						<p className="onsite-pickup-message">
 							{order.status === "completed"
-								? "請向店家出示此訂單畫面"
-								: "餐點完成後即可取餐"}
+								? uiCopy.customer.showOrderAtPickup
+								: uiCopy.customer.pickupWhenReady}
 						</p>
 					) : (
 						<p className="online-pickup-message">
-							預計取餐時間 {estimatedReadyAt ?? "尚未記錄"}；取餐時請向店家報此時間。
+							{uiCopy.customer.pickupTime} {estimatedReadyAt ?? uiCopy.common.notRecorded}{uiCopy.customer.pickupReferenceHint}
 						</p>
 					)}
 					{!isOnsite && shouldPollOrderStatus(order.status) && remainingMinutes !== null && (
 						<p className="pickup-countdown" role="status">
 							{remainingMinutes > 10
-								? `距離預計取餐還有 ${remainingMinutes} 分鐘`
+								? `${uiCopy.customer.pickupRemainingPrefix}${remainingMinutes}${uiCopy.common.minutesSuffix}`
 								: remainingMinutes > 0
-									? `即將可以取餐，約剩 ${remainingMinutes} 分鐘`
-									: "已到預計取餐時間，請查看目前訂單狀態。"}
+									? `${uiCopy.customer.pickupSoonPrefix}${remainingMinutes}${uiCopy.common.minutesSuffix}`
+									: uiCopy.customer.pickupTimeReachedHint}
 						</p>
 					)}
 
 					{order.customerNote && (
 						<p className="customer-order-note">
-							<strong>訂單備註</strong>
+							<strong>{uiCopy.common.orderNote}</strong>
 							<span>{order.customerNote}</span>
 						</p>
 					)}
 					{order.packagingPreference === "separate_spicy" && (
 						<p className="customer-order-note">
-							<strong>包裝方式</strong>
-							<span>辣／不辣分袋</span>
+							<strong>{uiCopy.common.packaging}</strong>
+							<span>{uiCopy.common.separateSpicyBags}</span>
 						</p>
 					)}
 
@@ -295,24 +305,37 @@ export default function CustomerOrderStatus({
 					</ul>
 
 					<p className="customer-status-total">
-						<span>{order.cancelledAt ? "目前應付" : "總計"}</span>
+						<span>{order.cancelledAt ? uiCopy.customer.currentAmount : uiCopy.customer.total}</span>
 						<strong>NT$ {order.total}</strong>
 					</p>
 
-					{order.status === "pending" && (
-						<button className="customer-cancel-order" type="button" disabled={isCancelling} onClick={() => void cancelOrder()}>
-							{isCancelling ? "取消處理中…" : "取消訂單"}
+					{order.status === "pending" && !deadlineReached && (
+						<button className="customer-cancel-order" type="button" disabled={isCancelling} onClick={() => setCancelDialogOpen(true)}>
+							{isCancelling ? uiCopy.customer.cancelling : uiCopy.customer.cancelOrder}
 						</button>
 					)}
-					{order.status === "accepted" && <p className="cancellation-guidance">店家已接單，無法線上自行取消；如有需要請直接聯絡店家。</p>}
+					{order.status === "accepted" && <p className="cancellation-guidance">{uiCopy.customer.acceptedCancelHint}</p>}
 					{cancellationError && <p className="message error" role="alert">{cancellationError}</p>}
 
-					{shouldPollOrderStatus(order.status) && (
+					{isCustomerOrderActive(order, now) && (
 						<p className="polling-note" role="status">
-							狀態會自動更新，不需要重新整理頁面。
+							{uiCopy.customer.autoRefreshHint}
 						</p>
 					)}
 				</article>
+			)}
+			{cancelDialogOpen && order?.status === "pending" && (
+				<DestructiveConfirmationDialog
+					title={uiCopy.customer.cancelTitle}
+					description={uiCopy.customer.cancelDescription}
+					dismissLabel={uiCopy.customer.cancelDismiss}
+					confirmLabel={uiCopy.customer.cancelOrder}
+					isProcessing={isCancelling}
+					onDismiss={() => setCancelDialogOpen(false)}
+					onConfirm={() => void cancelOrder()}
+				>
+					<p className="merchant-dialog-summary">{uiCopy.customer.pickup} {estimatedReadyAt ?? uiCopy.common.timeMissing}</p>
+				</DestructiveConfirmationDialog>
 			)}
 		</main>
 	);

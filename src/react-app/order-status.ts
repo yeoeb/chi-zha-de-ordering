@@ -1,3 +1,4 @@
+import { uiCopy } from "./ui-copy";
 export type OrderStatus = "pending" | "accepted" | "completed" | "rejected" | "cancelled";
 
 export type CustomerOrder = {
@@ -12,10 +13,11 @@ export type CustomerOrder = {
 	estimatedReadyAt: string;
 	total: number;
 	originalTotal?: number;
-	shortagePolicy?: "continue_available" | "cancel_entire_order";
+	shortagePolicy?: "continue_available" | "cancel_entire_order" | null;
 	shortageRevision?: number;
 	cancelledAt?: string | null;
 	cancellationReason?: "customer_cancelled" | "shortage_cancelled" | "all_items_unavailable" | null;
+	rejectionReason?: "merchant_rejected" | "auto_rejected_unanswered" | null;
 	items: Array<{
 		name: string;
 		unitPrice: number;
@@ -35,13 +37,23 @@ export const CUSTOMER_STATUS_COPY: Record<
 	OrderStatus,
 	{ heading: string; detail: string }
 > = {
-	pending: { heading: "等待店家接單", detail: "訂單已送出" },
-	accepted: { heading: "製作中", detail: "正在製作，請稍候" },
-	completed: { heading: "餐點已完成", detail: "可以取餐了" },
-	rejected: { heading: "訂單未成立", detail: "店家未接受這筆訂單" },
-	cancelled: { heading: "訂單已取消", detail: "這筆訂單不會繼續製作" },
+	pending: { heading: uiCopy.customer.pending, detail: uiCopy.customer.orderSubmitted },
+	accepted: { heading: uiCopy.customer.preparing, detail: uiCopy.customer.preparingDetail },
+	completed: { heading: uiCopy.customer.completed, detail: uiCopy.customer.completedDetail },
+	rejected: { heading: uiCopy.customer.rejected, detail: uiCopy.customer.rejectedDetail },
+	cancelled: { heading: uiCopy.customer.cancelled, detail: uiCopy.customer.cancelledDetail },
 };
 
 export function shouldPollOrderStatus(status: OrderStatus) {
 	return status === "pending" || status === "accepted";
+}
+
+export function isCustomerOrderActive(
+	order: Pick<CustomerOrder, "status" | "estimatedReadyAt">,
+	now = Date.now(),
+) {
+	if (!shouldPollOrderStatus(order.status)) return false;
+	const deadline = Date.parse(order.estimatedReadyAt);
+	// Preserve recovery access if a legacy snapshot has no parseable deadline.
+	return Number.isNaN(deadline) || deadline > now;
 }

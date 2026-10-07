@@ -1,6 +1,7 @@
 import { advancePendingOnsiteOrders } from "./order-scheduling";
 import { getOrderSnapshotById, getOrderSnapshotByPublicLookupToken } from "./merchant-orders";
 import { getStoreSettings } from "./store-settings";
+import { requireOpeningBusinessDay } from "./daily-sold-out";
 
 const REQUEST_ID_PATTERN = /^[A-Za-z0-9_-]{16,128}$/;
 
@@ -117,11 +118,12 @@ export async function markOrderShortage(
 	}
 
 	const order = await db.prepare(
-		`SELECT status, shortage_policy AS shortagePolicy, shortage_revision AS shortageRevision,
+		`SELECT status, order_source AS orderSource, shortage_policy AS shortagePolicy, shortage_revision AS shortageRevision,
 			total_amount AS totalAmount, cancelled_at AS cancelledAt
 		FROM orders WHERE id = ?`,
 	).bind(orderId).first<{
 		status: string;
+		orderSource: "online" | "onsite";
 		shortagePolicy: "continue_available" | "cancel_entire_order";
 		shortageRevision: number;
 		totalAmount: number;
@@ -166,14 +168,16 @@ export async function markOrderShortage(
 		WHERE order_items.order_id = ?`,
 	).bind(orderId).first<{ quantity: number }>();
 	const newRemainingQuantity = (remaining?.quantity ?? 0) - request.items.reduce((sum, item) => sum + item.quantity, 0);
-	const shouldCancel = order.shortagePolicy === "cancel_entire_order" || newRemainingQuantity === 0;
+	const cancelForCustomerPolicy = order.orderSource === "online" && order.shortagePolicy === "cancel_entire_order";
+	const shouldCancel = cancelForCustomerPolicy || newRemainingQuantity === 0;
 	const newRevision = order.shortageRevision + 1;
 	const timestamp = now.toISOString();
 	const newTotal = shouldCancel ? 0 : order.totalAmount - deducted;
 	const reason = shouldCancel
-		? order.shortagePolicy === "cancel_entire_order" ? "shortage_cancelled" : "all_items_unavailable"
+		? cancelForCustomerPolicy ? "shortage_cancelled" : "all_items_unavailable"
 		: null;
 
+	const businessDay = await requireOpeningBusinessDay(db, now);
 	const statements: D1PreparedStatement[] = [
 		db.prepare(
 			`UPDATE orders SET
@@ -199,11 +203,11 @@ export async function markOrderShortage(
 	}
 	for (const menuItemId of new Set(request.items.map((item) => rows.get(item.orderItemId)!.menuItemId))) {
 		statements.push(db.prepare(
-			`UPDATE menu_items SET is_available = 0
+			`UPDATE menu_items SET is_available = 0, sold_out_business_date = ?
 			WHERE id = ? AND EXISTS (
 				SELECT 1 FROM orders WHERE id = ? AND shortage_revision = ?
 			)`,
-		).bind(menuItemId, orderId, newRevision));
+		).bind(businessDay, menuItemId, orderId, newRevision));
 	}
 	statements.push(db.prepare(
 		`INSERT INTO order_shortage_requests (id, order_id, request_fingerprint, created_at)

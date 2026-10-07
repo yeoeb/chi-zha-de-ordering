@@ -1,4 +1,5 @@
 import { Hono, type Context } from "hono";
+import { BusinessScheduleUnavailableError, restorePreviousBusinessDaySoldOut } from "./daily-sold-out";
 import {
 	AdminMenuError,
 	createAdminCategory,
@@ -31,10 +32,14 @@ import {
 } from "./order-creation";
 import {
 	listActiveMerchantOrders,
-	listRecentMerchantOrderHistory,
+	listMerchantOrderHistoryForBusinessDate,
 	MerchantOrderError,
 	transitionMerchantOrder,
 } from "./merchant-orders";
+import {
+	getStoreBusinessDate,
+	isStoreBusinessDateInHistoryWindow,
+} from "../shared/business-date";
 import {
 	AvailabilityControlError,
 	setMenuItemAvailability,
@@ -79,6 +84,22 @@ import {
 	OrderAdjustmentError,
 	parseShortageRequest,
 } from "./order-adjustments";
+import {
+	OperationalAutomationError,
+	parseBusyModeRequest,
+	performBusyModeOperation,
+	processDueAutoRejections,
+} from "./operational-automation";
+import {
+	AdminStoreError,
+	decodeWeeklyBusinessHours,
+	getAdminStoreConfiguration,
+	getTodayBusinessHours,
+	parseAdminStoreConfiguration,
+	updateAdminStoreConfiguration,
+} from "./admin-store";
+import { getMerchantRevenueSummary } from "./merchant-revenue";
+import { requiresModifierSelection } from "../shared/spice";
 
 type AppEnvironment = {
 	Bindings: Env & SecurityBindings & WebPushBindings & StoreOperationBindings;
@@ -146,6 +167,8 @@ app.get("/api/store", async (c) => {
 		return c.json({ error: "Store settings not found" }, 404);
 	}
 
+	const weeklyBusinessHours = decodeWeeklyBusinessHours(store.weekly_business_hours);
+	const todayHours = getTodayBusinessHours(weeklyBusinessHours);
 	return c.json({
 		id: store.id,
 		display_name: store.display_name,
@@ -157,6 +180,16 @@ app.get("/api/store", async (c) => {
 		originDisclosure: store.origin_disclosure
 			? store.origin_disclosure.split("\n").filter(Boolean)
 			: [],
+		busyMode: Boolean(store.busy_mode),
+		missedOrderCount: store.missed_order_count,
+		autoPauseReason: store.auto_pause_reason,
+		todayIsOpen: todayHours?.isOpen ?? null,
+		todayOpenAt: todayHours?.isOpen ? todayHours.openAt : null,
+		todayCloseAt: todayHours?.isOpen ? todayHours.closeAt : null,
+		lastOrderAt: store.last_order_time,
+		customerPhoneMode: store.customer_phone_mode,
+		showProductImages: Boolean(store.show_product_images),
+		newOrderSoundEnabled: Boolean(store.new_order_sound_enabled),
 	});
 });
 
@@ -253,7 +286,7 @@ app.get("/api/menu", async (c) => {
 						id: row.modifierGroupId,
 						name: row.modifierGroupName,
 						selectionType: row.modifierGroupSelectionType,
-						isRequired: Boolean(row.modifierGroupIsRequired),
+						isRequired: requiresModifierSelection({ name: row.modifierGroupName, isRequired: Boolean(row.modifierGroupIsRequired) }),
 						options: [],
 					};
 					item.modifierGroups.push(modifierGroup);
@@ -344,6 +377,7 @@ app.post("/api/checkout/quote", async (c) => {
 			);
 		}
 
+		const now = new Date();
 		const [pricedCart, queueCounts] = await Promise.all([
 			validateAndPriceCart(c.env.DB, selections),
 			c.env.DB
@@ -353,8 +387,10 @@ app.post("/api/checkout/quote", async (c) => {
 						COALESCE(SUM(CASE WHEN special_order = 1 THEN 1 ELSE 0 END), 0)
 							AS specialOrdersAhead
 					FROM orders
-					WHERE status IN ('pending', 'accepted')`,
+					WHERE cancelled_at IS NULL AND (status = 'pending'
+						OR (status = 'accepted' AND datetime(estimated_ready_at) > datetime(?)))`,
 				)
+				.bind(now.toISOString())
 				.first<{ ordersAhead: number; specialOrdersAhead: number }>(),
 		]);
 
@@ -365,8 +401,9 @@ app.post("/api/checkout/quote", async (c) => {
 				specialExtraMinutes: store.special_extra_minutes,
 				ordersAhead: queueCounts?.ordersAhead ?? 0,
 				specialOrdersAhead: queueCounts?.specialOrdersAhead ?? 0,
+				minimumLeadMinutes: store.busy_mode ? 30 : 15,
 			},
-			new Date(),
+			now,
 		);
 		const quoteFingerprint = await createQuoteFingerprint(pricedCart);
 
@@ -435,7 +472,11 @@ async function handleCreateOrder(c: Context<AppEnvironment>, orderSource: OrderS
 
 	try {
 		const idempotencyKey = parseIdempotencyKey(c.req.header("Idempotency-Key"));
-		const request = parseCreateOrderRequest(requestBody, orderSource);
+		const store = await getStoreSettings(c.env.DB);
+		if (!store) {
+			return c.json({ error: { code: "STORE_SETTINGS_NOT_FOUND", message: "Store settings not found" } }, 500);
+		}
+		const request = parseCreateOrderRequest(requestBody, orderSource, store.customer_phone_mode);
 		const result = await createOrder(c.env.DB, request, idempotencyKey, new Date());
 
 		if (!result.replayed) {
@@ -556,7 +597,9 @@ app.use("/api/admin/*", async (c, next) => {
 	if (
 		!isMerchantMutationRequestAllowed({
 			method: c.req.method,
+			devBypass: c.env.ADMIN_DEV_BYPASS,
 			expectedHostname: c.env.ADMIN_HOSTNAME,
+			requestUrl: c.req.url,
 			origin: c.req.header("Origin"),
 			secFetchSite: c.req.header("Sec-Fetch-Site"),
 		})
@@ -656,6 +699,30 @@ app.patch("/api/admin/store-presentation", async (c) => {
 	}
 });
 
+app.get("/api/admin/store", async (c) => {
+	try {
+		return c.json(await getAdminStoreConfiguration(c.env.DB));
+	} catch (error) {
+		if (error instanceof AdminStoreError) {
+			return c.json({ error: { code: "INVALID_ADMIN_STORE", message: error.message } }, 400);
+		}
+		throw error;
+	}
+});
+
+app.patch("/api/admin/store", async (c) => {
+	try {
+		const body = await readBoundedJson(c.req.raw);
+		const settings = parseAdminStoreConfiguration(body);
+		return c.json(await updateAdminStoreConfiguration(c.env.DB, settings));
+	} catch (error) {
+		if (error instanceof RequestBodyError || error instanceof AdminStoreError) {
+			return c.json({ error: { code: "INVALID_ADMIN_STORE", message: error.message } }, 400);
+		}
+		throw error;
+	}
+});
+
 app.use("/api/merchant/*", async (c, next) => {
 	c.header("Cache-Control", "no-store");
 	const identity = await authenticateMerchantRequest({
@@ -701,11 +768,23 @@ app.use("/api/merchant/*", async (c, next) => {
 });
 
 app.get("/api/merchant/orders", async (c) => {
-	const [orders, history] = await Promise.all([
-		listActiveMerchantOrders(c.env.DB),
-		listRecentMerchantOrderHistory(c.env.DB),
-	]);
-	return c.json({ orders, history });
+	return c.json({ orders: await listActiveMerchantOrders(c.env.DB) });
+});
+
+app.get("/api/merchant/orders/history", async (c) => {
+	const now = new Date();
+	const businessDate = c.req.query("date") ?? getStoreBusinessDate(now);
+	if (!isStoreBusinessDateInHistoryWindow(businessDate, now)) {
+		return c.json({ error: { code: "INVALID_HISTORY_DATE", message: "History date must be within the last 90 business days" } }, 400);
+	}
+	return c.json({
+		businessDate,
+		history: await listMerchantOrderHistoryForBusinessDate(c.env.DB, businessDate, now),
+	});
+});
+
+app.get("/api/merchant/revenue", async (c) => {
+	return c.json(await getMerchantRevenueSummary(c.env.DB));
 });
 
 app.get("/api/merchant/notifications", async (c) => {
@@ -786,7 +865,7 @@ app.post("/api/merchant/menu-items/:id/sold-out", async (c) => {
 		const item = await setMenuItemAvailability(c.env.DB, Number(c.req.param("id")), false);
 		return c.json({ item });
 	} catch (error) {
-		if (error instanceof AvailabilityControlError) {
+		if (error instanceof AvailabilityControlError || error instanceof BusinessScheduleUnavailableError) {
 			return c.json({ error: { code: error.code, message: error.message } }, error.status);
 		}
 
@@ -799,7 +878,7 @@ app.post("/api/merchant/menu-items/:id/restore", async (c) => {
 		const item = await setMenuItemAvailability(c.env.DB, Number(c.req.param("id")), true);
 		return c.json({ item });
 	} catch (error) {
-		if (error instanceof AvailabilityControlError) {
+		if (error instanceof AvailabilityControlError || error instanceof BusinessScheduleUnavailableError) {
 			return c.json({ error: { code: error.code, message: error.message } }, error.status);
 		}
 
@@ -866,6 +945,26 @@ app.post("/api/merchant/store/resume", (c) => {
 	return executeStoreOperation(c, "resume");
 });
 
+app.post("/api/merchant/store/busy-mode", async (c) => {
+	try {
+		const request = parseBusyModeRequest(await readBoundedJson(c.req.raw));
+		const result = await performBusyModeOperation({
+			db: c.env.DB,
+			request,
+			actorSubject: c.get("merchantActorSubject"),
+			auditActorHashKey: c.env.AUDIT_ACTOR_HASH_KEY,
+		});
+		return c.json(result, result.outcome === "STALE_STATE" ? 409 : 200);
+	} catch (error) {
+		if (error instanceof RequestBodyError || error instanceof OperationalAutomationError) {
+			const status = error instanceof OperationalAutomationError ? error.status : 400;
+			const code = error instanceof OperationalAutomationError ? error.code : "INVALID_REQUEST";
+			return c.json({ error: { code, message: error.message } }, status);
+		}
+		throw error;
+	}
+});
+
 app.post("/api/merchant/orders/:id/accept", async (c) => {
 	try {
 		const order = await transitionMerchantOrder(c.env.DB, c.req.param("id"), "accept", new Date());
@@ -916,6 +1015,9 @@ app.post("/api/merchant/orders/:id/shortages", async (c) => {
 		const result = await markOrderShortage(c.env.DB, c.req.param("id"), request, new Date());
 		return c.json(result);
 	} catch (error) {
+		if (error instanceof BusinessScheduleUnavailableError) {
+			return c.json({ error: { code: error.code, message: error.message } }, error.status);
+		}
 		if (error instanceof RequestBodyError || error instanceof OrderAdjustmentError) {
 			const status = error instanceof OrderAdjustmentError ? error.status : 400;
 			const code = error instanceof OrderAdjustmentError ? error.code : "INVALID_SHORTAGE_REQUEST";
@@ -925,4 +1027,11 @@ app.post("/api/merchant/orders/:id/shortages", async (c) => {
 	}
 });
 
-export default app;
+const worker = Object.assign(app, {
+	scheduled(_controller: ScheduledController, env: AppEnvironment["Bindings"], ctx: ExecutionContext) {
+		ctx.waitUntil(processDueAutoRejections(env.DB));
+		ctx.waitUntil(restorePreviousBusinessDaySoldOut(env.DB));
+	},
+});
+
+export default worker;

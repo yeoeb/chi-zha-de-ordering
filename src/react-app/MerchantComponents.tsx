@@ -1,3 +1,4 @@
+import { uiCopy } from "./ui-copy";
 import { useState } from "react";
 import {
 	groupMerchantItemsBySpice,
@@ -15,6 +16,7 @@ import {
 const LARGE_ORDER_QUANTITY = 8;
 
 function modifierLabel(modifier: MerchantModifier) {
+	if (modifier.groupName === "辣度" && modifier.name === "辣粉另包") return modifier.name;
 	if (modifier.groupName.startsWith("特殊選項：")) return modifier.name;
 	return `${modifier.groupName}：${modifier.name}`;
 }
@@ -27,33 +29,33 @@ export function MerchantPrimaryNavigation({
 	onChange,
 }: {
 	activeView: MerchantViewName;
-	workflowView: "pending" | "accepted" | "history";
+	workflowView: "pending" | "accepted";
 	pendingCount: number;
 	acceptedCount: number;
 	onChange: (view: "pending" | "accepted" | "availability") => void;
 }) {
 	return (
-		<nav className="merchant-primary-nav" aria-label="店家主要功能">
+		<nav className="merchant-primary-nav" aria-label={uiCopy.merchant.primaryNavigation}>
 			<button
 				type="button"
 				aria-current={activeView === "orders" && workflowView === "pending" ? "page" : undefined}
 				onClick={() => onChange("pending")}
 			>
-				待接單 <strong>{pendingCount}</strong>
+				{uiCopy.merchant.pending} <strong>{pendingCount}</strong>
 			</button>
 			<button
 				type="button"
 				aria-current={activeView === "orders" && workflowView === "accepted" ? "page" : undefined}
 				onClick={() => onChange("accepted")}
 			>
-				製作中 <strong>{acceptedCount}</strong>
+				{uiCopy.merchant.preparing} <strong>{acceptedCount}</strong>
 			</button>
 			<button
 				type="button"
 				aria-current={activeView === "availability" ? "page" : undefined}
 				onClick={() => onChange("availability")}
 			>
-				售罄
+				{uiCopy.merchant.soldOut}
 			</button>
 		</nav>
 	);
@@ -64,20 +66,28 @@ export function MerchantOrderCard({
 	isNew,
 	isProcessing,
 	processingAction,
+	isHistorical = false,
+	embeddedHistory = false,
 	onAction,
 	onShortage,
+	onOpenSecondary,
+	onReturn,
 }: {
 	order: MerchantOrder;
 	isNew: boolean;
 	isProcessing: boolean;
 	processingAction?: "accept" | "reject" | "complete" | null;
+	isHistorical?: boolean;
+	embeddedHistory?: boolean;
 	onAction: (action: "accept" | "reject" | "complete") => void;
 	onShortage?: (items: Array<{ orderItemId: string; quantity: number }>) => Promise<boolean>;
+	onOpenSecondary?: () => void;
+	onReturn?: () => void;
 }) {
 	const [shortageItemId, setShortageItemId] = useState<string | null>(null);
 	const [shortageQuantity, setShortageQuantity] = useState(1);
 	const itemQuantity = order.items.reduce((total, item) => total + item.quantity, 0);
-	const isActiveOrder = order.status === "pending" || order.status === "accepted";
+	const isActiveOrder = !isHistorical && (order.status === "pending" || order.status === "accepted");
 	const deadlineTime = formatTaipeiDeadlineTime(order.estimatedReadyAt);
 	const deadlineDateTime = formatTaipeiDeadlineDateTime(order.estimatedReadyAt);
 	const orderSource = order.orderSource ?? "online";
@@ -88,38 +98,39 @@ export function MerchantOrderCard({
 
 	return (
 		<article
-			className={`merchant-order${order.specialOrder ? " special" : ""}${isNew ? " new-order" : ""}`}
-			aria-label={`訂單 #${order.orderNumber}`}
+			className={`merchant-order source-${orderSource}${order.specialOrder ? " special" : ""}${isNew ? " new-order" : ""}`}
+			data-testid={`merchant-order-${order.id}`}
 			aria-busy={isProcessing}
 		>
-			<header className="merchant-order-heading">
+			{!embeddedHistory && <header className="merchant-order-heading">
 				<div>
 					<p className="merchant-primary-deadline">
 						{isActiveOrder
-							? deadlineTime ?? "截止時間未記錄"
-							: deadlineDateTime ?? "截止時間未記錄"}
+							? deadlineTime ?? uiCopy.common.deadlineMissing
+							: deadlineDateTime ?? uiCopy.common.deadlineMissing}
 					</p>
-					{!isActiveOrder && <p className="merchant-order-number">訂單 #{order.orderNumber}</p>}
 					{!isActiveOrder && <p className="merchant-deadline history">
-						{order.status === "completed" ? "已完成" : order.status === "cancelled" ? "已取消" : "已拒單"}
+						{order.status === "completed"
+							? uiCopy.merchant.completed
+							: order.status === "cancelled"
+								? uiCopy.merchant.cancelled
+								: order.status === "accepted"
+									? uiCopy.merchant.pickupTimeReached
+									: uiCopy.merchant.rejected}
 					</p>}
-					{!isActiveOrder && deadlineDateTime && (
-						<time dateTime={order.estimatedReadyAt}>截止 {deadlineDateTime}</time>
-					)}
-					{!isActiveOrder && <time dateTime={order.createdAt}>下單 {formatTaipeiDeadlineDateTime(order.createdAt) ?? "時間未記錄"}</time>}
 				</div>
 				<div className="merchant-order-signals">
 					<span className={`order-source-badge source-${orderSource}`}>
-						{orderSource === "onsite" ? "現場" : "網路"}
+						{orderSource === "onsite" ? uiCopy.merchant.onsite : uiCopy.merchant.online}
 					</span>
 					{order.status === "accepted" && (
 						<strong className="merchant-active-total">NT$ {order.total}</strong>
 					)}
-					{(order.shortageRevision ?? 0) > 0 && <span className="merchant-adjusted-badge">已調整</span>}
-					{!isActiveOrder && itemQuantity >= LARGE_ORDER_QUANTITY && <strong>共 {itemQuantity} 份</strong>}
-					{!isActiveOrder && order.specialOrder && <span className="special-badge">特殊訂單</span>}
+					{(order.shortageRevision ?? 0) > 0 && <span className="merchant-adjusted-badge">{uiCopy.merchant.adjusted}</span>}
+					{!isActiveOrder && itemQuantity >= LARGE_ORDER_QUANTITY && <strong>{uiCopy.merchant.largeOrderPrefix} {itemQuantity} {uiCopy.common.itemUnit}</strong>}
+					{!isActiveOrder && order.specialOrder && <span className="special-badge">{uiCopy.merchant.specialOrder}</span>}
 				</div>
-			</header>
+			</header>}
 
 			{isActiveOrder ? (
 				<div className="merchant-spice-groups">
@@ -141,11 +152,12 @@ export function MerchantOrderCard({
 												className="merchant-item-shortage-button"
 												disabled={isProcessing}
 												onClick={() => {
+													onOpenSecondary?.();
 													setShortageItemId(item.id ?? null);
 													setShortageQuantity(1);
 												}}
 											>
-												缺貨
+												{uiCopy.merchant.shortage}
 											</button>
 										)}
 									</li>
@@ -155,44 +167,51 @@ export function MerchantOrderCard({
 					))}
 				</div>
 			) : (
-				<ul className="merchant-item-list">
-					{order.items.map((item, index) => (
-						<li key={item.id ?? `${order.id}-${index}`}>
-							<div>
-								<strong>{item.name} ×{item.quantity}</strong>
-								{item.modifiers.length > 0 && <p>{item.modifiers.map(modifierLabel).join(" · ")}</p>}
-							</div>
-							<span>NT$ {item.lineTotal}</span>
-						</li>
+				<div className="merchant-spice-groups merchant-history-spice-groups">
+					{spiceGroups.map((group) => (
+						<section className={`merchant-spice-group spice-${group.className}`} key={group.name}>
+							<h3>{group.name}</h3>
+							<ul className="merchant-item-list">
+								{group.items.map((item, index) => (
+									<li key={item.id ?? `${order.id}-${group.name}-${index}`}>
+										<div>
+											<strong>{item.name} ×{item.quantity}</strong>
+											{item.displayModifiers.length > 0 && <p>{item.displayModifiers.map(modifierLabel).join(" · ")}</p>}
+										</div>
+										<span>NT$ {item.lineTotal}</span>
+									</li>
+								))}
+							</ul>
+						</section>
 					))}
-				</ul>
+				</div>
 			)}
 
 			{order.customerNote && (
-				<section className="merchant-order-note" aria-label="訂單備註">
-					<div><span aria-hidden="true">⚠ </span><strong>訂單備註</strong></div>
+				<section className="merchant-order-note" aria-label={uiCopy.common.orderNote}>
+					<div><span aria-hidden="true">⚠ </span><strong>{uiCopy.common.orderNote}</strong></div>
 					<span>{order.customerNote}</span>
 				</section>
 			)}
 
 			{(order.shortages?.length ?? 0) > 0 && (
 				<section className="merchant-shortage-record">
-					<strong>餐點調整</strong>
+					<strong>{uiCopy.merchant.adjustment}</strong>
 					{order.shortages!.map((shortage) => (
-						<span key={shortage.orderItemId}>{shortage.name} 缺少 {shortage.quantity} 份</span>
+						<span key={shortage.orderItemId}>{shortage.name} {uiCopy.merchant.missingQuantityLabel} {shortage.quantity} {uiCopy.common.itemUnit}</span>
 					))}
-					<span>原始 NT$ {order.originalTotal ?? order.total}・目前 NT$ {order.total}</span>
+					<span>{uiCopy.merchant.originalAmountPrefix} {order.originalTotal ?? order.total}{uiCopy.merchant.currentAmountPrefix} {order.total}</span>
 				</section>
 			)}
 
 			{isActiveOrder && onShortage && shortageItem?.id && (
 				<div className="merchant-dialog-backdrop" role="presentation">
 					<section className="merchant-confirm-dialog" role="dialog" aria-modal="true" aria-labelledby={`shortage-title-${shortageItem.id}`}>
-						<h2 id={`shortage-title-${shortageItem.id}`}>確認品項缺貨？</h2>
-						<p><strong>{shortageItem.name}</strong> 會同步設為售罄，後續新訂單將無法購買。</p>
+						<h2 id={`shortage-title-${shortageItem.id}`}>{uiCopy.merchant.shortageTitle}</h2>
+						<p><strong>{shortageItem.name}</strong> {uiCopy.merchant.shortageUnavailableHint}</p>
 						{shortageItem.quantity > 1 && (
 							<label>
-								<span>缺少數量</span>
+								<span>{uiCopy.merchant.shortageQuantity}</span>
 								<select value={shortageQuantity} onChange={(event) => setShortageQuantity(Number(event.target.value))}>
 									{Array.from({ length: shortageItem.quantity }, (_, index) => index + 1).map((quantity) => (
 										<option key={quantity} value={quantity}>{quantity}</option>
@@ -201,41 +220,38 @@ export function MerchantOrderCard({
 							</label>
 						)}
 						<div className="merchant-dialog-actions">
-							<button type="button" disabled={isProcessing} onClick={() => setShortageItemId(null)}>返回</button>
+							<button type="button" disabled={isProcessing} onClick={() => {
+								setShortageItemId(null);
+								onReturn?.();
+							}}>{uiCopy.common.back}</button>
 							<button type="button" className="danger" disabled={isProcessing} onClick={async () => {
 								if (await onShortage([{ orderItemId: shortageItem.id!, quantity: shortageQuantity }])) {
 									setShortageItemId(null);
 									setShortageQuantity(1);
 								}
-							}}>確認缺貨並停售</button>
+							}}>{uiCopy.merchant.shortageConfirm}</button>
 						</div>
 					</section>
 				</div>
 			)}
 
 			{order.packagingPreference === "separate_spicy" && (
-				<section className="merchant-packaging-preference" aria-label="包裝方式">
-					<strong>包裝方式</strong>
-					<span>辣／不辣分袋</span>
+				<section className="merchant-packaging-preference" aria-label={uiCopy.common.packaging}>
+					<strong>{uiCopy.common.packaging}</strong>
+					<span>{uiCopy.common.separateSpicyBags}</span>
 				</section>
 			)}
 
-			{!isActiveOrder && <footer className="merchant-order-footer">
-				<div>
-					{orderSource === "onsite" ? (
-						<span>現場點餐（免留聯絡資料）</span>
-					) : (
-						<><span>{order.customerName}</span><a href={`tel:${order.customerPhone}`}>{order.customerPhone}</a></>
-					)}
-				</div>
+			{!isActiveOrder && !embeddedHistory && <footer className="merchant-order-footer">
+				<span>{orderSource === "onsite" ? uiCopy.onsite.title : uiCopy.merchant.onlineOrder}</span>
 				<strong>NT$ {order.total}</strong>
 			</footer>}
 
 			{isActiveOrder && <div className={`merchant-actions merchant-actions-${order.status}`}>
 				{order.status === "pending" ? (
 					<>
-						<button className="accept-button" type="button" disabled={isProcessing} onClick={() => onAction("accept")}>
-							{processingAction === "accept" ? "接單處理中…" : "接單"}
+						<button className={`accept-button source-${orderSource}`} type="button" disabled={isProcessing} onClick={() => onAction("accept")}>
+							{processingAction === "accept" ? uiCopy.merchant.accepting : uiCopy.merchant.accept}
 						</button>
 						<button
 							className="reject-button"
@@ -243,12 +259,12 @@ export function MerchantOrderCard({
 							disabled={isProcessing}
 							onClick={() => onAction("reject")}
 						>
-							{processingAction === "reject" ? "拒單處理中…" : "拒單"}
+							{processingAction === "reject" ? uiCopy.merchant.rejecting : uiCopy.merchant.reject}
 						</button>
 					</>
 				) : order.status === "accepted" ? (
 					<button type="button" disabled={isProcessing} onClick={() => onAction("complete")}>
-						{processingAction === "complete" ? "完成處理中…" : "完成"}
+						{processingAction === "complete" ? uiCopy.merchant.completing : uiCopy.merchant.complete}
 					</button>
 				) : null}
 			</div>}
@@ -274,21 +290,21 @@ function AvailabilityRows({
 						<div>
 							<strong>{item.name}</strong>
 							<span className={item.isAvailable ? "available" : "sold-out"}>
-								{item.isAvailable ? "販售中" : "已售罄"}
+								{item.isAvailable ? uiCopy.merchant.available : uiCopy.merchant.unavailable}
 							</span>
 						</div>
 						<button
 							type="button"
 							className={item.isAvailable ? "sold-out-button" : "restore-button"}
-							aria-label={`${item.isAvailable ? "售罄" : "恢復"} ${item.name}`}
+							aria-label={`${item.isAvailable ? uiCopy.merchant.soldOut : uiCopy.merchant.restore} ${item.name}`}
 							disabled={processingControl !== null}
 							onClick={() => onToggle(item)}
 						>
 							{processingControl === controlKey
-								? "處理中…"
+								? uiCopy.common.processing
 								: item.isAvailable
-									? "售罄"
-									: "恢復"}
+									? uiCopy.merchant.soldOut
+									: uiCopy.merchant.restore}
 						</button>
 					</li>
 				);
@@ -312,12 +328,12 @@ export function MerchantAvailabilityScreen({
 	return (
 		<section className="merchant-availability" aria-labelledby="availability-heading">
 			<header>
-				<h2 id="availability-heading">商品售罄</h2>
-				<p>只調整顧客目前是否可以加入商品。</p>
+				<h2 id="availability-heading">{uiCopy.merchant.availabilityTitle}</h2>
+				<p>{uiCopy.merchant.availabilityHint}</p>
 			</header>
 			{pinnedItems.length > 0 && (
 				<section className="merchant-pinned-items" aria-labelledby="pinned-items-heading">
-					<h3 id="pinned-items-heading">快速售罄</h3>
+					<h3 id="pinned-items-heading">{uiCopy.merchant.quickSoldOut}</h3>
 					<AvailabilityRows items={pinnedItems} processingControl={processingControl} onToggle={onToggle} />
 				</section>
 			)}

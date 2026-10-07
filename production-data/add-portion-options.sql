@@ -5,13 +5,13 @@ INSERT OR IGNORE INTO modifier_groups (
 	id, menu_item_id, name, selection_type, is_required, sort_order, is_active
 )
 SELECT 7, 4, '份量', 'single', 1, 5, 1
-WHERE EXISTS (SELECT 1 FROM menu_items WHERE id = 4 AND name = '鹹酥雞' AND price = 60);
+WHERE EXISTS (SELECT 1 FROM menu_items WHERE id = 4 AND name IN ('鹹酥雞', '鹽酥雞') AND price = 60);
 
 INSERT OR IGNORE INTO modifier_groups (
 	id, menu_item_id, name, selection_type, is_required, sort_order, is_active
 )
 SELECT 8, 3, '份量', 'single', 1, 5, 1
-WHERE EXISTS (SELECT 1 FROM menu_items WHERE id = 3 AND name = '魷魚' AND price = 60);
+WHERE EXISTS (SELECT 1 FROM menu_items WHERE id = 3 AND name IN ('魷魚', '香酥魷魚') AND price = 60);
 
 INSERT OR IGNORE INTO modifier_options (
 	id, modifier_group_id, name, price_delta, sort_order, is_active

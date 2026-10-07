@@ -1,5 +1,5 @@
 import type { CustomerOrder } from "./order-status";
-import { shouldPollOrderStatus } from "./order-status";
+import { isCustomerOrderActive } from "./order-status";
 
 export const ACTIVE_CUSTOMER_ORDER_STORAGE_KEY = "customer-active-order-tokens-v1";
 export const CUSTOMER_ORDER_HISTORY_STORAGE_KEY = "customer-order-history-tokens-v1";
@@ -71,17 +71,22 @@ function rememberHistoryToken(token: string, storage: Storage) {
 	], storage);
 }
 
-export function rememberActiveCustomerOrder(order: CustomerOrder, storage: Storage = localStorage) {
+export function rememberActiveCustomerOrder(
+	order: CustomerOrder,
+	storage: Storage = localStorage,
+	now = Date.now(),
+) {
 	const current = readActiveCustomerOrderTokens(storage).filter(
 		(token) => token !== order.publicLookupToken,
 	);
+	const isActive = isCustomerOrderActive(order, now);
 	writeActiveCustomerOrderTokens(
-		shouldPollOrderStatus(order.status)
+		isActive
 			? [order.publicLookupToken, ...current]
 			: current,
 		storage,
 	);
-	if (shouldPollOrderStatus(order.status)) {
+	if (isActive) {
 		writeCustomerOrderHistoryTokens(
 			readCustomerOrderHistoryTokens(storage).filter((token) => token !== order.publicLookupToken),
 			storage,

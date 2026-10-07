@@ -18,7 +18,7 @@ beforeAll(async () => {
 			"INSERT INTO modifier_groups (id, menu_item_id, name, selection_type, is_required, sort_order, is_active) VALUES (5, 9, '調味', 'single', 1, 10, 1), (6, 10, '調味', 'single', 1, 10, 1)",
 		),
 		env.DB.prepare(
-			"INSERT INTO modifier_options (id, modifier_group_id, name, price_delta, sort_order, is_active) VALUES (15, 5, '梅粉', 0, 10, 1), (16, 5, '胡椒', 0, 20, 1), (17, 5, '不加調味', 0, 30, 1), (18, 6, '梅粉', 0, 10, 1), (19, 6, '胡椒', 0, 20, 1), (20, 6, '不加調味', 0, 30, 1)",
+			"INSERT INTO modifier_options (id, modifier_group_id, name, price_delta, sort_order, is_active) VALUES (15, 5, '梅粉', 0, 10, 1), (16, 5, '胡椒', 0, 20, 1), (17, 5, '不加調味', 0, 30, 0), (18, 6, '梅粉', 0, 10, 1), (19, 6, '胡椒', 0, 20, 1), (20, 6, '不加調味', 0, 30, 0)",
 		),
 	]);
 });
@@ -57,7 +57,6 @@ describe("fries seasoning persistence", () => {
 				options: [
 					{ id: 15, name: "梅粉" },
 					{ id: 16, name: "胡椒" },
-					{ id: 17, name: "不加調味" },
 				],
 			}],
 		});
@@ -69,7 +68,6 @@ describe("fries seasoning persistence", () => {
 				options: [
 					{ id: 18, name: "梅粉" },
 					{ id: 19, name: "胡椒" },
-					{ id: 20, name: "不加調味" },
 				],
 			}],
 		});
@@ -135,5 +133,22 @@ describe("fries seasoning persistence", () => {
 				modifiers: [expect.objectContaining({ groupName: "調味", name: "梅粉" })],
 			}),
 		]);
+	});
+
+	it.each([
+		[9, 17],
+		[10, 20],
+	])("rejects retired no-seasoning option %i for item %i", async (menuItemId, modifierOptionId) => {
+		const response = await exports.default.fetch("https://example.com/api/checkout/quote", {
+			method: "POST",
+			headers: { "content-type": "application/json" },
+			body: JSON.stringify({
+				items: [{ menuItemId, quantity: 1, modifierOptionIds: [modifierOptionId] }],
+			}),
+		});
+		expect(response.status).toBe(422);
+		expect(await response.json()).toMatchObject({ error: { code: "INACTIVE_MODIFIER_OPTION" } });
+		const orders = await env.DB.prepare("SELECT COUNT(*) AS count FROM orders").first<{ count: number }>();
+		expect(orders?.count).toBe(0);
 	});
 });

@@ -6,6 +6,8 @@ import {
 	OrderAdjustmentError,
 } from "../src/worker/order-adjustments";
 import { getOrderSnapshotById } from "../src/worker/merchant-orders";
+import { dailyTestSchedule } from "./business-hours-fixture";
+import { restorePreviousBusinessDaySoldOut } from "../src/worker/daily-sold-out";
 
 const now = new Date("2026-09-25T04:00:00.000Z");
 
@@ -24,7 +26,8 @@ beforeEach(async () => {
 		env.DB.prepare("DELETE FROM order_items"),
 		env.DB.prepare("DELETE FROM orders"),
 		env.DB.prepare("UPDATE store_settings SET is_accepting_orders = 1 WHERE id = 1"),
-		env.DB.prepare("UPDATE menu_items SET is_available = 1 WHERE id IN (930, 931)"),
+		env.DB.prepare("UPDATE store_settings SET weekly_business_hours = ? WHERE id = 1").bind(JSON.stringify(dailyTestSchedule)),
+		env.DB.prepare("UPDATE menu_items SET is_available = 1, sold_out_business_date = NULL WHERE id IN (930, 931)"),
 	]);
 });
 
@@ -45,6 +48,20 @@ async function insertOrder(id: string, policy: "continue_available" | "cancel_en
 }
 
 describe("Order shortage and Customer cancellation", () => {
+	it("ignores legacy onsite customer preference while retaining partial shortage and sold-out effects", async () => {
+		await insertOrder("onsite-policy", "cancel_entire_order", "onsite");
+		const result = await markOrderShortage(env.DB, "onsite-policy", {
+			requestId: "onsite-policy-shortage",
+			items: [{ orderItemId: "onsite-policy-b", quantity: 1 }],
+		}, now);
+		expect(result.order).toMatchObject({ orderSource: "onsite", shortagePolicy: null, status: "pending", total: 160, originalTotal: 200 });
+		expect(result.order.items).toHaveLength(1);
+		expect(result.order.items[0]).toMatchObject({ name: "測試雞排", quantity: 2, lineTotal: 160 });
+		expect(result.order.shortages).toEqual([{ orderItemId: "onsite-policy-b", name: "測試薯條", quantity: 1, amountDeducted: 40 }]);
+		expect(await env.DB.prepare("SELECT is_available AS available,sold_out_business_date AS day FROM menu_items WHERE id=931").first()).toEqual({ available: 0, day: "2026-09-24" });
+		expect(await env.DB.prepare("SELECT shortage_policy AS policy FROM orders WHERE id='onsite-policy'").first()).toEqual({ policy: "cancel_entire_order" });
+	});
+
 	it("persists the Checkout shortage policy and includes it in idempotent creation", async () => {
 		const items = [{ menuItemId: 930, quantity: 1, modifierOptionIds: [] }];
 		const quoteResponse = await exports.default.fetch("https://example.com/api/checkout/quote", {
@@ -91,6 +108,7 @@ describe("Order shortage and Customer cancellation", () => {
 		expect(first.order.items.find((item) => item.name === "測試雞排")?.quantity).toBe(1);
 		expect(first.order.shortages).toEqual([{ orderItemId: "continue-a", name: "測試雞排", quantity: 1, amountDeducted: 80 }]);
 		expect(await env.DB.prepare("SELECT is_available AS isAvailable FROM menu_items WHERE id = 930").first()).toEqual({ isAvailable: 0 });
+		expect(await env.DB.prepare("SELECT sold_out_business_date AS day FROM menu_items WHERE id = 930").first()).toEqual({ day: "2026-09-24" });
 		expect(await env.DB.prepare("SELECT is_available AS isAvailable FROM menu_items WHERE id = 931").first()).toEqual({ isAvailable: 1 });
 
 		const replay = await markOrderShortage(env.DB, "continue", request, now);
@@ -132,6 +150,30 @@ describe("Order shortage and Customer cancellation", () => {
 		expect(await env.DB.prepare("SELECT COUNT(*) AS count FROM order_item_shortages WHERE order_item_id = 'atomic-failure-a'").first()).toEqual({ count: 0 });
 		expect(await env.DB.prepare("SELECT COUNT(*) AS count FROM order_shortage_requests WHERE id = 'shortage-request-atomic-failure'").first()).toEqual({ count: 0 });
 		expect(await env.DB.prepare("SELECT is_available AS isAvailable FROM menu_items WHERE id = 930").first()).toEqual({ isAvailable: 1 });
+		expect(await env.DB.prepare("SELECT sold_out_business_date AS day FROM menu_items WHERE id = 930").first()).toEqual({ day: null });
+	});
+
+	it("shortage replay after a new opening never marks the restored item sold-out again", async () => {
+		await insertOrder("day-replay");
+		const request = { requestId: "daily-shortage-replay", items: [{ orderItemId: "day-replay-a", quantity: 1 }] };
+		await markOrderShortage(env.DB, "day-replay", request, now);
+		await restorePreviousBusinessDaySoldOut(env.DB, new Date("2026-09-25T09:30:00Z"));
+		const result = await markOrderShortage(env.DB, "day-replay", request, new Date("2026-09-25T09:31:00Z"));
+		expect(result.replayed).toBe(true);
+		expect(result.order.total).toBe(120);
+		expect(await env.DB.prepare("SELECT is_available AS available,sold_out_business_date AS day FROM menu_items WHERE id=930").first()).toEqual({ available: 1, day: null });
+	});
+
+	it("unconfigured schedule rejects shortage before any order/menu/ledger mutation", async () => {
+		await insertOrder("day-config-gap");
+		await env.DB.prepare("UPDATE store_settings SET weekly_business_hours=NULL WHERE id=1").run();
+		await expect(markOrderShortage(env.DB, "day-config-gap", {
+			requestId: "daily-shortage-config-gap", items: [{ orderItemId: "day-config-gap-a", quantity: 1 }],
+		}, now)).rejects.toMatchObject({ code: "BUSINESS_SCHEDULE_UNAVAILABLE", status: 409 });
+		expect(await env.DB.prepare("SELECT total_amount AS total,shortage_revision AS revision FROM orders WHERE id='day-config-gap'").first()).toEqual({ total: 200, revision: 0 });
+		expect(await env.DB.prepare("SELECT is_available AS available,sold_out_business_date AS day FROM menu_items WHERE id=930").first()).toEqual({ available: 1, day: null });
+		expect(await env.DB.prepare("SELECT COUNT(*) AS count FROM order_shortage_requests WHERE id='daily-shortage-config-gap'").first()).toEqual({ count: 0 });
+		expect(await env.DB.prepare("SELECT COUNT(*) AS count FROM order_item_shortages WHERE order_item_id='day-config-gap-a'").first()).toEqual({ count: 0 });
 	});
 
 	it("rejects a reused shortage request ID when its payload differs", async () => {

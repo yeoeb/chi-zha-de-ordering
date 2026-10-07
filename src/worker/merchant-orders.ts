@@ -1,4 +1,5 @@
 import { advancePendingOnsiteOrders } from "./order-scheduling";
+import { getStoreBusinessDateRange } from "../shared/business-date";
 import { getStoreSettings } from "./store-settings";
 
 export type OrderStatus = "pending" | "accepted" | "completed" | "rejected" | "cancelled";
@@ -10,7 +11,7 @@ export type MerchantOrder = {
 	orderSource: "online" | "onsite";
 	total: number;
 	originalTotal: number;
-	shortagePolicy: "continue_available" | "cancel_entire_order";
+	shortagePolicy: "continue_available" | "cancel_entire_order" | null;
 	shortageRevision: number;
 	cancelledAt: string | null;
 	cancellationReason: "customer_cancelled" | "shortage_cancelled" | "all_items_unavailable" | null;
@@ -19,6 +20,7 @@ export type MerchantOrder = {
 	acceptedAt: string | null;
 	completedAt: string | null;
 	rejectedAt: string | null;
+	rejectionReason: "merchant_rejected" | "auto_rejected_unanswered" | null;
 	customerName: string;
 	customerPhone: string;
 	customerNote: string | null;
@@ -77,6 +79,7 @@ type MerchantOrderRow = {
 	acceptedAt: string | null;
 	completedAt: string | null;
 	rejectedAt: string | null;
+	rejectionReason: MerchantOrder["rejectionReason"];
 	customerName: string;
 	customerPhone: string;
 	customerNote: string | null;
@@ -112,6 +115,7 @@ const SNAPSHOT_SELECT = `SELECT
 	orders.accepted_at AS acceptedAt,
 	orders.completed_at AS completedAt,
 	orders.rejected_at AS rejectedAt,
+	orders.rejection_reason AS rejectionReason,
 	orders.customer_name AS customerName,
 	orders.customer_phone AS customerPhone,
 	orders.customer_note AS customerNote,
@@ -161,7 +165,7 @@ function buildMerchantOrders(rows: MerchantOrderRow[]) {
 				orderSource: row.orderSource,
 				total: row.totalAmount,
 				originalTotal: row.originalTotalAmount ?? row.totalAmount,
-				shortagePolicy: row.shortagePolicy,
+				shortagePolicy: row.orderSource === "onsite" ? null : row.shortagePolicy,
 				shortageRevision: row.shortageRevision,
 				cancelledAt: row.cancelledAt,
 				cancellationReason: row.cancellationReason,
@@ -170,6 +174,7 @@ function buildMerchantOrders(rows: MerchantOrderRow[]) {
 				acceptedAt: row.acceptedAt,
 				completedAt: row.completedAt,
 				rejectedAt: row.rejectedAt,
+				rejectionReason: row.rejectionReason,
 				customerName: row.customerName,
 				customerPhone: row.customerPhone,
 				customerNote: row.customerNote,
@@ -238,15 +243,21 @@ function buildMerchantOrders(rows: MerchantOrderRow[]) {
 	return orders;
 }
 
-export async function listActiveMerchantOrders(db: D1Database) {
+export async function listActiveMerchantOrders(db: D1Database, now = new Date()) {
+	requireValidNow(now);
 	const { results } = await db
-		.prepare(`${SNAPSHOT_SELECT} WHERE orders.status IN ('pending', 'accepted') ${SNAPSHOT_ORDER}`)
+		.prepare(`${SNAPSHOT_SELECT}
+			WHERE orders.status = 'pending'
+				OR (orders.status = 'accepted' AND datetime(orders.estimated_ready_at) > datetime(?))
+			${SNAPSHOT_ORDER}`)
+		.bind(now.toISOString())
 		.all<MerchantOrderRow>();
 
 	return buildMerchantOrders(results);
 }
 
-export async function listRecentMerchantOrderHistory(db: D1Database, limit = 50) {
+export async function listRecentMerchantOrderHistory(db: D1Database, limit = 50, now = new Date()) {
+	requireValidNow(now);
 	const safeLimit = Math.max(1, Math.min(100, Math.trunc(limit)));
 	const { results } = await db
 		.prepare(
@@ -255,7 +266,8 @@ export async function listRecentMerchantOrderHistory(db: D1Database, limit = 50)
 				SELECT id
 				FROM orders
 				WHERE status IN ('completed', 'rejected')
-				ORDER BY COALESCE(completed_at, rejected_at, created_at) DESC, id DESC
+					OR (status = 'accepted' AND datetime(estimated_ready_at) <= datetime(?))
+				ORDER BY COALESCE(completed_at, rejected_at, estimated_ready_at, created_at) DESC, id DESC
 				LIMIT ?
 			)
 			ORDER BY
@@ -266,9 +278,41 @@ export async function listRecentMerchantOrderHistory(db: D1Database, limit = 50)
 				order_item_modifiers.sort_order ASC,
 				order_item_modifiers.id ASC`,
 		)
-		.bind(safeLimit)
+		.bind(now.toISOString(), safeLimit)
 		.all<MerchantOrderRow>();
 
+	return buildMerchantOrders(results);
+}
+
+export async function listMerchantOrderHistoryForBusinessDate(
+	db: D1Database,
+	businessDate: string,
+	now = new Date(),
+) {
+	requireValidNow(now);
+	const range = getStoreBusinessDateRange(businessDate);
+	if (!range) throw new RangeError("businessDate must use YYYY-MM-DD");
+	const { results } = await db.prepare(
+		`${SNAPSHOT_SELECT}
+		WHERE orders.id IN (
+			SELECT id
+			FROM orders
+			WHERE estimated_ready_at >= ? AND estimated_ready_at < ?
+				AND (
+					status IN ('completed', 'rejected')
+					OR (status = 'accepted' AND datetime(estimated_ready_at) <= datetime(?))
+				)
+			ORDER BY datetime(estimated_ready_at) DESC, id DESC
+			LIMIT 200
+		)
+		ORDER BY
+			datetime(orders.estimated_ready_at) DESC,
+			orders.id DESC,
+			order_items.sort_order ASC,
+			order_items.id ASC,
+			order_item_modifiers.sort_order ASC,
+			order_item_modifiers.id ASC`,
+	).bind(range.startInclusive, range.endExclusive, now.toISOString()).all<MerchantOrderRow>();
 	return buildMerchantOrders(results);
 }
 
@@ -311,20 +355,26 @@ export async function transitionMerchantOrder(
 
 	switch (action) {
 		case "accept":
-			result = await db
-				.prepare(
+			[result] = await db.batch([
+				db.prepare(
 					`UPDATE orders
 					SET status = 'accepted', accepted_at = ?
 					WHERE id = ? AND status = 'pending'`,
 				)
 				.bind(timestamp, orderId)
-				.run();
+				,
+				db.prepare(
+					`UPDATE store_settings SET missed_order_count = 0, state_version = state_version + 1
+					WHERE id = 1 AND missed_order_count <> 0
+						AND EXISTS (SELECT 1 FROM orders WHERE id = ? AND status = 'accepted' AND accepted_at = ?)`,
+				).bind(orderId, timestamp),
+			]);
 			break;
 		case "reject":
 			result = await db
 				.prepare(
 					`UPDATE orders
-					SET status = 'rejected', rejected_at = ?
+					SET status = 'rejected', rejected_at = ?, rejection_reason = 'merchant_rejected'
 					WHERE id = ? AND status = 'pending'`,
 				)
 				.bind(timestamp, orderId)

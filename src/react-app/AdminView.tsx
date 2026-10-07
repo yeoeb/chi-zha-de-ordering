@@ -321,7 +321,7 @@ export default function AdminView() {
 		<main className="admin-page">
 			<header className="admin-header">
 				<div><p>吃炸的 · Owner</p><h1>商品管理</h1><span>低頻設定；每日售罄請使用店家工作台。</span></div>
-				<div className="admin-header-actions"><button type="button" onClick={() => setShowCategories((current) => !current)}>管理分類</button><button type="button" onClick={() => { setShowCreateItem(true); setCreateErrors({}); setMessage(null); }}>新增商品</button></div>
+				<div className="admin-header-actions"><a href="/admin/store">店家設定</a><button type="button" onClick={() => setShowCategories((current) => !current)}>管理分類</button><button type="button" onClick={() => { setShowCreateItem(true); setCreateErrors({}); setMessage(null); }}>新增商品</button></div>
 			</header>
 
 			{message && <p className={`admin-message ${message.kind}`} role={message.kind === "error" ? "alert" : "status"}>{message.text}</p>}

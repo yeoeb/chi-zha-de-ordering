@@ -8,6 +8,8 @@ import {
 import { getStoreSettings } from "./store-settings";
 import { isValidCustomerPhone } from "../shared/customer-contact";
 import {
+	ONLINE_CUSTOMER_NAME,
+	OPTIONAL_CUSTOMER_PHONE,
 	ONSITE_CUSTOMER_NAME,
 	ONSITE_CUSTOMER_PHONE,
 	type OrderSource,
@@ -16,12 +18,11 @@ import {
 	ACTIVE_SCHEDULE_FINGERPRINT_SQL,
 	createKitchenScheduleFingerprint,
 	readActiveKitchenSchedule,
-	scheduleNewOnsiteOrder,
+	scheduleNewOrder,
 } from "./order-scheduling";
 import { getOrderSnapshotById } from "./merchant-orders";
 
 const IDEMPOTENCY_KEY_MAX_LENGTH = 128;
-const CUSTOMER_NAME_MAX_LENGTH = 50;
 const CUSTOMER_NOTE_MAX_LENGTH = 120;
 const MAX_ATOMIC_CREATE_ATTEMPTS = 3;
 const QUOTE_FINGERPRINT_PATTERN = /^[0-9a-f]{64}$/;
@@ -41,6 +42,7 @@ export type CreateOrderRequest = {
 	orderSource?: OrderSource;
 	customerName: string;
 	customerPhone: string;
+	customerPhoneMode?: "hidden" | "optional";
 	customerNote?: string | null;
 	packagingPreference?: PackagingPreference;
 	shortagePolicy?: ShortagePolicy;
@@ -62,11 +64,12 @@ export type OrderSnapshot = {
 	customerPhone: string;
 	customerNote: string | null;
 	packagingPreference: PackagingPreference;
-	shortagePolicy: ShortagePolicy;
+	shortagePolicy: ShortagePolicy | null;
 	originalTotal: number;
 	shortageRevision: number;
 	cancelledAt: string | null;
 	cancellationReason: "customer_cancelled" | "shortage_cancelled" | "all_items_unavailable" | null;
+	rejectionReason: "merchant_rejected" | "auto_rejected_unanswered" | null;
 	specialOrder: boolean;
 	items: Array<{
 		menuItemId: number;
@@ -95,6 +98,7 @@ export type CreateOrderResult =
 type OrderCreationErrorCode =
 	| "INVALID_ORDER_REQUEST"
 	| "INVALID_CUSTOMER_PHONE"
+	| "CUSTOMER_PHONE_DISABLED"
 	| "INVALID_IDEMPOTENCY_KEY"
 	| "IDEMPOTENCY_KEY_CONFLICT"
 	| "ORDER_STATE_CHANGED"
@@ -130,6 +134,7 @@ type StoredOrderRow = {
 	shortageRevision: number;
 	cancelledAt: string | null;
 	cancellationReason: OrderSnapshot["cancellationReason"];
+	rejectionReason: OrderSnapshot["rejectionReason"];
 	specialOrder: number;
 	requestFingerprint: string;
 	orderItemId: string | null;
@@ -150,28 +155,6 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function hasOnlyKeys(value: Record<string, unknown>, allowedKeys: ReadonlySet<string>) {
 	return Object.keys(value).every((key) => allowedKeys.has(key));
-}
-
-function normalizeCustomerField(value: unknown, field: string, maxLength: number) {
-	if (typeof value !== "string") {
-		throw new OrderCreationError(400, "INVALID_ORDER_REQUEST", `${field} must be a string`);
-	}
-
-	const normalized = value.trim();
-
-	if (
-		normalized.length === 0 ||
-		normalized.length > maxLength ||
-		hasControlCharacter(normalized)
-	) {
-		throw new OrderCreationError(
-			400,
-			"INVALID_ORDER_REQUEST",
-			`${field} must contain between 1 and ${maxLength} non-control characters`,
-		);
-	}
-
-	return normalized;
 }
 
 function normalizeCustomerNote(value: unknown) {
@@ -204,7 +187,13 @@ function normalizeCustomerNote(value: unknown) {
 	return normalized;
 }
 
-function normalizeCustomerPhone(value: unknown) {
+function normalizeCustomerPhone(value: unknown, mode: "hidden" | "optional") {
+	if (value === undefined || value === null || (typeof value === "string" && value.trim() === "")) {
+		return OPTIONAL_CUSTOMER_PHONE;
+	}
+	if (mode === "hidden") {
+		throw new OrderCreationError(400, "CUSTOMER_PHONE_DISABLED", "customerPhone is disabled by store settings");
+	}
 	if (!isValidCustomerPhone(value)) {
 		throw new OrderCreationError(
 			400,
@@ -239,6 +228,7 @@ function normalizeShortagePolicy(value: unknown): ShortagePolicy {
 export function parseCreateOrderRequest(
 	input: unknown,
 	orderSource: OrderSource = "online",
+	customerPhoneMode: "hidden" | "optional" = "optional",
 ): CreateOrderRequest {
 	const allowedKeys = orderSource === "online"
 		? new Set([
@@ -254,7 +244,6 @@ export function parseCreateOrderRequest(
 		: new Set([
 			"customerNote",
 			"packagingPreference",
-			"shortagePolicy",
 			"specialOrder",
 			"quoteFingerprint",
 			"items",
@@ -277,6 +266,14 @@ export function parseCreateOrderRequest(
 			"specialOrder must be a boolean",
 		);
 	}
+	if (
+		input.customerName !== undefined &&
+		(typeof input.customerName !== "string" ||
+			[...input.customerName.trim()].length > 50 ||
+			hasControlCharacter(input.customerName))
+	) {
+		throw new OrderCreationError(400, "INVALID_ORDER_REQUEST", "customerName is a legacy string field");
+	}
 
 	if (
 		typeof input.quoteFingerprint !== "string" ||
@@ -290,18 +287,17 @@ export function parseCreateOrderRequest(
 	}
 
 	const customerPhone = orderSource === "online"
-		? normalizeCustomerPhone(input.customerPhone)
+		? normalizeCustomerPhone(input.customerPhone, customerPhoneMode)
 		: ONSITE_CUSTOMER_PHONE;
 
 	return {
 		orderSource,
-		customerName: orderSource === "online"
-			? normalizeCustomerField(input.customerName, "customerName", CUSTOMER_NAME_MAX_LENGTH)
-			: ONSITE_CUSTOMER_NAME,
+		customerName: orderSource === "online" ? ONLINE_CUSTOMER_NAME : ONSITE_CUSTOMER_NAME,
 		customerPhone,
+		customerPhoneMode,
 		customerNote: normalizeCustomerNote(input.customerNote),
 		packagingPreference: normalizePackagingPreference(input.packagingPreference),
-		shortagePolicy: normalizeShortagePolicy(input.shortagePolicy),
+		...(orderSource === "online" ? { shortagePolicy: normalizeShortagePolicy(input.shortagePolicy) } : {}),
 		specialOrder: input.specialOrder ?? false,
 		quoteFingerprint: input.quoteFingerprint,
 		items: parseCheckoutQuoteRequest({ items: input.items }),
@@ -390,6 +386,7 @@ async function getStoredOrderByIdempotencyKey(db: D1Database, idempotencyKey: st
 				orders.shortage_revision AS shortageRevision,
 				orders.cancelled_at AS cancelledAt,
 				orders.cancellation_reason AS cancellationReason,
+				orders.rejection_reason AS rejectionReason,
 				orders.special_order AS specialOrder,
 				orders.request_fingerprint AS requestFingerprint,
 				order_items.id AS orderItemId,
@@ -443,6 +440,7 @@ async function getStoredOrderByIdempotencyKey(db: D1Database, idempotencyKey: st
 				shortageRevision: adjustedOrder.shortageRevision,
 				cancelledAt: adjustedOrder.cancelledAt,
 				cancellationReason: adjustedOrder.cancellationReason,
+				rejectionReason: first.rejectionReason,
 				specialOrder: adjustedOrder.specialOrder,
 				items: adjustedOrder.items.map(({ menuItemId, name, unitPrice, quantity, lineTotal, modifiers }) => ({
 					menuItemId,
@@ -475,11 +473,12 @@ async function getStoredOrderByIdempotencyKey(db: D1Database, idempotencyKey: st
 		customerPhone: first.customerPhone,
 		customerNote: first.customerNote,
 		packagingPreference: first.packagingPreference,
-		shortagePolicy: first.shortagePolicy,
+		shortagePolicy: first.orderSource === "onsite" ? null : first.shortagePolicy,
 		originalTotal: first.originalTotalAmount ?? first.totalAmount,
 		shortageRevision: first.shortageRevision,
 		cancelledAt: first.cancelledAt,
 		cancellationReason: first.cancellationReason,
+		rejectionReason: first.rejectionReason,
 		specialOrder: Boolean(first.specialOrder),
 		items: [],
 		shortages: [],
@@ -552,81 +551,58 @@ function assertFingerprintMatches(existingFingerprint: string, requestFingerprin
 }
 
 function buildCatalogCommitGuard(pricedCart: PricedCart) {
-	const clauses: string[] = [];
-	const values: unknown[] = [];
-
-	for (const item of pricedCart.items) {
-		clauses.push(
-			`EXISTS (
-				SELECT 1
-				FROM menu_items AS guarded_items
-				JOIN menu_categories AS guarded_categories
-					ON guarded_categories.id = guarded_items.category_id
-				WHERE guarded_items.id = ?
-					AND guarded_items.name = ?
-					AND guarded_items.price = ?
+	// One bound JSON value keeps even a 50-line cart below D1's SQL-variable limit.
+	// This is the server-priced snapshot, not client-supplied prices. All checks
+	// still run inside the guarded INSERT and the same atomic D1 batch.
+	const items = pricedCart.items.map((item) => ({
+		...item,
+		basePrice: item.unitPrice - item.modifiers.reduce((sum, modifier) => sum + modifier.priceDelta, 0),
+	}));
+	return {
+		values: [JSON.stringify(items)],
+		sql: `NOT EXISTS (
+			SELECT 1 FROM json_each(?) AS confirmed_items
+			WHERE NOT EXISTS (
+				SELECT 1 FROM menu_items AS guarded_items
+				JOIN menu_categories AS guarded_categories ON guarded_categories.id = guarded_items.category_id
+				WHERE guarded_items.id = json_extract(confirmed_items.value, '$.menuItemId')
+					AND guarded_items.name = json_extract(confirmed_items.value, '$.name')
+					AND guarded_items.price = json_extract(confirmed_items.value, '$.basePrice')
 					AND guarded_items.is_available = 1
 					AND guarded_items.is_archived = 0
 					AND guarded_categories.is_active = 1
-			)`,
-		);
-		values.push(item.menuItemId, item.name, item.unitPrice - item.modifiers.reduce(
-			(total, modifier) => total + modifier.priceDelta,
-			0,
-		));
-
-		for (const modifier of item.modifiers) {
-			clauses.push(
-				`EXISTS (
-					SELECT 1
-					FROM modifier_groups AS guarded_groups
-					JOIN modifier_options AS guarded_options
-						ON guarded_options.modifier_group_id = guarded_groups.id
-					WHERE guarded_groups.id = ?
-						AND guarded_groups.menu_item_id = ?
-						AND guarded_groups.name = ?
+			)
+			OR EXISTS (
+				SELECT 1 FROM json_each(json_extract(confirmed_items.value, '$.modifiers')) AS confirmed_modifiers
+				WHERE NOT EXISTS (
+					SELECT 1 FROM modifier_groups AS guarded_groups
+					JOIN modifier_options AS guarded_options ON guarded_options.modifier_group_id = guarded_groups.id
+					WHERE guarded_groups.id = json_extract(confirmed_modifiers.value, '$.groupId')
+						AND guarded_groups.menu_item_id = json_extract(confirmed_items.value, '$.menuItemId')
+						AND guarded_groups.name = json_extract(confirmed_modifiers.value, '$.groupName')
 						AND guarded_groups.selection_type = 'single'
 						AND guarded_groups.is_active = 1
-						AND guarded_options.id = ?
-						AND guarded_options.name = ?
-						AND guarded_options.price_delta = ?
+						AND guarded_options.id = json_extract(confirmed_modifiers.value, '$.optionId')
+						AND guarded_options.name = json_extract(confirmed_modifiers.value, '$.name')
+						AND guarded_options.price_delta = json_extract(confirmed_modifiers.value, '$.priceDelta')
 						AND guarded_options.is_active = 1
-				)`,
-			);
-			values.push(
-				modifier.groupId,
-				item.menuItemId,
-				modifier.groupName,
-				modifier.optionId,
-				modifier.name,
-				modifier.priceDelta,
-			);
-		}
-
-		const selectedOptionIds = item.modifiers.map((modifier) => modifier.optionId);
-		const selectedOptionSql = selectedOptionIds.length > 0
-			? `guarded_required_options.id IN (${selectedOptionIds.map(() => "?").join(", ")})`
-			: "0";
-		clauses.push(
-			`NOT EXISTS (
-				SELECT 1
-				FROM modifier_groups AS guarded_required_groups
-				WHERE guarded_required_groups.menu_item_id = ?
+				)
+			)
+			OR EXISTS (
+				SELECT 1 FROM modifier_groups AS guarded_required_groups
+				WHERE guarded_required_groups.menu_item_id = json_extract(confirmed_items.value, '$.menuItemId')
 					AND guarded_required_groups.is_active = 1
-					AND guarded_required_groups.is_required = 1
+					AND (guarded_required_groups.is_required = 1 OR guarded_required_groups.name = '辣度')
 					AND NOT EXISTS (
-						SELECT 1
-						FROM modifier_options AS guarded_required_options
+						SELECT 1 FROM modifier_options AS guarded_required_options
+						JOIN json_each(json_extract(confirmed_items.value, '$.modifiers')) AS selected
+							ON guarded_required_options.id = json_extract(selected.value, '$.optionId')
 						WHERE guarded_required_options.modifier_group_id = guarded_required_groups.id
 							AND guarded_required_options.is_active = 1
-							AND ${selectedOptionSql}
 					)
-			)`,
-		);
-		values.push(item.menuItemId, ...selectedOptionIds);
-	}
-
-	return { sql: clauses.length > 0 ? clauses.join("\nAND ") : "1", values };
+			)
+		)`,
+	};
 }
 
 export async function createOrder(
@@ -665,12 +641,9 @@ export async function createOrder(
 		}
 
 		await assertConfirmedQuote(pricedCart, request.quoteFingerprint);
-		const activeSchedule = orderSource === "onsite"
-			? await readActiveKitchenSchedule(db)
-			: [];
+		const activeSchedule = await readActiveKitchenSchedule(db);
 		const scheduleFingerprint = createKitchenScheduleFingerprint(activeSchedule);
-		const onsiteReadyAt = orderSource === "onsite"
-			? scheduleNewOnsiteOrder(
+		const readyAt = scheduleNewOrder(
 				activeSchedule,
 				{
 					basePrepMinutes: store.base_prep_minutes,
@@ -679,8 +652,9 @@ export async function createOrder(
 				},
 				request.specialOrder,
 				now,
-			)
-			: createdAt;
+				orderSource,
+				Boolean(store.busy_mode),
+			);
 
 		const orderId = crypto.randomUUID();
 		const notificationDeliveryId = crypto.randomUUID();
@@ -690,15 +664,7 @@ export async function createOrder(
 		const statements: D1PreparedStatement[] = [
 			db
 				.prepare(
-					`WITH queue AS (
-						SELECT
-							COUNT(*) AS orders_ahead,
-							COALESCE(SUM(CASE WHEN special_order = 1 THEN 1 ELSE 0 END), 0)
-								AS special_orders_ahead
-						FROM orders
-						WHERE status IN ('pending', 'accepted')
-					)
-					INSERT INTO orders (
+					`INSERT INTO orders (
 						id,
 						public_lookup_token,
 						order_number,
@@ -719,35 +685,23 @@ export async function createOrder(
 					)
 					SELECT
 						?, ?, ?, 'pending', ?, ?, ?,
-						CASE
-							WHEN ? = 'onsite' THEN ?
-							ELSE strftime(
-								'%Y-%m-%dT%H:%M:%fZ',
-								CAST((
-									unixepoch(?)
-									+ CAST((
-										store_settings.base_prep_minutes
-											+ queue.orders_ahead * store_settings.normal_order_minutes
-											+ queue.special_orders_ahead * store_settings.special_extra_minutes
-											+ 9
-									) / 5 AS INTEGER) * 5 * 60
-									+ 299
-								) / 300 AS INTEGER) * 300,
-								'unixepoch'
-							)
-						END,
+						?,
 						?, ?, ?, ?, ?, ?, ?, ?, ?
 					FROM store_settings
-					CROSS JOIN queue
 					WHERE store_settings.id = 1
 						AND store_settings.is_accepting_orders = 1
 						AND store_settings.state_version = ?
 						AND store_settings.base_prep_minutes = ?
 						AND store_settings.normal_order_minutes = ?
 						AND store_settings.special_extra_minutes = ?
-						AND (
-							? = 'online'
-							OR ${ACTIVE_SCHEDULE_FINGERPRINT_SQL} = ?
+						AND store_settings.busy_mode = ?
+						AND (? = 'onsite' OR store_settings.customer_phone_mode = ?)
+						AND ${ACTIVE_SCHEDULE_FINGERPRINT_SQL} = ?
+						AND NOT EXISTS (
+							SELECT 1 FROM orders AS reserved
+							WHERE reserved.status IN ('pending', 'accepted')
+								AND reserved.cancelled_at IS NULL
+								AND strftime('%Y-%m-%dT%H:%M', reserved.estimated_ready_at) = strftime('%Y-%m-%dT%H:%M', ?)
 						)
 						AND ${guard.sql}
 					RETURNING estimated_ready_at AS estimatedReadyAt`,
@@ -759,15 +713,14 @@ export async function createOrder(
 					orderSource,
 					pricedCart.total,
 					pricedCart.total,
-					orderSource,
-					onsiteReadyAt,
-					createdAt,
+					readyAt,
 					createdAt,
 					request.customerName,
 					request.customerPhone,
 					request.customerNote ?? null,
 					request.packagingPreference ?? "together",
-					request.shortagePolicy ?? "continue_available",
+					// Legacy non-null enum is storage compatibility only for onsite.
+					orderSource === "onsite" ? "continue_available" : request.shortagePolicy ?? "continue_available",
 					request.specialOrder ? 1 : 0,
 					idempotencyKey,
 					requestFingerprint,
@@ -775,8 +728,11 @@ export async function createOrder(
 					store.base_prep_minutes,
 					store.normal_order_minutes,
 					store.special_extra_minutes,
+					store.busy_mode,
 					orderSource,
+					request.customerPhoneMode ?? "optional",
 					scheduleFingerprint,
+					readyAt,
 					...guard.values,
 				),
 			db
@@ -891,11 +847,12 @@ export async function createOrder(
 					customerPhone: request.customerPhone,
 					customerNote: request.customerNote ?? null,
 					packagingPreference: request.packagingPreference ?? "together",
-					shortagePolicy: request.shortagePolicy ?? "continue_available",
+					shortagePolicy: orderSource === "onsite" ? null : request.shortagePolicy ?? "continue_available",
 					originalTotal: pricedCart.total,
 					shortageRevision: 0,
 					cancelledAt: null,
 					cancellationReason: null,
+					rejectionReason: null,
 					specialOrder: request.specialOrder,
 					items: responseItems,
 					shortages: [],

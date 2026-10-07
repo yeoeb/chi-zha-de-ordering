@@ -35,7 +35,7 @@ function customerOrder(overrides: Partial<CustomerOrder> = {}): CustomerOrder {
 
 function merchantOrder(): MerchantOrder {
 	return {
-		id: "order-1", orderNumber: "001", status: "pending", orderSource: "online",
+		id: "order-1", orderNumber: "CZ-MERCHANT-001", status: "pending", orderSource: "online",
 		total: 170, originalTotal: 170, shortagePolicy: "continue_available", shortageRevision: 0,
 		cancelledAt: null, cancellationReason: null,
 		estimatedReadyAt: "2026-09-25T05:00:00.000Z", createdAt: "2026-09-25T04:00:00.000Z",
@@ -92,6 +92,10 @@ describe("release Customer and Merchant Order features", () => {
 
 	it("shows the adjusted payable amount, shortage history, countdown, and renders hostile notes as text", async () => {
 		render(<CustomerOrderStatus publicLookupToken={token} initialOrder={customerOrder()} />);
+		expect(document.body.textContent).not.toContain("CZ-001");
+		for (const element of document.querySelectorAll("[aria-label], [title]")) {
+			expect(`${element.getAttribute("aria-label") ?? ""} ${element.getAttribute("title") ?? ""}`).not.toContain("CZ-001");
+		}
 		const alert = screen.getByRole("alert");
 		expect(within(alert).getByText("最新應付金額 NT$ 100")).toBeTruthy();
 		expect(within(alert).getByText(/原價 NT\$ 170/)).toBeTruthy();
@@ -104,11 +108,14 @@ describe("release Customer and Merchant Order features", () => {
 	});
 
 	it("requires cancellation confirmation and applies the authoritative cancelled snapshot", async () => {
-		vi.spyOn(window, "confirm").mockReturnValue(true);
 		const cancelled = customerOrder({ status: "cancelled", total: 0, cancelledAt: new Date().toISOString(), cancellationReason: "customer_cancelled" });
 		const fetchMock = vi.mocked(fetch).mockResolvedValue(new Response(JSON.stringify({ order: cancelled }), { status: 200, headers: { "Content-Type": "application/json" } }));
 		render(<CustomerOrderStatus publicLookupToken={token} initialOrder={customerOrder({ shortages: [], shortageRevision: 0, originalTotal: 100 })} />);
 		await userEvent.click(screen.getByRole("button", { name: "取消訂單" }));
+		const dialog = screen.getByRole("dialog", { name: "取消這筆訂單？" });
+		expect(within(dialog).getByText("取消後無法復原。")).toBeTruthy();
+		expect(fetchMock).toHaveBeenCalledTimes(0);
+		await userEvent.click(within(dialog).getByRole("button", { name: "取消訂單" }));
 		expect(fetchMock).toHaveBeenCalledTimes(1);
 		expect(await screen.findByRole("heading", { name: "訂單已取消" })).toBeTruthy();
 		expect(screen.getByText("NT$ 0")).toBeTruthy();
@@ -117,6 +124,10 @@ describe("release Customer and Merchant Order features", () => {
 	it("targets one stable Order item and submits an exact partial shortage quantity", async () => {
 		const onShortage = vi.fn(async () => true);
 		render(<MerchantOrderCard order={merchantOrder()} isNew={false} isProcessing={false} onAction={() => undefined} onShortage={onShortage} />);
+		expect(document.body.textContent).not.toContain("CZ-MERCHANT-001");
+		for (const element of document.querySelectorAll("[aria-label], [title]")) {
+			expect(`${element.getAttribute("aria-label") ?? ""} ${element.getAttribute("title") ?? ""}`).not.toContain("CZ-MERCHANT-001");
+		}
 		await userEvent.click(screen.getAllByRole("button", { name: "缺貨" })[0]!);
 		const dialog = screen.getByRole("dialog", { name: "確認品項缺貨？" });
 		expect(within(dialog).getByText(/雞排/)).toBeTruthy();

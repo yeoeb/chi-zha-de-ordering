@@ -144,11 +144,19 @@ export function getVapidPublicKey(bindings: WebPushBindings) {
 }
 
 export function buildWebPushMessage(notification: NewOrderNotification): PushMessage<string> {
+	const itemQuantity = notification.items.reduce((total, item) => total + item.quantity, 0);
+	const readyTime = new Intl.DateTimeFormat("zh-TW", {
+		timeZone: "Asia/Taipei",
+		hour: "2-digit",
+		minute: "2-digit",
+		hour12: false,
+	}).format(new Date(notification.estimatedReadyAt));
+	const tag = `order:${notification.id ?? notification.orderNumber}`;
 	return {
 		data: JSON.stringify({
-			title: "吃炸的｜新訂單",
-			body: `新訂單 #${notification.orderNumber}`,
-			data: { url: "/merchant" },
+			title: "新訂單",
+			body: `預計 ${readyTime}・${itemQuantity} 項餐點`,
+			data: { url: "/merchant", tag },
 		}),
 		options: { ttl: 300, urgency: "high" },
 	};

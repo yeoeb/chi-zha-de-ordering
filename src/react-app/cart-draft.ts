@@ -1,5 +1,6 @@
 import { createCartLine, type CartLine } from "./cart";
-import { toSelectedModifier, type MenuCategory, type MenuItem } from "./customer-menu";
+import { getDefaultOptionIds, getSpiceGroup, toSelectedModifier, type MenuCategory, type MenuItem } from "./customer-menu";
+import { requiresModifierSelection } from "../shared/spice";
 
 export const CART_DRAFT_STORAGE_KEY = "chi-zha-de:cart-draft";
 export const CART_DRAFT_VERSION = 1;
@@ -35,7 +36,7 @@ function hasOnlyKeys(value: Record<string, unknown>, allowed: readonly string[])
 
 function rebuildLine(item: MenuItem, stored: StoredCartLine): CartLine | null {
 	if (!item.isAvailable) return null;
-	if (!Number.isSafeInteger(stored.quantity) || stored.quantity < 1 || stored.quantity > MAX_QUANTITY_PER_LINE) {
+	if (!Number.isSafeInteger(stored.quantity) || stored.quantity <= 0 || stored.quantity > MAX_QUANTITY_PER_LINE) {
 		return null;
 	}
 	if (
@@ -46,17 +47,23 @@ function rebuildLine(item: MenuItem, stored: StoredCartLine): CartLine | null {
 		return null;
 	}
 
+	const optionIds = [...stored.modifierOptionIds];
+	const spiceGroup = getSpiceGroup(item);
+	if (spiceGroup && !spiceGroup.options.some((option) => optionIds.includes(option.id))) {
+		const defaultId = getDefaultOptionIds(item)[spiceGroup.id];
+		if (defaultId !== undefined) optionIds.push(defaultId);
+	}
 	const selectedModifiers = item.modifierGroups.flatMap((group) => {
-		const selectedOptions = group.options.filter((option) => stored.modifierOptionIds.includes(option.id));
-		if (selectedOptions.length > 1 || (group.isRequired && selectedOptions.length !== 1)) return [];
+		const selectedOptions = group.options.filter((option) => optionIds.includes(option.id));
+		if (selectedOptions.length > 1 || (requiresModifierSelection(group) && selectedOptions.length !== 1)) return [];
 		return selectedOptions.map((option) => toSelectedModifier(group, option));
 	});
 	const knownOptionIds = new Set(item.modifierGroups.flatMap((group) => group.options.map((option) => option.id)));
 	if (stored.modifierOptionIds.some((id) => !knownOptionIds.has(id))) return null;
-	if (selectedModifiers.length !== stored.modifierOptionIds.length) return null;
+	if (selectedModifiers.length !== optionIds.length) return null;
 	if (
 		item.modifierGroups.some(
-			(group) => group.isRequired && !selectedModifiers.some((modifier) => modifier.groupId === group.id),
+			(group) => requiresModifierSelection(group) && !selectedModifiers.some((modifier) => modifier.groupId === group.id),
 		)
 	) {
 		return null;
@@ -69,7 +76,7 @@ export function serializeCartDraft(cart: CartLine[], now = Date.now()): string {
 	const draft: StoredCartDraft = {
 		version: CART_DRAFT_VERSION,
 		updatedAt: now,
-		items: cart.map((line) => ({
+		items: cart.filter((line) => line.quantity > 0).map((line) => ({
 			menuItemId: line.menuItemId,
 			quantity: line.quantity,
 			modifierOptionIds: line.selectedModifiers.map((modifier) => modifier.optionId),

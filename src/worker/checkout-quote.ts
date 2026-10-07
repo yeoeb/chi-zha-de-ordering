@@ -1,3 +1,5 @@
+import { SPICE_GROUP_NAME, requiresModifierSelection } from "../shared/spice";
+
 export const MAX_QUANTITY_PER_LINE = 99;
 const MAX_CART_LINES = 50;
 const MAX_MODIFIER_OPTIONS_PER_LINE = 50;
@@ -365,6 +367,9 @@ export async function validateAndPriceCart(
 
 		for (const group of groups.values()) {
 			if (!group.isActive) {
+				if (group.name === SPICE_GROUP_NAME) {
+					throw createLineIssueError(index, selection, "INACTIVE_MODIFIER_GROUP", "Spice configuration is inactive");
+				}
 				continue;
 			}
 
@@ -378,7 +383,7 @@ export async function validateAndPriceCart(
 				);
 			}
 
-			if (group.isRequired && selectionCount !== 1) {
+			if (requiresModifierSelection(group) && selectionCount !== 1) {
 				throw createLineIssueError(
 					index,
 					selection,

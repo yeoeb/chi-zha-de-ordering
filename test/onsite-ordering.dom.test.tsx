@@ -1,7 +1,7 @@
 import { cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { CustomerApp } from "../src/react-app/App";
+import App from "../src/react-app/App";
 import CustomerOrderStatus from "../src/react-app/CustomerOrderStatus";
 
 function json(value: unknown, status = 200) {
@@ -17,10 +17,12 @@ afterEach(() => {
 	vi.unstubAllGlobals();
 	localStorage.clear();
 	sessionStorage.clear();
+	window.history.replaceState(null, "", "/");
 });
 
 describe("onsite customer ordering", () => {
 	it("uses the shared menu and quote flow without requesting contact fields", async () => {
+		window.history.replaceState(null, "", "/store-order");
 		const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
 			const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
 			if (url === "/api/store") {
@@ -76,7 +78,7 @@ describe("onsite customer ordering", () => {
 			throw new Error(`Unexpected request ${init?.method ?? "GET"} ${url}`);
 		});
 		vi.stubGlobal("fetch", fetchMock);
-		render(<CustomerApp orderSource="onsite" />);
+		render(<App />);
 
 		expect(await screen.findByText("現場點餐")).toBeTruthy();
 		await userEvent.click(screen.getByRole("button", { name: "加入 現場雞排" }));
@@ -86,7 +88,28 @@ describe("onsite customer ordering", () => {
 		expect(screen.queryByText("姓名")).toBeNull();
 		expect(screen.queryByText("電話")).toBeNull();
 		expect(screen.queryByText("預計完成時間")).toBeNull();
+		expect(screen.queryByRole("group", { name: "如果餐點售完" })).toBeNull();
+		expect(screen.queryByRole("radio")).toBeNull();
+		expect(screen.queryByText("其他餐點繼續製作")).toBeNull();
+		expect(screen.queryByText("取消整筆訂單")).toBeNull();
 
+		await userEvent.click(screen.getByRole("button", { name: "← 返回購物車" }));
+		await screen.findByRole("heading", { name: "購物車" });
+		expect(window.location.pathname).toBe("/store-order/cart");
+		expect(screen.getByText("現場雞排 × 1")).toBeTruthy();
+		await userEvent.click(screen.getByRole("button", { name: "← 繼續點餐" }));
+		await screen.findByRole("heading", { name: "炸物" });
+		expect(window.location.pathname).toBe("/store-order");
+		await userEvent.click(screen.getByRole("button", { name: /購物車共 1 件/ }));
+		await userEvent.click(screen.getByRole("button", { name: "去結帳" }));
+		await screen.findByText("應付金額");
+		cleanup();
+		render(<App />);
+		await screen.findByText("應付金額");
+		expect(window.location.pathname).toBe("/store-order/checkout");
+		expect(screen.queryByRole("textbox", { name: /電話/ })).toBeNull();
+
+		expect(screen.queryByRole("group", { name: "如果餐點售完" })).toBeNull();
 		await userEvent.click(screen.getByRole("button", { name: "確認下單" }));
 		expect(await screen.findByRole("heading", { name: "現場點餐" })).toBeTruthy();
 		expect(screen.getByText("餐點完成後即可取餐")).toBeTruthy();
@@ -99,6 +122,7 @@ describe("onsite customer ordering", () => {
 			expect(body.customerName).toBeUndefined();
 			expect(body.customerPhone).toBeUndefined();
 			expect(body.orderSource).toBeUndefined();
+			expect(body).not.toHaveProperty("shortagePolicy");
 			expect(body.items).toEqual([{ menuItemId: 771, quantity: 1, modifierOptionIds: [] }]);
 		});
 	});

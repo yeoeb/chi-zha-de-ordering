@@ -1,3 +1,5 @@
+import { uiCopy } from "./ui-copy";
+
 export type MerchantModifier = {
 	groupName: string;
 	name: string;
@@ -15,7 +17,7 @@ export type MerchantOrderItem = {
 
 export type MerchantSpiceGroup = {
 	name: string;
-	className: "none" | "mild" | "small" | "medium" | "large" | "packet" | "other" | "unspecified";
+	className: "none" | "mild" | "small" | "medium" | "large" | "other" | "unspecified";
 	items: Array<MerchantOrderItem & { displayModifiers: MerchantModifier[] }>;
 };
 
@@ -26,7 +28,7 @@ export type MerchantOrder = {
 	orderSource?: "online" | "onsite";
 	total: number;
 	originalTotal?: number;
-	shortagePolicy?: "continue_available" | "cancel_entire_order";
+	shortagePolicy?: "continue_available" | "cancel_entire_order" | null;
 	shortageRevision?: number;
 	cancelledAt?: string | null;
 	cancellationReason?: "customer_cancelled" | "shortage_cancelled" | "all_items_unavailable" | null;
@@ -35,6 +37,7 @@ export type MerchantOrder = {
 	acceptedAt?: string | null;
 	completedAt?: string | null;
 	rejectedAt?: string | null;
+	rejectionReason?: "merchant_rejected" | "auto_rejected_unanswered" | null;
 	customerName: string;
 	customerPhone: string;
 	customerNote: string | null;
@@ -67,19 +70,19 @@ export type DeadlineState = {
 export function getDeadlineState(estimatedReadyAt: string, now = new Date()): DeadlineState {
 	const differenceMs = new Date(estimatedReadyAt).getTime() - now.getTime();
 	if (!Number.isFinite(differenceMs)) {
-		return { className: "normal", label: "截止時間未記錄" };
+		return { className: "normal", label: uiCopy.common.deadlineMissing };
 	}
 	if (differenceMs < 0) {
 		return {
 			className: "overdue",
-			label: `已逾時 ${Math.max(1, Math.ceil(Math.abs(differenceMs) / 60_000))} 分`,
+			label: `${uiCopy.merchant.overduePrefix}${Math.max(1, Math.ceil(Math.abs(differenceMs) / 60_000))}${uiCopy.merchant.minutesSuffix}`,
 		};
 	}
 
 	const minutes = Math.max(1, Math.ceil(differenceMs / 60_000));
 	return {
 		className: minutes <= 5 ? "urgent" : minutes <= 10 ? "approaching" : "normal",
-		label: `剩 ${minutes} 分`,
+		label: `${uiCopy.merchant.remainingTimePrefix}${minutes}${uiCopy.merchant.minutesSuffix}`,
 	};
 }
 
@@ -100,14 +103,18 @@ const SPICE_PRESENTATION: Record<string, { order: number; className: MerchantSpi
 	"小辣": { order: 2, className: "small" },
 	"中辣": { order: 3, className: "medium" },
 	"大辣": { order: 4, className: "large" },
-	"辣粉另包": { order: 5, className: "packet" },
 };
 
 export function groupMerchantItemsBySpice(items: MerchantOrderItem[]): MerchantSpiceGroup[] {
 	const groups = new Map<string, MerchantSpiceGroup>();
 	for (const item of items) {
-		const spice = item.modifiers.find((modifier) => modifier.groupName === "辣度");
-		const name = spice?.name ?? "未指定辣度";
+		const packet = item.modifiers.find(
+			(modifier) => modifier.groupName === "辣度" && modifier.name === "辣粉另包",
+		);
+		const spice = item.modifiers.find(
+			(modifier) => modifier.groupName === "辣度" && modifier.name !== "辣粉另包",
+		);
+		const name = spice?.name ?? (packet ? "不辣" : "未指定辣度");
 		const presentation = SPICE_PRESENTATION[name] ?? {
 			order: spice ? 90 : 99,
 			className: spice ? "other" as const : "unspecified" as const,

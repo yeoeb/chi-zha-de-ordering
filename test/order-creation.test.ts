@@ -52,6 +52,7 @@ beforeEach(async () => {
 		env.DB.prepare("UPDATE menu_items SET name = '雞排', price = 85, is_available = 1 WHERE id = 1"),
 		env.DB.prepare("UPDATE modifier_groups SET name = '辣度', is_active = 1 WHERE id = 1"),
 		env.DB.prepare("UPDATE modifier_options SET name = '小辣', price_delta = 5, is_active = 1 WHERE id = 10"),
+		env.DB.prepare("UPDATE store_settings SET customer_phone_mode = 'optional' WHERE id = 1"),
 	]);
 });
 
@@ -91,13 +92,14 @@ async function insertQueueOrder(
 	id: string,
 	status: "pending" | "accepted" | "completed" | "rejected",
 	specialOrder: boolean,
+	readyAt = new Date(Date.now() + 15 * 60_000).toISOString(),
 ) {
 	await env.DB
 		.prepare(
 			`INSERT INTO orders (
 				id, public_lookup_token, order_number, status, total_amount, estimated_ready_at, created_at,
 				customer_name, customer_phone, special_order, idempotency_key, request_fingerprint
-			) VALUES (?, ?, ?, ?, 0, '2026-09-06T04:15:00.000Z', '2026-09-06T04:00:00.000Z', 'Queue', '0900000000', ?, ?, ?)`,
+			) VALUES (?, ?, ?, ?, 0, ?, ?, 'Queue', '0900000000', ?, ?, ?)`,
 		)
 		.bind(
 			id,
@@ -106,6 +108,8 @@ async function insertQueueOrder(
 			).join(""),
 			`QUEUE-${id}`,
 			status,
+			readyAt,
+			new Date().toISOString(),
 			specialOrder ? 1 : 0,
 			`queue-key-${id}`,
 			"a".repeat(64),
@@ -114,6 +118,35 @@ async function insertQueueOrder(
 }
 
 describe("POST /api/orders", () => {
+	it.each([10, 50])("atomically creates and replays a %i-line modifier cart without exceeding SQL bind limits", async (lineCount) => {
+		const items = Array.from({ length: lineCount }, (_, index) => ({
+			menuItemId: 1, quantity: index % 2 + 1, modifierOptionIds: [10, 20],
+		}));
+		const body = { ...defaultOrderRequest, items };
+		const first = await postOrder(`large-cart-${lineCount}`, body);
+		expect(first.status).toBe(201);
+		const result = await first.json() as OrderResponse;
+		expect(result.order.total).toBe(lineCount / 2 * 3 * 100);
+		expect(result.order.items).toHaveLength(lineCount);
+		for (const item of result.order.items) {
+			expect(item.unitPrice).toBe(100);
+			expect(item.modifiers).toEqual([
+				{ groupName: "辣度", name: "小辣", priceDelta: 5 },
+				{ groupName: "切法", name: "切", priceDelta: 10 },
+			]);
+		}
+		const replay = await postOrder(`large-cart-${lineCount}`, body);
+		expect(replay.status).toBe(200);
+		expect((await replay.json() as OrderResponse).order.publicLookupToken).toBe(result.order.publicLookupToken);
+		expect(await env.DB.prepare("SELECT COUNT(*) AS count FROM orders").first()).toEqual({ count: 1 });
+		expect(await env.DB.prepare("SELECT COUNT(*) AS count FROM order_items").first()).toEqual({ count: lineCount });
+		expect(await env.DB.prepare("SELECT COUNT(*) AS count FROM order_item_modifiers").first()).toEqual({ count: lineCount * 2 });
+		expect((await env.DB.prepare("SELECT modifier_option_id AS optionId, COUNT(*) AS count FROM order_item_modifiers GROUP BY modifier_option_id ORDER BY modifier_option_id").all()).results).toEqual([
+			{ optionId: 10, count: lineCount }, { optionId: 20, count: lineCount },
+		]);
+		expect(await env.DB.prepare("SELECT COUNT(*) AS count FROM web_push_notification_deliveries WHERE order_id IN (SELECT id FROM orders)").first()).toEqual({ count: 1 });
+	});
+
 	it("requires a valid confirmed quote fingerprint", async () => {
 		const response = await exports.default.fetch("https://example.com/api/orders", {
 			method: "POST",
@@ -151,8 +184,6 @@ describe("POST /api/orders", () => {
 		const invalidPhones: Array<[string, unknown]> = [
 			["eight-digits", "09123456"],
 			["letters", "09abcd5678"],
-			["empty", ""],
-			["blank", "   "],
 			["too-short", "0912345"],
 			["too-long", "09123456789"],
 			["non-string", 912345678],
@@ -184,6 +215,34 @@ describe("POST /api/orders", () => {
 			notifications_count: 0,
 			legacy_notifications_count: 0,
 		});
+	});
+
+	it("accepts an omitted or blank optional phone and ignores the legacy customer name", async () => {
+		for (const [name, body] of [
+			["omitted", { ...defaultOrderRequest, customerName: "不應保存", customerPhone: undefined }],
+			["blank", { ...defaultOrderRequest, customerName: "不應保存", customerPhone: "   " }],
+		] as const) {
+			const response = await postOrder(`optional-phone-${name}`, body);
+			expect(response.status, name).toBe(201);
+		}
+		const rows = await env.DB.prepare("SELECT customer_name AS name, customer_phone AS phone FROM orders ORDER BY created_at").all<{ name: string; phone: string }>();
+		expect(rows.results).toEqual([
+			{ name: "顧客", phone: "未提供" },
+			{ name: "顧客", phone: "未提供" },
+		]);
+	});
+
+	it("enforces hidden phone mode from the authoritative Store setting", async () => {
+		await env.DB.prepare("UPDATE store_settings SET customer_phone_mode = 'hidden' WHERE id = 1").run();
+		const rejected = await postOrder("hidden-phone-rejected", defaultOrderRequest);
+		expect(rejected.status).toBe(400);
+		expect(await rejected.json()).toMatchObject({ error: { code: "CUSTOMER_PHONE_DISABLED" } });
+
+		const accepted = await postOrder("hidden-phone-accepted", {
+			...defaultOrderRequest,
+			customerPhone: undefined,
+		});
+		expect(accepted.status).toBe(201);
 	});
 
 	it("accepts an omitted note and stores null", async () => {
@@ -619,5 +678,17 @@ describe("POST /api/orders", () => {
 		expect(readyDelay).toBeLessThan(45 * 60_000);
 		expect(new Date(result.order.estimatedReadyAt).getUTCMinutes() % 5).toBe(0);
 		expect(activeCount?.count).toBe(3);
+	});
+	it("expired accepted history does not reserve future pickup capacity in Quote or creation", async () => {
+		await insertQueueOrder("past-accepted", "accepted", true, new Date(Date.now() - 10 * 60_000).toISOString());
+		const quote = await postQuote();
+		expect((await quote.json()) as unknown).toMatchObject({ leadMinutes: 20 });
+		const response = await postOrder("after-history-expired");
+		const { order } = await response.json() as OrderResponse;
+		expect(response.status).toBe(201);
+		const delay = Date.parse(order.estimatedReadyAt) - Date.parse(order.createdAt);
+		expect(delay).toBeGreaterThanOrEqual(20 * 60_000);
+		expect(delay).toBeLessThan(25 * 60_000);
+		expect(await env.DB.prepare("SELECT status FROM orders WHERE id='past-accepted'").first()).toEqual({ status: "accepted" });
 	});
 });

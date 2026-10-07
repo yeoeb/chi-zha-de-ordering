@@ -1,6 +1,8 @@
+import { uiCopy } from "./ui-copy";
 import { useEffect, useId, useRef, useState } from "react";
 import type { MenuCategory, MenuItem, SpiceChoice } from "./customer-menu";
 import { isPopularItem, spiceChoices } from "./customer-menu";
+import { spiceSemanticClass } from "./spice-presentation";
 
 export type InlineFoldChoice = {
 	id: string;
@@ -29,8 +31,8 @@ function ProductImage({ item }: { item: MenuItem }) {
 			onError={() => setHasError(true)}
 		/>
 	) : (
-		<div className="product-image-placeholder" aria-label={`${item.name} 暫無圖片`}>
-			<span>吃炸的</span>
+		<div className="product-image-placeholder" aria-label={`${item.name}${uiCopy.customer.imageMissingSuffix}`}>
+			<span>{uiCopy.common.brand}</span>
 		</div>
 	);
 }
@@ -76,15 +78,15 @@ export function CustomerHeader({
 	return (
 		<header className="customer-header">
 			<div>
-				<p className="customer-kicker">{orderMode === "onsite" ? "現場點餐" : "現點現炸"}</p>
+				<p className="customer-kicker">{orderMode === "onsite" ? uiCopy.onsite.title : uiCopy.customer.kicker}</p>
 				<h1>{displayName}</h1>
 				<p className={`store-state ${isAcceptingOrders === null ? "unknown" : isAcceptingOrders ? "accepting" : "paused"}`}>
 					<span aria-hidden="true" />
 					{isAcceptingOrders === null
-						? "無法確認營業狀態"
+						? uiCopy.customer.storeUnknown
 						: isAcceptingOrders
-							? "營業中・可接單"
-							: "暫停接單"}
+							? uiCopy.customer.storeAccepting
+							: uiCopy.customer.storePaused}
 				</p>
 			</div>
 			<div className="customer-header-actions">
@@ -93,19 +95,52 @@ export function CustomerHeader({
 						className="header-orders-button"
 						type="button"
 						onClick={onOrdersClick}
-						aria-label={`我的訂單${activeOrderCount > 1 ? ` ${activeOrderCount}` : ""}${hasUnreadOrderUpdate ? "，有未讀變更" : ""}`}
+						aria-label={`${uiCopy.customer.myOrders}${activeOrderCount > 1 ? ` ${activeOrderCount}` : ""}${hasUnreadOrderUpdate ? uiCopy.customer.unreadUpdate : ""}`}
 					>
 						<ReceiptIcon />
-						<span>我的訂單{activeOrderCount > 1 ? ` ${activeOrderCount}` : ""}</span>
+						<span>{uiCopy.customer.myOrders}{activeOrderCount > 1 ? ` ${activeOrderCount}` : ""}</span>
 						{hasUnreadOrderUpdate && <span className="order-update-badge" aria-hidden="true">!</span>}
 					</button>
 				)}
-				<button className="header-cart-button" type="button" onClick={onCartClick} aria-label={`購物車共 ${cartItemCount} 件`}>
+				<button className="header-cart-button" type="button" onClick={onCartClick} aria-label={`${uiCopy.customer.cartCountPrefix}${cartItemCount}${uiCopy.customer.cartCountSuffix}`}>
 					<ShoppingCartIcon />
 					{cartItemCount > 0 && <span className="cart-badge">{cartItemCount}</span>}
 				</button>
 			</div>
 		</header>
+	);
+}
+
+export function BusinessHoursPill({
+	todayIsOpen,
+	todayOpenAt,
+	todayCloseAt,
+	lastOrderAt,
+}: {
+	todayIsOpen: boolean | null;
+	todayOpenAt: string | null;
+	todayCloseAt: string | null;
+	lastOrderAt: string | null;
+}) {
+	const [open, setOpen] = useState(false);
+	if (todayIsOpen === null) return null;
+	const summary = todayIsOpen && todayOpenAt && todayCloseAt
+		? `${uiCopy.customer.todayHoursPrefix}${todayOpenAt}–${todayCloseAt}`
+		: uiCopy.customer.closedToday;
+	return (
+		<div className="business-hours-floating">
+			<button type="button" aria-expanded={open} aria-controls="business-hours-panel" onClick={() => setOpen((current) => !current)}>
+				<span aria-hidden="true">🕒</span> {summary}
+			</button>
+			{open && <>
+				<button className="business-hours-dismiss" type="button" aria-label={uiCopy.customer.closeHours} onClick={() => setOpen(false)} />
+				<section id="business-hours-panel" className="business-hours-panel" aria-label={uiCopy.customer.todayHours}>
+					<header><strong>{uiCopy.customer.todayHours}</strong><button type="button" aria-label={uiCopy.common.close} onClick={() => setOpen(false)}>×</button></header>
+					<p>{todayIsOpen && todayOpenAt && todayCloseAt ? `${todayOpenAt} – ${todayCloseAt}` : uiCopy.customer.closedToday}</p>
+					{todayIsOpen && lastOrderAt && <p><span>{uiCopy.customer.lastOrder}</span><strong>{lastOrderAt}</strong></p>}
+				</section>
+			</>}
+		</div>
 	);
 }
 
@@ -141,7 +176,7 @@ export function CategoryTabs({
 	}, [activeCategoryId]);
 
 	return (
-		<nav ref={navRef} className="category-tabs" aria-label="餐點分類">
+		<nav ref={navRef} className="category-tabs" aria-label={uiCopy.customer.categories}>
 			{categories.map((category) => (
 				<a
 					key={category.id}
@@ -185,7 +220,7 @@ export function InlineFoldOptionGroup({
 	return (
 		<div className="inline-option-group">
 			<button
-				className="inline-option-toggle"
+				className={`inline-option-toggle${label === "辣度" ? ` ${spiceSemanticClass(choices.find((choice) => choice.selected)?.label ?? "")}` : ""}`}
 				type="button"
 				disabled={disabled}
 				aria-expanded={isExpanded}
@@ -199,8 +234,9 @@ export function InlineFoldOptionGroup({
 				<fieldset id={panelId} className="inline-option-panel">
 					<legend className="visually-hidden">{label}</legend>
 					{choices.map((choice) => (
-						<label key={choice.id}>
+						<label className={label === "辣度" ? spiceSemanticClass(choice.label) : undefined} key={choice.id} htmlFor={`${panelId}-${choice.id}`}>
 							<input
+								id={`${panelId}-${choice.id}`}
 								type={mode === "single" ? "radio" : "checkbox"}
 								name={`${panelId}-choice`}
 								checked={choice.selected}
@@ -219,37 +255,98 @@ export function ProductCard({
 	item,
 	folds,
 	onAdd,
+	onDecrease,
+	quantity = 0,
 	isRecentlyAdded = false,
+	displayPrice = item.price,
+	showImage = true,
 }: {
 	item: MenuItem;
 	folds: ProductFoldDefinition[];
 	onAdd: () => void;
+	onDecrease: () => void;
+	quantity?: number;
 	isRecentlyAdded?: boolean;
+	displayPrice?: number;
+	showImage?: boolean;
 }) {
+	const [quantityExpanded, setQuantityExpanded] = useState(quantity > 0);
+	const previousQuantity = useRef(quantity);
+	const collapseTimer = useRef<number | null>(null);
+
+	function scheduleQuantityCollapse() {
+		if (collapseTimer.current !== null) window.clearTimeout(collapseTimer.current);
+		collapseTimer.current = window.setTimeout(() => {
+			setQuantityExpanded(false);
+			collapseTimer.current = null;
+		}, 2_000);
+	}
+
+	useEffect(() => {
+		if (quantity <= 0) {
+			setQuantityExpanded(false);
+			if (collapseTimer.current !== null) window.clearTimeout(collapseTimer.current);
+			collapseTimer.current = null;
+		} else if (quantity !== previousQuantity.current) {
+			setQuantityExpanded(true);
+			scheduleQuantityCollapse();
+		}
+		previousQuantity.current = quantity;
+	}, [quantity]);
+
+	useEffect(() => () => {
+		if (collapseTimer.current !== null) window.clearTimeout(collapseTimer.current);
+	}, []);
+
 	return (
-		<li className={`product-card${item.isAvailable ? "" : " sold-out"}`}>
+		<li className={`product-card${showImage ? "" : " without-image"}${item.isAvailable ? "" : " sold-out"}`}>
 			<div className="product-card-main">
-				<div className="product-image-wrap">
+				{showImage && <div className="product-image-wrap">
 					<ProductImage key={`${item.id}:${item.imageUrl ?? "fallback"}`} item={item} />
-					{isPopularItem(item) && item.isAvailable && <span className="popular-badge">熱門推薦</span>}
-				</div>
+					{isPopularItem(item) && item.isAvailable && <span className="popular-badge">{uiCopy.customer.popular}</span>}
+				</div>}
 				<div className="product-copy">
 					<div className="product-title-row">
 						<h3>{item.name}</h3>
-						{!item.isAvailable && <span className="sold-out-label">已售完</span>}
+						{!showImage && isPopularItem(item) && item.isAvailable && <span className="popular-badge inline">{uiCopy.customer.popular}</span>}
+						{!item.isAvailable && <span className="sold-out-label">{uiCopy.customer.soldOut}</span>}
 					</div>
 					{item.description && <p>{item.description}</p>}
 					<div className="product-action-row">
-						<strong className="price">NT$ {item.price}</strong>
-						<button
-							className={isRecentlyAdded ? "product-add-button is-added" : "product-add-button"}
-							type="button"
-							disabled={!item.isAvailable}
-							onClick={onAdd}
-							aria-label={`加入 ${item.name}`}
-						>
-							{item.isAvailable ? (isRecentlyAdded ? "✓" : "+") : "已售完"}
-						</button>
+						<strong className="price">NT$ {displayPrice}</strong>
+						{item.isAvailable && quantity > 0 && quantityExpanded ? (
+							<div className="product-quantity-control" aria-label={`${item.name}${uiCopy.customer.quantitySeparator}${quantity}`}>
+								<button type="button" onClick={() => { onDecrease(); scheduleQuantityCollapse(); }} aria-label={`${uiCopy.customer.decreasePrefix}${item.name}${uiCopy.customer.quantitySuffix}`}>−</button>
+								<span className={isRecentlyAdded ? "quantity-value is-added" : "quantity-value"}>{quantity}</span>
+								<button
+									type="button"
+									className={isRecentlyAdded ? "is-added" : undefined}
+									onClick={() => { onAdd(); scheduleQuantityCollapse(); }}
+									aria-label={`${uiCopy.customer.increasePrefix}${item.name}${uiCopy.customer.quantitySuffix}`}
+								>
+									+
+								</button>
+							</div>
+						) : item.isAvailable && quantity > 0 ? (
+							<button
+								className="product-quantity-collapsed"
+								type="button"
+								onClick={() => { setQuantityExpanded(true); scheduleQuantityCollapse(); }}
+								aria-label={`${item.name}${uiCopy.customer.addedQuantityPrefix}${quantity}${uiCopy.customer.expandQuantitySuffix}`}
+							>
+								×{quantity}
+							</button>
+						) : (
+							<button
+								className="product-add-button"
+								type="button"
+								disabled={!item.isAvailable}
+								onClick={onAdd}
+								aria-label={`${uiCopy.customer.addPrefix}${item.name}`}
+							>
+								{item.isAvailable ? "+" : uiCopy.customer.soldOut}
+							</button>
+						)}
 					</div>
 				</div>
 			</div>
@@ -283,8 +380,8 @@ export function BulkSpiceSelector({
 }) {
 	return (
 		<fieldset className="spice-selector">
-			<legend>快速套用辣度</legend>
-			<p>只套用到目前購物車內可選辣度的餐點</p>
+			<legend>{uiCopy.customer.bulkSpice}</legend>
+			<p>{uiCopy.customer.bulkSpiceHint}</p>
 			<p
 				className={`spice-selector-state${feedback ? ` ${feedback.tone}` : ""}`}
 				role={feedback?.tone === "error" ? "alert" : "status"}
@@ -297,14 +394,14 @@ export function BulkSpiceSelector({
 					return (
 						<button
 							key={choice}
-							className={feedback?.choice === choice ? `bulk-action-feedback ${feedback.tone}` : undefined}
+							className={`${spiceSemanticClass(choice)}${feedback?.choice === choice ? ` bulk-action-feedback ${feedback.tone}` : ""}`}
 							type="button"
 							disabled={availability === "none"}
 							aria-pressed={activeChoice === choice}
-							title={availability === "partial" ? "部分商品沒有該選項" : undefined}
+							title={availability === "partial" ? uiCopy.customer.partialSpiceSupport : undefined}
 							onClick={() => onApply(choice)}
 						>
-							{choice}{availability === "partial" ? "（部分）" : ""}
+							{choice}{availability === "partial" ? uiCopy.customer.partialChoice : ""}
 						</button>
 					);
 				})}
@@ -317,10 +414,9 @@ export function CartBar({ itemCount, total, onClick }: { itemCount: number; tota
 	if (itemCount === 0) return null;
 	return (
 		<div className="cart-bar-wrap">
-			<button className="cart-bar" type="button" onClick={onClick}>
-				<span className="cart-bar-count">{itemCount}</span>
-				<span>NT$ {total}</span>
-				<strong>查看購物車 <span aria-hidden="true">→</span></strong>
+			<button className="cart-bar" type="button" aria-label={`${uiCopy.customer.cartBarPrefix}${itemCount}${uiCopy.customer.cartBarPriceSeparator}${total}${uiCopy.customer.cartBarLabelSuffix}`} onClick={onClick}>
+				<strong className="cart-bar-summary">{uiCopy.customer.cart} · {itemCount} {uiCopy.customer.cartBarVisiblePriceSeparator}{total}</strong>
+				<span className="cart-bar-action">{uiCopy.customer.view} <span aria-hidden="true">→</span></span>
 			</button>
 		</div>
 	);

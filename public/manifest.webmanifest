@@ -6,8 +6,8 @@
 	"start_url": "/merchant",
 	"scope": "/",
 	"display": "standalone",
-	"theme_color": "#a33a20",
-	"background_color": "#fff8ef",
+	"theme_color": "#ffffff",
+	"background_color": "#ffffff",
 	"icons": [
 		{
 			"src": "/icons/icon-192.png",

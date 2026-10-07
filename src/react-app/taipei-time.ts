@@ -1,4 +1,8 @@
 const STORE_TIME_ZONE = "Asia/Taipei";
+export {
+	getStoreBusinessDate,
+	listStoreBusinessDates,
+} from "../shared/business-date";
 
 function getParts(timestamp: string) {
 	const date = new Date(timestamp);
@@ -30,4 +34,16 @@ export function formatTaipeiDeadlineDateTime(timestamp: string) {
 export function formatTaipeiOrderDate(timestamp: string) {
 	const parts = getParts(timestamp);
 	return parts ? `${Number(parts.month)} 月 ${Number(parts.day)} 日` : null;
+}
+
+export function formatBusinessDateLabel(value: string, today: string) {
+	const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value);
+	if (!match) return value;
+	const label = `${Number(match[2])}/${Number(match[3])}`;
+	return value === today ? `今天 ${label}` : label;
+}
+
+export function formatBusinessDateFull(value: string) {
+	const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value);
+	return match ? `${match[1]}/${match[2]}/${match[3]}` : value;
 }

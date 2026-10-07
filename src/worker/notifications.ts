@@ -2,6 +2,7 @@ const MAX_RECORDED_ERROR_LENGTH = 200;
 const STALE_PENDING_AFTER_MS = 60_000;
 
 export type NewOrderNotification = {
+	id?: string;
 	orderNumber: string;
 	total: number;
 	estimatedReadyAt: string;
@@ -72,6 +73,7 @@ type DeliveryRow = {
 };
 
 type DeliveryNotificationRow = DeliveryRow & {
+	orderId: string;
 	total: number;
 	estimatedReadyAt: string;
 	orderItemId: string | null;
@@ -189,6 +191,7 @@ async function getDeliveryNotification(db: D1Database, deliveryId: string) {
 				deliveries.sent_at AS sentAt,
 				deliveries.last_error AS lastError,
 				deliveries.created_at AS createdAt,
+				orders.id AS orderId,
 				orders.total_amount AS total,
 				orders.estimated_ready_at AS estimatedReadyAt,
 				order_items.id AS orderItemId,
@@ -211,6 +214,7 @@ async function getDeliveryNotification(db: D1Database, deliveryId: string) {
 	return {
 		delivery: toMerchantDelivery(first),
 		notification: {
+			id: first.orderId,
 			orderNumber: first.orderNumber,
 			total: first.total,
 			estimatedReadyAt: first.estimatedReadyAt,

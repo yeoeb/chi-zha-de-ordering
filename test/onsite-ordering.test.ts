@@ -57,7 +57,7 @@ describe("POST /api/onsite/orders", () => {
 			order: { publicLookupToken: string; orderSource: string; total: number };
 		};
 		expect(response.status).toBe(201);
-		expect(result.order).toMatchObject({ orderSource: "onsite", total: 85 });
+		expect(result.order).toMatchObject({ orderSource: "onsite", total: 85, shortagePolicy: null });
 		const stored = await env.DB.prepare(
 			"SELECT order_source, customer_name, customer_phone, total_amount FROM orders WHERE public_lookup_token = ?",
 		).bind(result.order.publicLookupToken).first();
@@ -72,7 +72,10 @@ describe("POST /api/onsite/orders", () => {
 			`https://example.com/api/orders/by-token/${result.order.publicLookupToken}`,
 		);
 		expect(lookup.status).toBe(200);
-		expect(await lookup.json()).toMatchObject({ order: { orderSource: "onsite", total: 85 } });
+		expect(await lookup.json()).toMatchObject({ order: { orderSource: "onsite", total: 85, shortagePolicy: null } });
+		const { getOrderSnapshotById } = await import("../src/worker/merchant-orders");
+		const storedId = await env.DB.prepare("SELECT id FROM orders").first<{ id: string }>();
+		expect(await getOrderSnapshotById(env.DB, storedId!.id)).toMatchObject({ orderSource: "onsite", shortagePolicy: null });
 	});
 
 	it("does not let a client inject source or contact fields into the onsite contract", async () => {
@@ -81,6 +84,8 @@ describe("POST /api/onsite/orders", () => {
 			{ orderSource: "online" },
 			{ customerName: "遠端顧客" },
 			{ customerPhone: "0912345678" },
+			{ shortagePolicy: "continue_available" },
+			{ shortagePolicy: "cancel_entire_order" },
 		]) {
 			const response = await postOnsite(`onsite-extra-${Object.keys(extra)[0]}`, {
 				specialOrder: false,
@@ -94,9 +99,11 @@ describe("POST /api/onsite/orders", () => {
 			});
 		}
 		expect(await env.DB.prepare("SELECT COUNT(*) AS count FROM orders").first()).toEqual({ count: 0 });
+		expect(await env.DB.prepare("SELECT COUNT(*) AS count FROM order_items").first()).toEqual({ count: 0 });
+		expect(await env.DB.prepare("SELECT COUNT(*) AS count FROM web_push_notification_deliveries").first()).toEqual({ count: 0 });
 	});
 
-	it("keeps the online contact contract unchanged", async () => {
+	it("accepts an online order without contact when the Store phone mode is optional", async () => {
 		const confirmed = await quote();
 		const response = await exports.default.fetch("https://example.com/api/orders", {
 			method: "POST",
@@ -107,8 +114,8 @@ describe("POST /api/onsite/orders", () => {
 				items,
 			}),
 		});
-		expect(response.status).toBe(400);
-		expect(await response.json()).toMatchObject({ error: { code: "INVALID_CUSTOMER_PHONE" } });
+		expect(response.status).toBe(201);
+		expect(await response.json()).toMatchObject({ order: { orderSource: "online" } });
 	});
 
 	it("uses the existing store pause and sold-out validation", async () => {
@@ -146,6 +153,7 @@ describe("POST /api/onsite/orders", () => {
 		const replay = await postOnsite("onsite-replay", body);
 		expect(first.status).toBe(201);
 		expect(replay.status).toBe(200);
+		expect(await replay.json()).toMatchObject({ order: { orderSource: "onsite", shortagePolicy: null } });
 		expect(await env.DB.prepare("SELECT COUNT(*) AS count FROM orders").first()).toEqual({ count: 1 });
 
 		const online = await exports.default.fetch("https://example.com/api/orders", {

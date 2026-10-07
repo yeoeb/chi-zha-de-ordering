@@ -85,4 +85,23 @@ describe("PreparationTimePolicy", () => {
 		);
 		expect(estimate.estimatedReadyAt).toBe("2026-09-07T00:05:00.000Z");
 	});
+
+	it.each([
+		[15, 15],
+		[30, 30],
+	])("honors an explicit %i-minute online minimum", (minimumLeadMinutes, expected) => {
+		const estimate = getPreparationTimeEstimate(
+			{
+				basePrepMinutes: 0,
+				normalOrderMinutes: 0,
+				specialExtraMinutes: 0,
+				ordersAhead: 0,
+				specialOrdersAhead: 0,
+				minimumLeadMinutes,
+			},
+			new Date("2026-09-06T10:00:00.000Z"),
+		);
+		expect(estimate.leadMinutes).toBe(expected);
+		expect(estimate.estimatedReadyAt).toBe(`2026-09-06T10:${expected}:00.000Z`);
+	});
 });

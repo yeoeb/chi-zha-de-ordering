@@ -50,8 +50,9 @@ function createFetchMock(options: MockOptions = {}) {
 		if (url === "/api/menu" && method === "GET") return json({ categories: [] });
 		if (url === "/api/store" && method === "GET") return json(store);
 		if (url.includes("/api/merchant/orders/") && method === "POST") {
+			const current = orders.find((order) => url.includes(`/orders/${order.id}/`));
 			orders = [];
-			return json({ order: { status: "rejected" } });
+			return json({ order: { ...current, status: "rejected" } });
 		}
 		if (url === "/api/merchant/store/resume" && method === "POST") {
 			const body = JSON.parse(String(init?.body)) as { operationId: string };

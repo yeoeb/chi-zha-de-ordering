@@ -20,6 +20,12 @@ export type KitchenScheduleSettings = {
 
 type Reservation = { start: number; end: number };
 
+// Same pickup-queue projection as listActiveMerchantOrders. Expired accepted
+// Orders remain immutable history; this does not forge a completed transition.
+function pickupQueueOrders(orders: readonly KitchenScheduleOrder[], now: Date) {
+	return orders.filter((order) => order.status === "pending" || Date.parse(order.estimatedReadyAt) > now.getTime());
+}
+
 function requireValidDate(date: Date, name: string) {
 	if (Number.isNaN(date.getTime())) throw new RangeError(`${name} must be a valid date`);
 }
@@ -69,7 +75,7 @@ function findEarliestCompletion(
 		if (candidateStart + duration <= reservation.start) {
 			return candidateStart + duration;
 		}
-		candidateStart = Math.max(candidateStart, reservation.end);
+		candidateStart = roundUpToUnit(Math.max(candidateStart, reservation.end));
 	}
 
 	return candidateStart + duration;
@@ -106,11 +112,43 @@ export function scheduleNewOnsiteOrder(
 	const earliestCompletion = new Date(emptyQueueEstimate.estimatedReadyAt).getTime();
 	const notBefore = new Date(earliestCompletion - durationMinutes * 60_000);
 	const completion = findEarliestCompletion(
-		reservationsFor(orders, settings),
+		reservationsFor(pickupQueueOrders(orders, now), settings),
 		durationMinutes,
 		notBefore,
 	);
 	return new Date(completion).toISOString();
+}
+
+export function scheduleNewOrder(
+	orders: readonly KitchenScheduleOrder[], settings: KitchenScheduleSettings,
+	specialOrder: boolean, now: Date, source: "online" | "onsite", busyMode: boolean,
+) {
+	if (source === "onsite") return scheduleNewOnsiteOrder(orders, settings, specialOrder, now);
+	const queue = pickupQueueOrders(orders, now);
+	const estimate = getPreparationTimeEstimate({
+		...settings,
+		ordersAhead: queue.length,
+		specialOrdersAhead: queue.filter((order) => order.specialOrder).length,
+		minimumLeadMinutes: busyMode ? 30 : 15,
+	}, now);
+	const duration = getOrderCapacityMinutes(settings, specialOrder);
+	return new Date(findEarliestCompletion(reservationsFor(queue, settings), duration,
+		new Date(Date.parse(estimate.estimatedReadyAt) - duration * 60_000))).toISOString();
+}
+
+export function planBusyModeExtensions(orders: readonly KitchenScheduleOrder[], settings: KitchenScheduleSettings, minimumReadyAt: Date) {
+	const movable = orders.filter((order) => order.status === "pending" && order.orderSource === "online" &&
+		Date.parse(order.estimatedReadyAt) < minimumReadyAt.getTime())
+		.sort((left, right) => left.estimatedReadyAt.localeCompare(right.estimatedReadyAt) || left.id.localeCompare(right.id));
+	const movingIds = new Set(movable.map((order) => order.id));
+	const reservations = reservationsFor(orders.filter((order) => !movingIds.has(order.id)), settings);
+	return movable.map((order) => {
+		const duration = getOrderCapacityMinutes(settings, order.specialOrder);
+		const end = findEarliestCompletion(reservations, duration, new Date(minimumReadyAt.getTime() - duration * 60_000));
+		reservations.push({ start: end - duration * 60_000, end });
+		reservations.sort((left, right) => left.start - right.start || left.end - right.end);
+		return { id: order.id, from: order.estimatedReadyAt, to: new Date(end).toISOString() };
+	});
 }
 
 export function planPendingOnsiteAdvances(
@@ -134,7 +172,9 @@ export function planPendingOnsiteAdvances(
 
 	for (const order of movable) {
 		const durationMinutes = getOrderCapacityMinutes(settings, order.specialOrder);
-		const proposedMs = findEarliestCompletion(reservations, durationMinutes, now);
+		const earliestPrep = getPreparationTimeEstimate({ ...settings, ordersAhead: 0, specialOrdersAhead: 0 }, new Date(order.createdAt));
+		const notBefore = new Date(Math.max(now.getTime(), Date.parse(earliestPrep.estimatedReadyAt) - durationMinutes * 60_000));
+		const proposedMs = findEarliestCompletion(reservations, durationMinutes, notBefore);
 		const currentMs = new Date(order.estimatedReadyAt).getTime();
 		const finalMs = Number.isFinite(currentMs) ? Math.min(currentMs, proposedMs) : proposedMs;
 		const finalReadyAt = new Date(finalMs).toISOString();
@@ -158,7 +198,7 @@ export const ACTIVE_SCHEDULE_FINGERPRINT_SQL = `(
 			id || ':' || status || ':' || order_source || ':' || special_order || ':' || estimated_ready_at
 				AS schedule_value
 		FROM orders
-		WHERE status IN ('pending', 'accepted')
+		WHERE status IN ('pending', 'accepted') AND cancelled_at IS NULL
 		ORDER BY id ASC
 	)
 )`;
@@ -173,7 +213,7 @@ export async function readActiveKitchenSchedule(db: D1Database) {
 			estimated_ready_at AS estimatedReadyAt,
 			created_at AS createdAt
 		FROM orders
-		WHERE status IN ('pending', 'accepted')
+		WHERE status IN ('pending', 'accepted') AND cancelled_at IS NULL
 		ORDER BY id ASC`,
 	).all<{
 		id: string;

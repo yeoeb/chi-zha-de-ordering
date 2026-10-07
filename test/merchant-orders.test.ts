@@ -1,6 +1,9 @@
 import { env, exports } from "cloudflare:workers";
 import { beforeAll, beforeEach, describe, expect, it } from "vitest";
 import {
+	listActiveMerchantOrders,
+	listMerchantOrderHistoryForBusinessDate,
+	listRecentMerchantOrderHistory,
 	MerchantOrderError,
 	transitionMerchantOrder,
 	type MerchantOrderAction,
@@ -140,6 +143,31 @@ async function expectIllegal(orderId: string, action: MerchantOrderAction) {
 }
 
 describe("Merchant Order state machine", () => {
+	it("filters history by the selected Asia/Taipei deadline date", async () => {
+		await insertOrder({ id: "taipei-day-one", status: "completed", estimatedReadyAt: "2026-09-06T15:59:00.000Z" });
+		await insertOrder({ id: "taipei-day-two", status: "rejected", estimatedReadyAt: "2026-09-06T16:00:00.000Z" });
+
+		const firstDay = await listMerchantOrderHistoryForBusinessDate(env.DB, "2026-09-06", fixedNow);
+		const secondDay = await listMerchantOrderHistoryForBusinessDate(env.DB, "2026-09-07", fixedNow);
+
+		expect(firstDay.map((candidate) => candidate.id)).toEqual(["taipei-day-one"]);
+		expect(secondDay.map((candidate) => candidate.id)).toEqual(["taipei-day-two"]);
+	});
+
+	it("keeps accepted Orders active only before the pickup deadline without fabricating completion", async () => {
+		await insertOrder({ id: "before-deadline", status: "accepted", estimatedReadyAt: "2026-09-06T05:01:00.000Z" });
+		await insertOrder({ id: "at-deadline", status: "accepted", estimatedReadyAt: fixedNowIso });
+		await insertOrder({ id: "after-deadline", status: "accepted", estimatedReadyAt: "2026-09-06T04:59:00.000Z" });
+
+		const active = await listActiveMerchantOrders(env.DB, fixedNow);
+		const history = await listRecentMerchantOrderHistory(env.DB, 50, fixedNow);
+
+		expect(active.map((order) => order.id)).toEqual(["before-deadline"]);
+		expect(history.map((order) => order.id)).toEqual(expect.arrayContaining(["at-deadline", "after-deadline"]));
+		expect((await readStatus("at-deadline"))).toMatchObject({ status: "accepted", completed_at: null });
+		expect((await readStatus("after-deadline"))).toMatchObject({ status: "accepted", completed_at: null });
+	});
+
 	it("accepts pending Orders and sets only accepted_at", async () => {
 		await insertOrder({ id: "accept-order", status: "pending" });
 
@@ -352,6 +380,11 @@ describe("Merchant Order API", () => {
 					modifiers: Array<{ groupName: string; name: string; priceDelta: number }>;
 				}>;
 			}>;
+		};
+		const historyResponse = await exports.default.fetch(
+			"https://example.com/api/merchant/orders/history?date=2026-09-06",
+		);
+		const historyResult = (await historyResponse.json()) as {
 			history: Array<{
 				id: string;
 				status: OrderStatus;
@@ -360,19 +393,31 @@ describe("Merchant Order API", () => {
 		};
 
 		expect(response.status).toBe(200);
-		expect(result.orders.map((order) => order.id)).toEqual(["newer", "accepted", "oldest"]);
-		expect(result.orders[2].customerNote).toBe("雞排不要切");
-		expect(result.orders[2].packagingPreference).toBe("separate_spicy");
-		expect(result.orders[2].items[0]).toMatchObject({
+		expect(result.orders.map((order) => order.id)).toEqual(["newer", "oldest"]);
+		expect(result.orders[1].customerNote).toBe("雞排不要切");
+		expect(result.orders[1].packagingPreference).toBe("separate_spicy");
+		expect(result.orders[1].items[0]).toMatchObject({
 			name: "雞排快照",
 			unitPrice: 90,
 			modifiers: [{ groupName: "辣度快照", name: "小辣快照", priceDelta: 5 }],
 		});
-		expect(result.history.map((order) => [order.id, order.status])).toEqual([
-			["completed", "completed"],
+		expect(historyResponse.status).toBe(200);
+		expect(historyResult.history.map((order) => [order.id, order.status])).toEqual([
 			["rejected", "rejected"],
+			["completed", "completed"],
+			["accepted", "accepted"],
 		]);
-		expect(result.history[0].items[0]).toMatchObject({ name: "雞排快照", unitPrice: 90 });
+		expect(historyResult.history[0].items[0]).toMatchObject({ name: "雞排快照", unitPrice: 90 });
+	});
+
+	it("rejects malformed, future, and out-of-window Merchant history dates", async () => {
+		for (const date of ["not-a-date", "2099-01-01", "2020-01-01"]) {
+			const response = await exports.default.fetch(
+				`https://example.com/api/merchant/orders/history?date=${date}`,
+			);
+			expect(response.status).toBe(400);
+			expect(await response.json()).toMatchObject({ error: { code: "INVALID_HISTORY_DATE" } });
+		}
 	});
 
 	it("exposes guarded explicit action endpoints", async () => {

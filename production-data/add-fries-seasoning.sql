@@ -35,7 +35,7 @@ WHERE EXISTS (
 
 INSERT INTO modifier_options (
 	id, modifier_group_id, name, price_delta, sort_order, is_active
-) SELECT 17, 5, '不加調味', 0, 30, 1
+) SELECT 17, 5, '不加調味', 0, 30, 0
 WHERE EXISTS (
 	SELECT 1 FROM modifier_groups AS groups
 	JOIN menu_items AS items ON items.id = groups.menu_item_id
@@ -62,9 +62,13 @@ WHERE EXISTS (
 
 INSERT INTO modifier_options (
 	id, modifier_group_id, name, price_delta, sort_order, is_active
-) SELECT 20, 6, '不加調味', 0, 30, 1
+) SELECT 20, 6, '不加調味', 0, 30, 0
 WHERE EXISTS (
 	SELECT 1 FROM modifier_groups AS groups
 	JOIN menu_items AS items ON items.id = groups.menu_item_id
 	WHERE groups.id = 6 AND groups.name = '調味' AND items.id = 10 AND items.name = '甘梅地瓜'
 ) AND NOT EXISTS (SELECT 1 FROM modifier_options WHERE id = 20);
+
+UPDATE modifier_options SET is_active = 0
+WHERE (id = 17 AND modifier_group_id = 5 AND name = '不加調味')
+	OR (id = 20 AND modifier_group_id = 6 AND name = '不加調味');

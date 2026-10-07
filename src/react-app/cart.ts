@@ -77,7 +77,7 @@ export function reconfigureCartLines(
 	);
 	const changed = cart.map((line) => {
 		const selectedModifiers = updates.get(line.id);
-		if (!selectedModifiers) return line;
+		if (!selectedModifiers || line.quantity === 0) return line;
 		return {
 			...line,
 			...createCartLine(
@@ -86,6 +86,10 @@ export function reconfigureCartLines(
 			),
 		};
 	});
+	const zeroIds = new Set(cart.filter((line) => line.quantity === 0).map((line) => line.id));
+	if (changed.some((line) => line.quantity > 0 && zeroIds.has(line.id))) {
+		return { lines: cart, exceededQuantityLimit: false as const, zeroLineConflict: true as const };
+	}
 	const merged = mergeMatchingLines(changed);
 	return merged
 		? { lines: merged, exceededQuantityLimit: false as const }
@@ -113,11 +117,8 @@ export function cartReducer(cart: CartLine[], action: CartAction): CartLine[] {
 					: line,
 			);
 		case "decrease":
-			return cart.map((line) =>
-				line.id === action.lineId && line.quantity > 1
-					? { ...line, quantity: line.quantity - 1 }
-					: line,
-			);
+			return cart.map((line) => line.id === action.lineId && line.quantity > 0
+				? { ...line, quantity: line.quantity - 1 } : line);
 		case "remove":
 			return cart.filter((line) => line.id !== action.lineId);
 		case "restore":
@@ -137,7 +138,20 @@ export function cartReducer(cart: CartLine[], action: CartAction): CartLine[] {
 }
 
 export function getCartItemCount(cart: CartLine[]) {
-	return cart.reduce((total, line) => total + line.quantity, 0);
+	return getActiveCartLines(cart).reduce((total, line) => total + line.quantity, 0);
+}
+
+export function getActiveCartLines(cart: ReadonlyArray<CartLine>) {
+	return cart.filter((line) => line.quantity > 0);
+}
+
+// Shared by Quote and Order. Zero quantities exist only in the editable draft.
+export function toCheckoutItems(cart: ReadonlyArray<CartLine>) {
+	return getActiveCartLines(cart).map((line) => ({
+		menuItemId: line.menuItemId,
+		quantity: line.quantity,
+		modifierOptionIds: line.selectedModifiers.map((modifier) => modifier.optionId),
+	}));
 }
 
 export function getCartLineSubtotal(line: CartLine) {
@@ -145,5 +159,5 @@ export function getCartLineSubtotal(line: CartLine) {
 }
 
 export function getCartTotal(cart: CartLine[]) {
-	return cart.reduce((total, line) => total + getCartLineSubtotal(line), 0);
+	return getActiveCartLines(cart).reduce((total, line) => total + getCartLineSubtotal(line), 0);
 }

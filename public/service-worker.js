@@ -88,14 +88,27 @@ self.addEventListener("push", (event) => {
 		typeof payload.body === "string" && payload.body.trim()
 			? payload.body.trim().slice(0, 200)
 			: DEFAULT_PUSH_BODY;
+	const notificationTag =
+		typeof payload.data?.tag === "string" && payload.data.tag.startsWith("order:")
+			? payload.data.tag
+			: "new-order";
 	event.waitUntil(
 		self.registration.showNotification(title, {
 			body,
 			icon: "/icons/icon-192.png",
 			badge: "/icons/icon-192.png",
-			tag: "new-order",
+			vibrate: [200, 100, 200],
+			tag: notificationTag,
 			data: { url: MERCHANT_PATH },
 		}),
+	);
+});
+
+self.addEventListener("message", (event) => {
+	if (event.data?.type !== "CLOSE_ORDER_NOTIFICATION" || typeof event.data.orderId !== "string") return;
+	event.waitUntil(
+		self.registration.getNotifications({ tag: `order:${event.data.orderId}` })
+			.then((notifications) => notifications.forEach((notification) => notification.close())),
 	);
 });
 
@@ -120,6 +133,7 @@ self.addEventListener("notificationclick", (event) => {
 					}
 				});
 				if (merchantClient) {
+					merchantClient.postMessage({ type: "MERCHANT_NOTIFICATION_OPEN" });
 					return merchantClient.focus();
 				}
 				return self.clients.openWindow(targetUrl);

@@ -7,7 +7,8 @@ INSERT INTO modifier_options (
 WHERE EXISTS (
 	SELECT 1 FROM modifier_groups AS groups
 	JOIN menu_items AS items ON items.id = groups.menu_item_id
-	WHERE groups.id = 1 AND groups.name = '辣度' AND items.id = 1 AND items.name = '香雞排'
+	WHERE groups.id = 1 AND groups.name = '辣度' AND items.id = 1
+		AND items.name IN ('香雞排', '傳統雞排')
 ) AND NOT EXISTS (SELECT 1 FROM modifier_options WHERE id = 21);
 
 INSERT INTO modifier_options (
@@ -16,7 +17,8 @@ INSERT INTO modifier_options (
 WHERE EXISTS (
 	SELECT 1 FROM modifier_groups AS groups
 	JOIN menu_items AS items ON items.id = groups.menu_item_id
-	WHERE groups.id = 1 AND groups.name = '辣度' AND items.id = 1 AND items.name = '香雞排'
+	WHERE groups.id = 1 AND groups.name = '辣度' AND items.id = 1
+		AND items.name IN ('香雞排', '傳統雞排')
 ) AND NOT EXISTS (SELECT 1 FROM modifier_options WHERE id = 22);
 
 INSERT INTO modifier_options (
@@ -25,7 +27,8 @@ INSERT INTO modifier_options (
 WHERE EXISTS (
 	SELECT 1 FROM modifier_groups AS groups
 	JOIN menu_items AS items ON items.id = groups.menu_item_id
-	WHERE groups.id = 3 AND groups.name = '辣度' AND items.id = 4 AND items.name = '鹹酥雞'
+	WHERE groups.id = 3 AND groups.name = '辣度' AND items.id = 4
+		AND items.name IN ('鹹酥雞', '鹽酥雞')
 ) AND NOT EXISTS (SELECT 1 FROM modifier_options WHERE id = 23);
 
 INSERT INTO modifier_options (
@@ -34,7 +37,8 @@ INSERT INTO modifier_options (
 WHERE EXISTS (
 	SELECT 1 FROM modifier_groups AS groups
 	JOIN menu_items AS items ON items.id = groups.menu_item_id
-	WHERE groups.id = 3 AND groups.name = '辣度' AND items.id = 4 AND items.name = '鹹酥雞'
+	WHERE groups.id = 3 AND groups.name = '辣度' AND items.id = 4
+		AND items.name IN ('鹹酥雞', '鹽酥雞')
 ) AND NOT EXISTS (SELECT 1 FROM modifier_options WHERE id = 24);
 
 INSERT INTO modifier_options (

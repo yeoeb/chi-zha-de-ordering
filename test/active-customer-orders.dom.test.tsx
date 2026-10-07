@@ -20,7 +20,7 @@ function order(token: string, status: CustomerOrder["status"]): CustomerOrder {
 		customerNote: null,
 		packagingPreference: "together",
 		createdAt: "2026-09-16T10:00:00.000Z",
-		estimatedReadyAt: "2026-09-16T10:20:00.000Z",
+		estimatedReadyAt: "2099-09-16T10:20:00.000Z",
 		total: 90,
 		items: [],
 	};
@@ -64,6 +64,17 @@ describe("active customer Order recovery", () => {
 
 		expect(readActiveCustomerOrderTokens()).toEqual([token]);
 		expect(readCustomerOrderHistoryTokens()).toEqual([]);
+	});
+
+	it("moves an Order out of My Orders at its pickup deadline without changing backend status", () => {
+		const token = "e".repeat(64);
+		const deadline = "2026-09-16T10:20:00.000Z";
+		rememberActiveCustomerOrder({ ...order(token, "accepted"), estimatedReadyAt: deadline }, localStorage, Date.parse(deadline) - 1);
+		expect(readActiveCustomerOrderTokens()).toEqual([token]);
+
+		rememberActiveCustomerOrder({ ...order(token, "accepted"), estimatedReadyAt: deadline }, localStorage, Date.parse(deadline));
+		expect(readActiveCustomerOrderTokens()).toEqual([]);
+		expect(readCustomerOrderHistoryTokens()).toEqual([token]);
 	});
 
 	it("keeps only the latest twenty opaque history tokens", () => {

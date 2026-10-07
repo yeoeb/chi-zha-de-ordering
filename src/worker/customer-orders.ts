@@ -12,10 +12,11 @@ export type CustomerOrder = {
 	estimatedReadyAt: string;
 	total: number;
 	originalTotal: number;
-	shortagePolicy: "continue_available" | "cancel_entire_order";
+	shortagePolicy: "continue_available" | "cancel_entire_order" | null;
 	shortageRevision: number;
 	cancelledAt: string | null;
 	cancellationReason: "customer_cancelled" | "shortage_cancelled" | "all_items_unavailable" | null;
+	rejectionReason: "merchant_rejected" | "auto_rejected_unanswered" | null;
 	items: Array<{
 		name: string;
 		unitPrice: number;
@@ -75,6 +76,7 @@ export function toCustomerOrder(
 		shortageRevision: storedOrder.shortageRevision,
 		cancelledAt: storedOrder.cancelledAt,
 		cancellationReason: storedOrder.cancellationReason,
+		rejectionReason: storedOrder.rejectionReason,
 		items: storedOrder.items.map((item) => ({
 			name: item.name,
 			unitPrice: item.unitPrice,

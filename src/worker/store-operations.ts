@@ -289,7 +289,8 @@ export async function performStoreOperation(input: {
 			db
 				.prepare(
 					`UPDATE store_settings
-					SET is_accepting_orders = ?, state_version = state_version + 1
+					SET is_accepting_orders = ?, state_version = state_version + 1,
+						auto_pause_reason = NULL
 					WHERE id = 1
 						AND EXISTS (
 							SELECT 1

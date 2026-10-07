@@ -14,7 +14,6 @@ import {
 } from "../src/shared/customer-contact";
 
 const request = {
-	customerName: " 王小明 ",
 	customerPhone: " 0912345678 ",
 	customerNote: " 不要辣 ",
 	packagingPreference: "together" as const,
@@ -26,6 +25,10 @@ const request = {
 };
 
 describe("pending Order attempt recovery", () => {
+	it("retains the existing onsite default attempt identity when the non-applicable field is omitted", async () => {
+		const onsite = { ...request, orderSource: "onsite" as const };
+		expect(await hashOrderAttemptRequest(onsite)).toBe(await hashOrderAttemptRequest({ ...onsite, shortagePolicy: "continue_available" }));
+	});
 	it("accepts only a 09-prefixed 10-digit ASCII mobile number", () => {
 		expect(isValidCustomerPhone("0912345678")).toBe(true);
 		for (const invalidPhone of [
@@ -46,7 +49,6 @@ describe("pending Order attempt recovery", () => {
 		const first = await hashOrderAttemptRequest(request);
 		const reordered = await hashOrderAttemptRequest({
 			...request,
-			customerName: "王小明",
 			customerPhone: "0912345678",
 			customerNote: "不要辣",
 			items: [
@@ -84,15 +86,13 @@ describe("pending Order attempt recovery", () => {
 		const requestHash = await hashOrderAttemptRequest(request);
 		const stored = serializeOrderAttempt(requestHash, "attempt-key", 1_000);
 
-		expect(stored).not.toContain("王小明");
 		expect(stored).not.toContain("0912345678");
 		expect(stored).not.toContain("不要辣");
 		expect(stored).not.toContain("menuItemId");
 	});
 
-	it("restores checkout contact data only from the session-scoped draft contract", () => {
+	it("restores optional checkout phone data only from the session-scoped draft contract", () => {
 		const form = {
-			customerName: "王小明",
 			customerPhone: "0912345678",
 			orderNote: "炸酥一點",
 			packagingPreference: "together" as const,

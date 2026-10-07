@@ -37,7 +37,8 @@
 		"cf-typegen": "wrangler types",
 		"check": "npm run lint && npm run build",
 		"db:migrate:local": "wrangler d1 migrations apply DB --local",
-		"db:seed:local": "wrangler d1 execute DB --local --file=seeds/development.sql",
+		"db:seed:local": "wrangler d1 execute DB --local --file=seeds/development.sql && npm run db:spice:local",
+		"db:spice:local": "wrangler d1 execute DB --local --file=seeds/ensure-spice-modifiers.sql",
 		"dev": "vite",
 		"generate:onsite-qr": "node scripts/generate-onsite-qr.mjs",
 		"lint": "eslint .",
@@ -48,6 +49,7 @@
 		"verify:deploy-dry-run": "node scripts/verify-deployment-dry-run.mjs",
 		"verify:fresh-d1": "node scripts/verify-fresh-d1.mjs",
 		"verify:production-data": "node scripts/verify-production-data.mjs",
+		"verify:test-menu": "node scripts/verify-test-menu.mjs",
 		"verify:upgrade-d1": "node scripts/verify-migration-0013-upgrade.mjs",
 		"verify:pwa": "node scripts/verify-pwa.mjs"
 	},

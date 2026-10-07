@@ -4,6 +4,7 @@ export type PreparationTimePolicyInput = {
 	specialExtraMinutes: number;
 	ordersAhead: number;
 	specialOrdersAhead: number;
+	minimumLeadMinutes?: number;
 };
 
 export type PreparationTimeEstimate = {
@@ -29,6 +30,7 @@ export function getPreparationTimeEstimate(
 	requireNonNegativeInteger(input.specialExtraMinutes, "specialExtraMinutes");
 	requireNonNegativeInteger(input.ordersAhead, "ordersAhead");
 	requireNonNegativeInteger(input.specialOrdersAhead, "specialOrdersAhead");
+	requireNonNegativeInteger(input.minimumLeadMinutes ?? 0, "minimumLeadMinutes");
 
 	if (input.specialOrdersAhead > input.ordersAhead) {
 		throw new RangeError("specialOrdersAhead must not exceed ordersAhead");
@@ -42,9 +44,10 @@ export function getPreparationTimeEstimate(
 		input.basePrepMinutes +
 		input.ordersAhead * input.normalOrderMinutes +
 		input.specialOrdersAhead * input.specialExtraMinutes;
-	const leadMinutes = roundPreparationDurationMinutes(
+	const existingLeadMinutes = roundPreparationDurationMinutes(
 		Math.max(input.basePrepMinutes, calculatedLeadMinutes),
 	);
+	const leadMinutes = Math.max(existingLeadMinutes, input.minimumLeadMinutes ?? 0);
 	const initialReadyAt = now.getTime() + leadMinutes * 60_000;
 	const roundingMilliseconds = PREPARATION_ROUNDING_MINUTES * 60_000;
 

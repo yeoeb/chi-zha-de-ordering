@@ -6,7 +6,6 @@ const ORDER_FORM_VERSION = 1;
 
 type OrderAttemptRequest = {
 	orderSource?: "online" | "onsite";
-	customerName?: string;
 	customerPhone?: string;
 	customerNote: string | null;
 	packagingPreference: "together" | "separate_spicy";
@@ -29,7 +28,6 @@ type StoredOrderAttempt = {
 };
 
 export type CheckoutFormDraft = {
-	customerName: string;
 	customerPhone: string;
 	orderNote: string;
 	packagingPreference: "together" | "separate_spicy";
@@ -47,7 +45,6 @@ function canonicalizeRequest(request: OrderAttemptRequest) {
 
 	return JSON.stringify({
 		...(request.orderSource === "onsite" ? { orderSource: "onsite" as const } : {}),
-		customerName: request.customerName?.trim() ?? "",
 		customerPhone: request.customerPhone?.trim() ?? "",
 		customerNote: request.customerNote?.trim() || null,
 		packagingPreference: request.packagingPreference,
@@ -145,7 +142,6 @@ export function restoreCheckoutFormDraft(
 			(key) => ![
 				"version",
 				"updatedAt",
-				"customerName",
 				"customerPhone",
 				"orderNote",
 				"packagingPreference",
@@ -157,8 +153,6 @@ export function restoreCheckoutFormDraft(
 		!Number.isFinite(record.updatedAt) ||
 		record.updatedAt > now + 60_000 ||
 		now - record.updatedAt > ORDER_ATTEMPT_TTL_MS ||
-		typeof record.customerName !== "string" ||
-		record.customerName.length > 50 ||
 		typeof record.customerPhone !== "string" ||
 		record.customerPhone.length > 30 ||
 		typeof record.orderNote !== "string" ||
@@ -172,12 +166,11 @@ export function restoreCheckoutFormDraft(
 		return null;
 	}
 	return {
-		customerName: record.customerName,
 		customerPhone: record.customerPhone,
 		orderNote: record.orderNote,
 		packagingPreference: record.packagingPreference,
-		shortagePolicy: record.shortagePolicy === "cancel_entire_order"
-			? "cancel_entire_order"
-			: "continue_available",
+		...(record.shortagePolicy === "continue_available" || record.shortagePolicy === "cancel_entire_order"
+			? { shortagePolicy: record.shortagePolicy }
+			: {}),
 	};
 }
