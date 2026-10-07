@@ -1,3 +1,4 @@
+import { setupOrderAcceptanceTests } from "./order-acceptance-fixture";
 import { env } from "cloudflare:workers";
 import { beforeAll, describe, expect, it } from "vitest";
 import {
@@ -5,6 +6,8 @@ import {
 	validateAndPriceCart,
 } from "../src/worker/checkout-quote";
 import { createOrder } from "../src/worker/order-creation";
+
+setupOrderAcceptanceTests();
 
 beforeAll(async () => {
 	await env.DB.batch([
@@ -37,7 +40,7 @@ describe("Order atomicity", () => {
 					items,
 				},
 				"atomic-failure-key",
-				new Date("2026-09-06T04:00:00.000Z"),
+				new Date("2026-09-06T10:00:00.000Z"),
 			),
 		).rejects.toThrow(/forced order item failure/);
 

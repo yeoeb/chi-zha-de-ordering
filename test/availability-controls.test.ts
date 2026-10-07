@@ -1,8 +1,11 @@
+import { setupOrderAcceptanceTests } from "./order-acceptance-fixture";
 import { env, exports } from "cloudflare:workers";
 import { beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { dailyTestSchedule } from "./business-hours-fixture";
 
 const orderItems = [{ menuItemId: 1, quantity: 1, modifierOptionIds: [10] }];
+
+setupOrderAcceptanceTests();
 
 beforeAll(async () => {
 	await env.DB.batch([

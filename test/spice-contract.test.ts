@@ -1,6 +1,9 @@
+import { setupOrderAcceptanceTests } from "./order-acceptance-fixture";
 import { env, exports } from "cloudflare:workers";
 import { beforeAll, describe, expect, it } from "vitest";
 import { getDefaultOptionIds, getSpiceGroup, type MenuCategory } from "../src/react-app/customer-menu";
+
+setupOrderAcceptanceTests();
 
 beforeAll(async () => {
 	await env.DB.batch([

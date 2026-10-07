@@ -6,6 +6,7 @@ import {
 	type PricedCart,
 } from "./checkout-quote";
 import { getStoreSettings } from "./store-settings";
+import { assertOrderAcceptanceWindow } from "./order-acceptance";
 import { isValidCustomerPhone } from "../shared/customer-contact";
 import {
 	ONLINE_CUSTOMER_NAME,
@@ -640,6 +641,7 @@ export async function createOrder(
 			);
 		}
 
+		assertOrderAcceptanceWindow(store, now);
 		await assertConfirmedQuote(pricedCart, request.quoteFingerprint);
 		const activeSchedule = await readActiveKitchenSchedule(db);
 		const scheduleFingerprint = createKitchenScheduleFingerprint(activeSchedule);
@@ -691,6 +693,8 @@ export async function createOrder(
 					WHERE store_settings.id = 1
 						AND store_settings.is_accepting_orders = 1
 						AND store_settings.state_version = ?
+						AND store_settings.weekly_business_hours IS ?
+						AND store_settings.last_order_time IS ?
 						AND store_settings.base_prep_minutes = ?
 						AND store_settings.normal_order_minutes = ?
 						AND store_settings.special_extra_minutes = ?
@@ -725,6 +729,8 @@ export async function createOrder(
 					idempotencyKey,
 					requestFingerprint,
 					store.state_version,
+					store.weekly_business_hours,
+					store.last_order_time,
 					store.base_prep_minutes,
 					store.normal_order_minutes,
 					store.special_extra_minutes,
@@ -880,6 +886,7 @@ export async function createOrder(
 			"Store is not accepting orders",
 		);
 	}
+	if (store) assertOrderAcceptanceWindow(store, now);
 	const pricedCart = await validateAndPriceCart(db, request.items);
 	await assertConfirmedQuote(pricedCart, request.quoteFingerprint);
 	throw new OrderCreationError(

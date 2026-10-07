@@ -56,6 +56,7 @@ import {
 	ORDER_FORM_SESSION_KEY,
 	restoreCheckoutFormDraft,
 	restoreOrderAttempt,
+	restorePendingOrderAttemptKey,
 	serializeCheckoutFormDraft,
 	serializeOrderAttempt,
 	type CheckoutFormDraft,
@@ -1038,6 +1039,10 @@ export function CustomerApp({ orderSource: initialOrderSource = "online" }: { or
 					error?: { code?: string; lineIssues?: unknown };
 				};
 
+				if (rejection.error?.code === "BUSINESS_HOURS_CLOSED" || rejection.error?.code === "BUSINESS_SCHEDULE_UNAVAILABLE") {
+					setCheckoutError(rejection.error.code === "BUSINESS_HOURS_CLOSED" ? uiCopy.customer.businessHoursClosed : uiCopy.customer.businessScheduleUnavailable);
+					return;
+				}
 				if (rejection.error?.code === "STORE_NOT_ACCEPTING_ORDERS") {
 					setStore((current) =>
 						current ? { ...current, is_accepting_orders: false } : current,
@@ -1212,9 +1217,9 @@ export function CustomerApp({ orderSource: initialOrderSource = "online" }: { or
 				}
 			}
 			if (!idempotencyKey && hasRecoverableOrderAttempt(storedAttempt)) {
-				setHasPendingOrderAttempt(true);
-				setOrderError(uiCopy.customer.pendingAttemptBlocked);
-				return;
+				// A stale client hash must not deadlock recovery. Reconcile through
+				// the existing API using the original key, never a new identity.
+				idempotencyKey = restorePendingOrderAttemptKey(storedAttempt);
 			}
 			idempotencyKey ??= crypto.randomUUID();
 			orderIdempotencyKey.current = idempotencyKey;
@@ -1288,6 +1293,10 @@ export function CustomerApp({ orderSource: initialOrderSource = "online" }: { or
 						setOrderError(
 							uiCopy.customer.orderCartChanged,
 						);
+						return;
+					}
+					if (code === "BUSINESS_HOURS_CLOSED" || code === "BUSINESS_SCHEDULE_UNAVAILABLE") {
+						setOrderError(code === "BUSINESS_HOURS_CLOSED" ? uiCopy.customer.businessHoursClosed : uiCopy.customer.businessScheduleUnavailable);
 						return;
 					}
 					if (code === "STORE_NOT_ACCEPTING_ORDERS") {

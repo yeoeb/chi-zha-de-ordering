@@ -1,3 +1,4 @@
+import { setupOrderAcceptanceTests } from "./order-acceptance-fixture";
 import { env, exports } from "cloudflare:workers";
 import { beforeAll, describe, expect, it } from "vitest";
 import {
@@ -5,6 +6,8 @@ import {
 	validateAndPriceCart,
 	type CheckoutLineSelection,
 } from "../src/worker/checkout-quote";
+
+setupOrderAcceptanceTests();
 
 beforeAll(async () => {
 	await env.DB.batch([

@@ -1,3 +1,4 @@
+import { setupOrderAcceptanceTests } from "./order-acceptance-fixture";
 import { env, exports } from "cloudflare:workers";
 import { beforeAll, beforeEach, describe, expect, it } from "vitest";
 import {
@@ -10,6 +11,8 @@ import { dailyTestSchedule } from "./business-hours-fixture";
 import { restorePreviousBusinessDaySoldOut } from "../src/worker/daily-sold-out";
 
 const now = new Date("2026-09-25T04:00:00.000Z");
+
+setupOrderAcceptanceTests();
 
 beforeAll(async () => {
 	await env.DB.batch([

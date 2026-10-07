@@ -1,3 +1,4 @@
+import { setupOrderAcceptanceTests } from "./order-acceptance-fixture";
 import { env } from "cloudflare:workers";
 import { beforeAll, beforeEach, describe, expect, it } from "vitest";
 import {
@@ -21,7 +22,7 @@ const requestBase = {
 	specialOrder: false,
 	items: requestItems,
 };
-const now = new Date("2026-09-22T04:00:00.000Z");
+const now = new Date("2026-09-22T10:00:00.000Z");
 
 function interleaveBeforeAtomicWrite(action: () => Promise<unknown>) {
 	let batchCalls = 0;
@@ -48,6 +49,8 @@ async function orderCount() {
 	return (await env.DB.prepare("SELECT COUNT(*) AS count FROM orders").first<{ count: number }>())
 		?.count ?? 0;
 }
+
+setupOrderAcceptanceTests();
 
 beforeAll(async () => {
 	await env.DB.batch([

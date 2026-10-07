@@ -45,6 +45,7 @@ import {
 	setMenuItemAvailability,
 } from "./merchant-availability";
 import { getStoreSettings } from "./store-settings";
+import { assertOrderAcceptanceWindow, OrderAcceptanceError } from "./order-acceptance";
 import { readBoundedJson, RequestBodyError } from "./request-body";
 import {
 	deliverNewOrderNotification,
@@ -378,6 +379,7 @@ app.post("/api/checkout/quote", async (c) => {
 		}
 
 		const now = new Date();
+		assertOrderAcceptanceWindow(store, now);
 		const [pricedCart, queueCounts] = await Promise.all([
 			validateAndPriceCart(c.env.DB, selections),
 			c.env.DB
@@ -409,13 +411,13 @@ app.post("/api/checkout/quote", async (c) => {
 
 		return c.json({ ...pricedCart, ...preparationTime, quoteFingerprint });
 	} catch (error) {
-		if (error instanceof CheckoutQuoteError) {
+		if (error instanceof CheckoutQuoteError || error instanceof OrderAcceptanceError) {
 			return c.json(
 				{
 					error: {
 						code: error.code,
 						message: error.message,
-						...(error.lineIssues.length > 0 ? { lineIssues: error.lineIssues } : {}),
+						...(error instanceof CheckoutQuoteError && error.lineIssues.length > 0 ? { lineIssues: error.lineIssues } : {}),
 					},
 				},
 				error.status,
@@ -495,7 +497,7 @@ async function handleCreateOrder(c: Context<AppEnvironment>, orderSource: OrderS
 			result.replayed ? 200 : 201,
 		);
 	} catch (error) {
-		if (error instanceof CheckoutQuoteError || error instanceof OrderCreationError) {
+		if (error instanceof CheckoutQuoteError || error instanceof OrderCreationError || error instanceof OrderAcceptanceError) {
 			return c.json(
 				{
 					error: {

@@ -1,3 +1,4 @@
+import { setupOrderAcceptanceTests } from "./order-acceptance-fixture";
 import { env, exports } from "cloudflare:workers";
 import { beforeAll, beforeEach, describe, expect, it } from "vitest";
 import app from "../src/worker/index";
@@ -8,6 +9,8 @@ const adminHeaders = {
 	Origin: "https://example.com",
 	"Sec-Fetch-Site": "same-origin",
 };
+
+setupOrderAcceptanceTests();
 
 beforeAll(async () => {
 	await env.DB.batch([

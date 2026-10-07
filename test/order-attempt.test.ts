@@ -5,6 +5,7 @@ import {
 	ORDER_ATTEMPT_TTL_MS,
 	restoreCheckoutFormDraft,
 	restoreOrderAttempt,
+	restorePendingOrderAttemptKey,
 	serializeCheckoutFormDraft,
 	serializeOrderAttempt,
 } from "../src/react-app/order-attempt";
@@ -25,6 +26,13 @@ const request = {
 };
 
 describe("pending Order attempt recovery", () => {
+	it("recovers only the original valid key for authoritative stale-hash reconciliation", () => {
+		const stored=serializeOrderAttempt("f".repeat(64),"original-key",1000);
+		expect(restoreOrderAttempt(stored,"a".repeat(64),2000)).toBeNull();
+		expect(restorePendingOrderAttemptKey(stored,2000)).toBe("original-key");
+		expect(restorePendingOrderAttemptKey(stored,1000+ORDER_ATTEMPT_TTL_MS+1)).toBeNull();
+		expect(restorePendingOrderAttemptKey("{}",2000)).toBeNull();
+	});
 	it("retains the existing onsite default attempt identity when the non-applicable field is omitted", async () => {
 		const onsite = { ...request, orderSource: "onsite" as const };
 		expect(await hashOrderAttemptRequest(onsite)).toBe(await hashOrderAttemptRequest({ ...onsite, shortagePolicy: "continue_available" }));

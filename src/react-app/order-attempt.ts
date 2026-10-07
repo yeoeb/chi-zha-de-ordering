@@ -111,6 +111,14 @@ export function hasRecoverableOrderAttempt(raw: string | null, now = Date.now())
 	return parseStoredOrderAttempt(raw, now) !== null;
 }
 
+// Used only after the customer explicitly confirms a pending attempt. The
+// original key is retained even if a stale client hash no longer matches.
+// Backend fingerprint comparison remains authoritative; a committed different
+// request conflicts rather than creating a second order.
+export function restorePendingOrderAttemptKey(raw: string | null, now = Date.now()) {
+	return parseStoredOrderAttempt(raw, now)?.idempotencyKey ?? null;
+}
+
 export function restoreOrderAttempt(
 	raw: string | null,
 	requestHash: string,

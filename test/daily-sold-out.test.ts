@@ -1,3 +1,4 @@
+import { setupOrderAcceptanceTests } from "./order-acceptance-fixture";
 import { env, exports } from "cloudflare:workers";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import worker from "../src/worker/index";
@@ -38,6 +39,8 @@ describe("opening-cycle Business Day (Asia/Taipei)", () => {
 		expect(() => getOpeningBusinessDay(new Date("invalid"), schedule)).toThrow(RangeError);
 	});
 });
+
+setupOrderAcceptanceTests();
 
 beforeAll(async () => {
 	await env.DB.batch([

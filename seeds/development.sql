@@ -5,8 +5,8 @@
 
 UPDATE store_settings SET
 	is_accepting_orders = 1,
-	weekly_business_hours = '{"0":{"isOpen":true,"openAt":"17:30","closeAt":"23:15"},"1":{"isOpen":true,"openAt":"17:30","closeAt":"23:15"},"2":{"isOpen":true,"openAt":"17:30","closeAt":"23:15"},"3":{"isOpen":true,"openAt":"17:30","closeAt":"23:15"},"4":{"isOpen":true,"openAt":"17:30","closeAt":"23:15"},"5":{"isOpen":true,"openAt":"17:30","closeAt":"23:15"},"6":{"isOpen":true,"openAt":"17:30","closeAt":"23:15"}}',
-	last_order_time = '23:00',
+	weekly_business_hours = '{"0":{"isOpen":true,"openAt":"17:30","closeAt":"23:15"},"1":{"isOpen":false,"openAt":"17:30","closeAt":"23:15"},"2":{"isOpen":true,"openAt":"17:30","closeAt":"23:15"},"3":{"isOpen":true,"openAt":"17:30","closeAt":"23:15"},"4":{"isOpen":true,"openAt":"17:30","closeAt":"23:15"},"5":{"isOpen":true,"openAt":"17:30","closeAt":"23:15"},"6":{"isOpen":true,"openAt":"17:30","closeAt":"23:15"}}',
+	last_order_time = '23:15',
 	customer_phone_mode = 'optional',
 	show_product_images = 1
 WHERE id = 1;

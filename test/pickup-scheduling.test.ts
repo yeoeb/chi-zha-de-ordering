@@ -1,3 +1,4 @@
+import { setupOrderAcceptanceTests } from "./order-acceptance-fixture";
 import { env } from "cloudflare:workers";
 import { beforeEach, describe, expect, it } from "vitest";
 import { createOrder, type CreateOrderRequest } from "../src/worker/order-creation";
@@ -7,9 +8,11 @@ import { listActiveMerchantOrders, transitionMerchantOrder } from "../src/worker
 import { getCustomerOrder } from "../src/worker/customer-orders";
 import { performBusyModeOperation, processDueAutoRejections } from "../src/worker/operational-automation";
 
-const now = new Date("2030-10-07T11:00:00.000Z");
+const now = new Date("2030-10-08T11:00:00.000Z");
 const items = [{ menuItemId: 980, quantity: 1, modifierOptionIds: [] }];
 let request: CreateOrderRequest;
+setupOrderAcceptanceTests();
+
 beforeEach(async () => {
 	await env.DB.batch([
 		env.DB.prepare("DELETE FROM order_auto_rejection_events"),

@@ -89,7 +89,7 @@ try {
 				(SELECT COUNT(*) FROM d1_migrations) AS migrationCount,
 				(SELECT COUNT(*) FROM store_settings WHERE id = 1 AND display_name = '吃炸的' AND state_version = 0
 					AND busy_mode = 0 AND missed_order_count = 0 AND auto_pause_reason IS NULL
-					AND weekly_business_hours IS NOT NULL AND last_order_time = '23:00'
+					AND weekly_business_hours IS NOT NULL AND last_order_time = '23:15'
 					AND customer_phone_mode = 'optional' AND show_product_images = 1
 					AND new_order_sound_enabled = 1) AS storeCount,
 				(SELECT COUNT(*) FROM menu_items) AS menuItemCount,

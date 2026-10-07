@@ -1,3 +1,4 @@
+import { setupOrderAcceptanceTests } from "./order-acceptance-fixture";
 import { env, exports } from "cloudflare:workers";
 import { beforeAll, beforeEach, describe, expect, it } from "vitest";
 import app from "../src/worker/index";
@@ -32,7 +33,7 @@ const orderRequestBase = {
 	specialOrder: false,
 	items: orderRequestItems,
 };
-const fixedNow = new Date("2026-09-12T04:00:00.000Z");
+const fixedNow = new Date("2026-09-12T10:00:00.000Z");
 const subscription = {
 	endpoint: "https://push.example.test/subscription-1",
 	expirationTime: null,
@@ -43,6 +44,8 @@ const vapid = {
 	privateKey: "test-private-key",
 	subject: "mailto:merchant@example.test",
 };
+
+setupOrderAcceptanceTests();
 
 beforeAll(async () => {
 	await env.DB.batch([
@@ -168,7 +171,7 @@ describe("durable new Order notification intent", () => {
 			fixedNow,
 		);
 
-		const retryAt = new Date("2026-09-12T04:02:00.000Z");
+		const retryAt = new Date("2026-09-12T10:02:00.000Z");
 		const retried = await retryNotificationDelivery(
 			env.DB,
 			result.notificationDeliveryId,
@@ -255,7 +258,7 @@ describe("Web Push provider", () => {
 
 		expect(payload).toEqual({
 			title: "新訂單",
-			body: "預計 12:00・2 項餐點",
+			body: "預計 18:00・2 項餐點",
 			data: { url: "/merchant", tag: "order:stable-order-id" },
 		});
 		expect(message.data).not.toContain("999");
