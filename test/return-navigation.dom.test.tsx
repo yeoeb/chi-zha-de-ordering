@@ -25,6 +25,21 @@ function historyWindow(path: string) {
 }
 
 describe("canonical return history, shared by visible and system Back", () => {
+	it.each(["/ONSITE", "/Onsite", "/OnSite", "/onsite/"])("canonicalizes %s without inheriting stale Online or alias metadata", (path) => {
+		const target = historyWindow("/store-order");
+		createCustomerNavigation(target, "onsite", "/store-order", vi.fn()).initialize("root")();
+		target.history.replaceState(target.history.state, "", path + "?home=/store-order");
+		const context = getCustomerRouteContext("onsite", target);
+		expect(context).toEqual({ rootPath: "/onsite", surface: "root" });
+		createCustomerNavigation(target, "onsite", context.rootPath, vi.fn()).initialize(context.surface);
+		expect(target.location.pathname).toBe("/onsite");
+	});
+	it("explicit Online root takes precedence over stale legacy metadata", () => {
+		const target = historyWindow("/order");
+		createCustomerNavigation(target, "online", "/order", vi.fn()).initialize("root")();
+		target.history.replaceState(target.history.state, "", "/");
+		expect(getCustomerRouteContext("online", target)).toEqual({rootPath: "/", surface: "root"});
+	});
 	it("ignores a second visible return while the owned history traversal is still pending", () => {
 		const target = historyWindow("/order");
 		const nav = createCustomerNavigation(target, "online", "/order", vi.fn());
@@ -68,7 +83,7 @@ describe("canonical return history, shared by visible and system Back", () => {
 			nav.open("status:opaque");
 			expect(target.history.length).toBe(4);
 			nav.back();
-			expect(target.location.pathname).toBe(`${root}/orders`);
+			expect(target.location.pathname).toBe(`${root === "/" ? "" : root}/orders`);
 			nav.returnToRoot();
 			expect(target.location.pathname).toBe(root);
 		}

@@ -117,7 +117,7 @@ try {
 	if (
 		summary.migrationCount !== 20 ||
 		summary.storeCount !== 1 ||
-		summary.menuItemCount !== 46 ||
+		summary.menuItemCount !== 47 ||
 		summary.seasoningGroupCount !== 2 ||
 		summary.seasoningOptionCount !== 4 ||
 		summary.retiredSeasoningOptionCount !== 2 ||
@@ -521,7 +521,7 @@ try {
 	}
 
 	console.log(
-		"Fresh D1 PASS: 20 sequential migrations, nullable daily sold-out marker without backfill, Customer Store configuration and new Order sound setting, operational busy/auto-reject schema, additive order source, packaging preference, shortage/cancellation ledgers and request fingerprints, Admin menu metadata and customer_note schema, complete local-only 46-product development menu, API-backed fries seasoning and spice fixtures, Store state version/audit constraints, idempotent second apply, required store row, untouched historical LINE tables, additive Web Push tables, no Store/Push fixtures, and quick_check verified.",
+		"Fresh D1 PASS: 20 sequential migrations, nullable daily sold-out marker without backfill, Customer Store configuration and new Order sound setting, operational busy/auto-reject schema, additive order source, packaging preference, shortage/cancellation ledgers and request fingerprints, Admin menu metadata and customer_note schema, complete local-only 47-product development menu, API-backed fries seasoning and spice fixtures, Store state version/audit constraints, idempotent second apply, required store row, untouched historical LINE tables, additive Web Push tables, no Store/Push fixtures, and quick_check verified.",
 	);
 } finally {
 	const resolvedPersistence = resolve(persistenceDirectory);

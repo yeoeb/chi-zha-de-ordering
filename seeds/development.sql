@@ -1,6 +1,6 @@
 -- LOCAL / TEST / DEVELOPMENT ONLY.
--- Prices for v0.1.1-only products are visual-QA placeholders supplied for this
--- local seed. Never execute this destructive fixture against production D1.
+-- Owner authorized these test prices as initial hotfix prices on 2026-10-09.
+-- This remains a destructive LOCAL fixture. Never execute this destructive fixture against production D1.
 -- Production uses the guarded scripts under production-data/ instead.
 
 UPDATE store_settings SET
@@ -29,8 +29,8 @@ INSERT INTO menu_categories (id, name, sort_order, is_active) VALUES
 	(3, '蔬菜', 30, 1),
 	(4, '雞排類', 40, 1);
 
--- Existing production identities retain their stable IDs. IDs 44-52 are
--- deliberately test-only identities for products not yet approved for production.
+-- Existing production identities retain their stable IDs. IDs 44-53 are
+-- deliberate new identities; 泡菜雞排 ID 53 starts at owner-confirmed 100.
 INSERT INTO menu_items (
 	id, category_id, name, description, price, sort_order, is_available,
 	image_url, is_popular, is_quick_sold_out, is_archived
@@ -51,18 +51,18 @@ INSERT INTO menu_items (
 	(16, 1, '米腸', '', 35, 140, 1, NULL, 0, 0, 0),
 	(17, 1, '甜芋粿', '', 30, 150, 1, NULL, 0, 0, 0),
 	(18, 1, '鹹芋粿', '', 30, 160, 1, NULL, 0, 0, 0),
-	(44, 1, '魚板', '本機視覺驗收用商品', 30, 170, 1, NULL, 0, 0, 0),
+	(44, 1, '魚板', '', 30, 170, 1, NULL, 0, 0, 0),
 	(20, 1, '豆皮', '', 30, 180, 1, NULL, 0, 0, 0),
 	(24, 1, '豬大腸', '', 60, 190, 1, NULL, 0, 0, 0),
-	(45, 1, '柳葉魚', '本機視覺驗收用商品', 50, 200, 1, NULL, 0, 0, 0),
+	(45, 1, '柳葉魚', '', 50, 200, 1, NULL, 0, 0, 0),
 
 	(29, 2, '雞心', '', 35, 10, 1, NULL, 0, 0, 0),
 	(13, 2, '轟炸大魷魚', '', 100, 20, 1, NULL, 0, 0, 0),
 	(27, 2, '豬肉串', '', 40, 30, 1, NULL, 0, 0, 0),
 	(26, 2, '牛肉串', '', 45, 40, 1, NULL, 0, 0, 0),
-	(46, 2, '章魚串', '本機視覺驗收用商品', 40, 50, 1, NULL, 0, 0, 0),
+	(46, 2, '章魚串', '', 40, 50, 1, NULL, 0, 0, 0),
 	(30, 2, '雞胗', '', 35, 60, 1, NULL, 0, 0, 0),
-	(47, 2, '小香腸', '本機視覺驗收用商品', 30, 70, 1, NULL, 0, 0, 0),
+	(47, 2, '小香腸', '', 30, 70, 1, NULL, 0, 0, 0),
 	(31, 2, '貢丸', '', 30, 80, 1, NULL, 0, 0, 0),
 	(33, 2, '花枝丸', '', 30, 90, 1, NULL, 0, 0, 0),
 	(21, 2, '鑫鑫腸', '', 30, 100, 1, NULL, 0, 0, 0),
@@ -79,11 +79,12 @@ INSERT INTO menu_items (
 	(43, 3, '大青椒', '', 40, 70, 1, NULL, 0, 1, 0),
 
 	(1, 4, '傳統雞排', '', 90, 10, 1, NULL, 0, 1, 0),
-	(48, 4, '起司雞排', '不能切；本機視覺驗收用商品', 100, 20, 1, NULL, 0, 0, 0),
-	(49, 4, '香蔥雞排', '不能切；本機視覺驗收用商品', 100, 30, 1, NULL, 0, 0, 0),
-	(50, 4, '泡菜起司雞排', '不能切；本機視覺驗收用商品', 110, 40, 1, NULL, 0, 0, 0),
-	(51, 4, '蟹肉起司雞排', '不能切；本機視覺驗收用商品', 110, 50, 1, NULL, 0, 0, 0),
-	(52, 4, '蟹肉蔥雞排', '不能切；本機獨立測試商品', 110, 60, 1, NULL, 1, 0, 0);
+	(48, 4, '起司雞排', '不能切', 100, 20, 1, NULL, 0, 0, 0),
+	(49, 4, '香蔥雞排', '不能切', 100, 30, 1, NULL, 0, 0, 0),
+	(50, 4, '泡菜起司雞排', '不能切', 110, 50, 1, NULL, 0, 0, 0),
+	(51, 4, '蟹肉起司雞排', '不能切', 110, 60, 1, NULL, 0, 0, 0),
+	(52, 4, '蟹肉蔥雞排', '不能切', 110, 70, 1, NULL, 1, 0, 0),
+	(53, 4, '泡菜雞排', '不能切', 100, 40, 1, NULL, 0, 0, 0);
 
 INSERT INTO modifier_groups (
 	id, menu_item_id, name, selection_type, is_required, sort_order, is_active
@@ -92,7 +93,7 @@ INSERT INTO modifier_groups (
 	(2, 1, '切法', 'single', 1, 20, 1),
 	(3, 4, '辣度', 'single', 1, 10, 1),
 	(4, 6, '辣度', 'single', 1, 10, 1),
-	(5, 9, '調味', 'single', 1, 20, 1),
+	(5, 9, '調味', 'single', 1, 10, 1),
 	(6, 10, '調味', 'single', 1, 10, 1),
 	(7, 4, '份量', 'single', 1, 5, 1),
 	(8, 3, '份量', 'single', 1, 5, 1);

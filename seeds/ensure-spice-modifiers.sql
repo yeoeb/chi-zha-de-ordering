@@ -3,7 +3,7 @@
 -- Existing IDs, prices, availability, seasoning, cut and Order snapshots are preserved.
 -- Stable item 5 is the confirmed 招牌炸蛋 exception. No IDs derive from display names.
 INSERT INTO modifier_groups (menu_item_id, name, selection_type, is_required, sort_order, is_active)
-SELECT items.id, '辣度', 'single', 1, 10, 1
+SELECT items.id, '辣度', 'single', 1, CASE WHEN items.id IN (9, 10) THEN 20 ELSE 10 END, 1
 FROM menu_items AS items
 JOIN menu_categories AS categories ON categories.id = items.category_id
 WHERE items.id <> 5 AND items.is_archived = 0 AND categories.is_active = 1

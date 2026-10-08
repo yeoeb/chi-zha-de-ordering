@@ -2,7 +2,7 @@ import { useLayoutEffect, useState } from "react";
 import type { OrderSource } from "../shared/order-source";
 
 export function getCustomerHomeRoute(source: OrderSource) {
-	return source === "onsite" ? "/store-order" : "/order";
+	return source === "onsite" ? "/onsite" : "/";
 }
 
 type Entry = { scope: string; rootId: string; surface: string; rootPath: string };

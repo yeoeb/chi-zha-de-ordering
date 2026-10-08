@@ -29,16 +29,19 @@ function chain(surface: CustomerSurface): CustomerSurface[] {
 }
 
 export function getCustomerRouteContext(source: OrderSource, target: Window = window) {
-	const { pathname, search } = target.location;
+	const { search } = target.location;
+	const pathname = target.location.pathname.replace(/\/$/, "");
 	const home = new URLSearchParams(search).get("home");
 	const stored = readEntry(target.history.state);
-	const rootPath = home && validRoot(home, source) ? home
-		: stored?.source === source ? stored.rootPath
-		: source === "onsite" && /^\/onsite(?:\/|$)/.test(pathname) ? "/onsite"
-		: source === "online" && ["/cart", "/checkout"].includes(pathname) ? "/"
-		: getCustomerHomeRoute(source);
+	// An explicit customer URL takes precedence over a stale history entry or home query.
+	const rootPath = source === "onsite" && /^\/onsite(?:\/|$)/i.test(pathname) ? "/onsite"
+		: source === "onsite" && /^\/store-order(?:\/|$)/.test(pathname) ? "/store-order"
+		: source === "online" && /^\/order(?:\/|$)/.test(pathname) ? "/order"
+		: source === "online" && ["", "/cart", "/checkout", "/orders"].includes(pathname) ? "/"
+		: home && validRoot(home, source) ? home
+		: stored?.source === source ? stored.rootPath : getCustomerHomeRoute(source);
 	const detail = pathname.match(/^\/orders\/([^/]+)$/);
-	const leaf = pathname.slice(pathname.lastIndexOf("/") + 1);
+	const leaf = pathname.slice(pathname.lastIndexOf("/") + 1).toLowerCase();
 	const requested = new URLSearchParams(search).get("view");
 	const surface: CustomerSurface = detail ? `status:${detail[1]}`
 		: ["cart", "checkout", "orders"].includes(leaf) ? leaf as CustomerSurface
@@ -62,6 +65,11 @@ export function createCustomerNavigation(target: Window, source: OrderSource, ro
 	const pop = () => {
 		traversing = false;
 		const current = readEntry(target.history.state);
+		const path = target.location.pathname;
+		const explicitSource = /^\/(?:onsite|store-order)(?:\/|$)/i.test(path) ? "onsite"
+			: /^(?:\/|\/cart|\/checkout|\/order(?:\/(?:cart|checkout|orders))?)$/.test(path) ? "online" : null;
+		// A stale owned entry must never rewrite a URL belonging to the other source.
+		if (explicitSource !== null && explicitSource !== context.source && (!owns(current) || current?.source === context.source)) { pendingOpen = null; return; }
 		if (!owns(current)) { pendingOpen = null; return; } // Root Back leaves natively.
 		target.history.replaceState(state(current!.surface), "", url(current!.surface));
 		if (pendingOpen !== null) {

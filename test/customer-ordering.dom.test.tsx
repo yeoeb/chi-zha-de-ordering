@@ -485,7 +485,7 @@ describe("customer ordering redesign", () => {
 		await screen.findByRole("heading", { name: "我的訂單" });
 		window.history.back();
 		await screen.findByRole("heading", { name: "炸物" });
-		expect(window.location.pathname).toBe("/order");
+		expect(window.location.pathname).toBe("/");
 	});
 
 	it("an onsite Order deep link resolves source before system Back to its canonical menu", async () => {
@@ -500,10 +500,10 @@ describe("customer ordering redesign", () => {
 		await screen.findByText("餐點已完成");
 		window.history.back();
 		await screen.findByRole("heading", { name: "我的訂單" });
-		expect(window.location.pathname).toBe("/store-order/orders");
+		expect(window.location.pathname).toBe("/onsite/orders");
 		window.history.back();
 		await screen.findByRole("heading", { name: "炸物" });
-		expect(window.location.pathname).toBe("/store-order");
+		expect(window.location.pathname).toBe("/onsite");
 	});
 
 	it.each([375, 1280])("uses the same real non-spicy default and checkout path at viewport %i", async (width) => {
@@ -782,7 +782,7 @@ describe("customer ordering redesign", () => {
 		expect(screen.queryByRole("button", { name: /購物車 ·/ })).toBeNull();
 		await userEvent.click(screen.getByRole("button", { name: "← 返回購物車" }));
 		await screen.findByRole("heading", { name: "購物車" });
-		expect(window.location.pathname).toBe("/order/cart");
+		expect(window.location.pathname).toBe("/cart");
 		expect(screen.getByText("薯條 × 1")).toBeTruthy();
 	});
 
@@ -2087,7 +2087,7 @@ describe("customer ordering redesign", () => {
 
 		cleanup();
 		const retryFetchMock = await renderCustomer([spicyChicken]);
-		expect(window.location.pathname).toBe("/order/checkout");
+		expect(window.location.pathname).toBe("/checkout");
 		await screen.findByRole("heading", { name: "確認訂單" });
 		const restoredPhone = screen.getByRole("textbox", { name: /電話（選填）/ }) as HTMLInputElement;
 		expect(screen.queryByLabelText("姓名")).toBeNull();

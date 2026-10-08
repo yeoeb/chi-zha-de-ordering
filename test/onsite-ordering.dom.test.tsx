@@ -21,8 +21,8 @@ afterEach(() => {
 });
 
 describe("onsite customer ordering", () => {
-	it("uses the shared menu and quote flow without requesting contact fields", async () => {
-		window.history.replaceState(null, "", "/store-order");
+	it.each(["/onsite", "/store-order"])("uses %s shared menu and quote flow without requesting contact fields", async (root) => {
+		window.history.replaceState(null, "", root);
 		const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
 			const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
 			if (url === "/api/store") {
@@ -95,18 +95,18 @@ describe("onsite customer ordering", () => {
 
 		await userEvent.click(screen.getByRole("button", { name: "← 返回購物車" }));
 		await screen.findByRole("heading", { name: "購物車" });
-		expect(window.location.pathname).toBe("/store-order/cart");
+		expect(window.location.pathname).toBe(`${root}/cart`);
 		expect(screen.getByText("現場雞排 × 1")).toBeTruthy();
 		await userEvent.click(screen.getByRole("button", { name: "← 繼續點餐" }));
 		await screen.findByRole("heading", { name: "炸物" });
-		expect(window.location.pathname).toBe("/store-order");
+		expect(window.location.pathname).toBe(root);
 		await userEvent.click(screen.getByRole("button", { name: /購物車共 1 件/ }));
 		await userEvent.click(screen.getByRole("button", { name: "去結帳" }));
 		await screen.findByText("應付金額");
 		cleanup();
 		render(<App />);
 		await screen.findByText("應付金額");
-		expect(window.location.pathname).toBe("/store-order/checkout");
+		expect(window.location.pathname).toBe(`${root}/checkout`);
 		expect(screen.queryByRole("textbox", { name: /電話/ })).toBeNull();
 
 		expect(screen.queryByRole("group", { name: "如果餐點售完" })).toBeNull();

@@ -1865,31 +1865,52 @@ function CustomerOrderRoute({ token }: { token: string }) {
 }
 
 function App() {
-	if (window.location.pathname === "/admin/store") {
+	const [pathname, setPathname] = useState(() => window.location.pathname);
+	useEffect(() => {
+		// Customer controllers own same-source surfaces and their order snapshots.
+		// Re-select the application/source when native history changes the URL.
+		let pending: ReturnType<typeof setTimeout> | undefined;
+		const onPopState = () => {
+			clearTimeout(pending);
+			// Let the owning controller repair legacy parent URLs before selecting the source.
+			pending = setTimeout(() => setPathname((previous) => {
+			const next = window.location.pathname;
+			const entry = window.history.state?.chiZhaDeCustomerNavigation;
+			const previousIsCustomer = !/^\/(?:admin|merchant|orders)(?:\/|$)/.test(previous);
+			const previousSource = /^\/(?:onsite|store-order)(?:\/|$)/i.test(previous) ? "onsite" : "online";
+			// Owned detail navigation must keep the already-confirmed Order snapshot.
+			if (previousIsCustomer && /^\/orders\/[^/]+$/.test(next) && entry?.source === previousSource) return previous;
+			return next;
+		}), 0);
+		};
+		window.addEventListener("popstate", onPopState);
+		return () => {clearTimeout(pending); window.removeEventListener("popstate", onPopState);};
+	}, []);
+	if (pathname === "/admin/store") {
 		return <AdminStoreView />;
 	}
-	if (window.location.pathname === "/admin" || window.location.pathname === "/admin/menu") {
+	if (pathname === "/admin" || pathname === "/admin/menu") {
 		return <AdminView />;
 	}
 
-	if (["/merchant", "/merchant/history", "/merchant/revenue"].includes(window.location.pathname)) {
+	if (["/merchant", "/merchant/history", "/merchant/revenue"].includes(pathname)) {
 		return <MerchantView />;
 	}
 
-	if (/^\/(?:store-order|onsite)(?:\/(?:cart|checkout|orders))?$/.test(window.location.pathname)) {
-		return <CustomerApp orderSource="onsite" />;
+	if (/^\/(?:store-order|onsite)(?:\/(?:cart|checkout|orders))?\/?$/i.test(pathname)) {
+		return <CustomerApp key="onsite" orderSource="onsite" />;
 	}
 
-	if (/^\/order(?:\/(?:cart|checkout|orders))?$/.test(window.location.pathname)) {
-		return <CustomerApp orderSource="online" />;
+	if (/^\/order(?:\/(?:cart|checkout|orders))?$/.test(pathname)) {
+		return <CustomerApp key="online" orderSource="online" />;
 	}
 
-	const orderRoute = window.location.pathname.match(/^\/orders\/([^/]+)$/);
+	const orderRoute = pathname.match(/^\/orders\/([^/]+)$/);
 
 	return orderRoute ? (
 		<CustomerOrderRoute token={orderRoute[1]} />
 	) : (
-		<CustomerApp />
+		<CustomerApp key="online" />
 	);
 }
 
