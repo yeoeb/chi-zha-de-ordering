@@ -85,7 +85,7 @@ export class MerchantForegroundAudioController {
 		const oscillator = context.createBufferSource();
 		const gain = context.createGain();
 		oscillator.buffer = this.ringBuffer;
-		gain.gain.setValueAtTime(1.0, context.currentTime);
+		gain.gain.setValueAtTime(2.2, context.currentTime);
 		const node = { oscillator, gain };
 		this.nodes.add(node);
 		oscillator.onended = () => {
