@@ -149,7 +149,7 @@ describe("D1 daily sold-out maintenance", () => {
 			method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ items }),
 		})).json() as { quoteFingerprint: string };
 		const response = await exports.default.fetch("https://example.com/api/orders", {
-			method: "POST", headers: { "Content-Type": "application/json", "Idempotency-Key": "daily-restored-order" },
+			method: "POST", headers: { "Content-Type": "application/json", Origin: "https://example.com", "Sec-Fetch-Site": "same-origin", "Idempotency-Key": "daily-restored-order" },
 			body: JSON.stringify({ customerName: "測試", customerPhone: "0912345678", items, quoteFingerprint: quote.quoteFingerprint }),
 		});
 		expect(response.status).toBe(201);

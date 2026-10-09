@@ -223,6 +223,8 @@ describe("Admin menu API", () => {
 			method: "POST",
 			headers: {
 				"content-type": "application/json",
+				Origin: "https://example.com",
+				"Sec-Fetch-Site": "same-origin",
 				"Idempotency-Key": "admin-history-order",
 			},
 			body: JSON.stringify({

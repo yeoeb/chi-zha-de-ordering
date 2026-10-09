@@ -76,6 +76,8 @@ async function postOrder(idempotencyKey: string, body: unknown = orderRequest) {
 		method: "POST",
 		headers: {
 			"content-type": "application/json",
+			Origin: "https://example.com",
+			"Sec-Fetch-Site": "same-origin",
 			"Idempotency-Key": idempotencyKey,
 		},
 		body: JSON.stringify(requestBody),
@@ -480,6 +482,8 @@ describe("public write boundaries", () => {
 				headers: {
 					"CF-Connecting-IP": "192.0.2.10",
 					"content-type": "application/json",
+					Origin: "https://example.com",
+					"Sec-Fetch-Site": "same-origin",
 					"Idempotency-Key": "rate-limited",
 				},
 				body: JSON.stringify(orderRequest),
@@ -508,6 +512,8 @@ describe("public write boundaries", () => {
 				headers: {
 					"CF-Connecting-IP": "192.0.2.11",
 					"content-type": "application/json",
+					Origin: "https://example.com",
+					"Sec-Fetch-Site": "same-origin",
 					"Idempotency-Key": "allowed-invalid-body",
 				},
 				body: "not-json",
@@ -573,6 +579,8 @@ describe("public write boundaries", () => {
 			method: "POST",
 			headers: {
 				"content-type": "application/json",
+				Origin: "https://example.com",
+				"Sec-Fetch-Site": "same-origin",
 				"Idempotency-Key": "oversized-body",
 			},
 			body: JSON.stringify({ padding: "x".repeat(MAX_PUBLIC_REQUEST_BODY_BYTES) }),

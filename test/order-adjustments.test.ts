@@ -78,7 +78,7 @@ describe("Order shortage and Customer cancellation", () => {
 		};
 		const response = await exports.default.fetch("https://example.com/api/orders", {
 			method: "POST",
-			headers: { "Content-Type": "application/json", "Idempotency-Key": "shortage-policy-create" },
+			headers: { "Content-Type": "application/json", Origin: "https://example.com", "Sec-Fetch-Site": "same-origin", "Idempotency-Key": "shortage-policy-create" },
 			body: JSON.stringify(body),
 		});
 		expect(response.status).toBe(201);
@@ -93,7 +93,7 @@ describe("Order shortage and Customer cancellation", () => {
 		}, now);
 		const replay = await exports.default.fetch("https://example.com/api/orders", {
 			method: "POST",
-			headers: { "Content-Type": "application/json", "Idempotency-Key": "shortage-policy-create" },
+			headers: { "Content-Type": "application/json", Origin: "https://example.com", "Sec-Fetch-Site": "same-origin", "Idempotency-Key": "shortage-policy-create" },
 			body: JSON.stringify(body),
 		});
 		const replayResult = await replay.json() as { order: { status: string; total: number; items: unknown[]; shortages: unknown[] } };

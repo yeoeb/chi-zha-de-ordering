@@ -42,6 +42,8 @@ async function postOnsite(idempotencyKey: string, body: Record<string, unknown>)
 		method: "POST",
 		headers: {
 			"content-type": "application/json",
+			Origin: "https://example.com",
+			"Sec-Fetch-Site": "same-origin",
 			"Idempotency-Key": idempotencyKey,
 		},
 		body: JSON.stringify(body),
@@ -110,7 +112,7 @@ describe("POST /api/onsite/orders", () => {
 		const confirmed = await quote();
 		const response = await exports.default.fetch("https://example.com/api/orders", {
 			method: "POST",
-			headers: { "content-type": "application/json", "Idempotency-Key": "online-no-contact" },
+			headers: { "content-type": "application/json", Origin: "https://example.com", "Sec-Fetch-Site": "same-origin", "Idempotency-Key": "online-no-contact" },
 			body: JSON.stringify({
 				specialOrder: false,
 				quoteFingerprint: confirmed.quoteFingerprint,
@@ -161,7 +163,7 @@ describe("POST /api/onsite/orders", () => {
 
 		const online = await exports.default.fetch("https://example.com/api/orders", {
 			method: "POST",
-			headers: { "content-type": "application/json", "Idempotency-Key": "onsite-replay" },
+			headers: { "content-type": "application/json", Origin: "https://example.com", "Sec-Fetch-Site": "same-origin", "Idempotency-Key": "onsite-replay" },
 			body: JSON.stringify({
 				...body,
 				customerName: "王小明",

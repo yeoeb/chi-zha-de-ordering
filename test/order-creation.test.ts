@@ -77,6 +77,8 @@ async function postOrder(idempotencyKey: string, body: unknown = defaultOrderReq
 		method: "POST",
 		headers: {
 			"content-type": "application/json",
+			Origin: "https://example.com",
+			"Sec-Fetch-Site": "same-origin",
 			"Idempotency-Key": idempotencyKey,
 		},
 		body: JSON.stringify(requestBody),
@@ -155,6 +157,8 @@ describe("POST /api/orders", () => {
 			method: "POST",
 			headers: {
 				"content-type": "application/json",
+				Origin: "https://example.com",
+				"Sec-Fetch-Site": "same-origin",
 				"Idempotency-Key": "missing-quote-fingerprint",
 			},
 			body: JSON.stringify(defaultOrderRequest),

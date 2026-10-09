@@ -103,6 +103,8 @@ describe("fries seasoning persistence", () => {
 			method: "POST",
 			headers: {
 				"content-type": "application/json",
+				Origin: "https://example.com",
+				"Sec-Fetch-Site": "same-origin",
 				"Idempotency-Key": "fries-seasoning-flow",
 			},
 			body: JSON.stringify({

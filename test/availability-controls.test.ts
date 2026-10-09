@@ -57,6 +57,8 @@ async function postOrder(idempotencyKey: string) {
 		method: "POST",
 		headers: {
 			"content-type": "application/json",
+			Origin: "https://example.com",
+			"Sec-Fetch-Site": "same-origin",
 			"Idempotency-Key": idempotencyKey,
 		},
 		body: JSON.stringify({

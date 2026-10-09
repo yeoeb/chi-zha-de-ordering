@@ -16,7 +16,7 @@ beforeAll(async () => {
 
 function post(path: string, body: unknown, key = crypto.randomUUID()) {
 	return exports.default.fetch(`https://example.com${path}`, {
-		method: "POST", headers: { "content-type": "application/json", "Idempotency-Key": key }, body: JSON.stringify(body),
+		method: "POST", headers: { "content-type": "application/json", Origin: "https://example.com", "Sec-Fetch-Site": "same-origin", "Idempotency-Key": key }, body: JSON.stringify(body),
 	});
 }
 

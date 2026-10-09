@@ -37,7 +37,7 @@ async function fingerprint() { return createQuoteFingerprint(await validateAndPr
 async function post(source: typeof sources[number], key: string, quoteFingerprint?: string) {
 	quoteFingerprint ??= await fingerprint();
 	return exports.default.fetch("https://example.com" + (source === "online" ? "/api/orders" : "/api/onsite/orders"), {
-		method: "POST", headers: { "Content-Type": "application/json", "Idempotency-Key": key },
+		method: "POST", headers: { "Content-Type": "application/json", Origin: "https://example.com", "Sec-Fetch-Site": "same-origin", "Idempotency-Key": key },
 		body: JSON.stringify({ items, specialOrder: false, quoteFingerprint, ...(source === "online" ? { shortagePolicy: "continue_available" } : {}) }),
 	});
 }
@@ -89,7 +89,7 @@ describe("authoritative new-order acceptance window", () => {
 			const before=await state();
 			vi.setSystemTime(new Date("2026-10-06T23:15:00+08:00"));
 			const response=await exports.default.fetch("https://example.com"+(source==="online"?"/api/orders":"/api/onsite/orders"),{
-				method:"POST",headers:{"Content-Type":"application/json","Idempotency-Key":"different-body-"+source},
+				method:"POST",headers:{"Content-Type":"application/json",Origin: "https://example.com", "Sec-Fetch-Site": "same-origin", "Idempotency-Key":"different-body-"+source},
 				body:JSON.stringify({items:[{...items[0],quantity:2}],specialOrder:false,quoteFingerprint}),
 			});
 			expect(response.status).toBe(409);

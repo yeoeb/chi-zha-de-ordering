@@ -47,6 +47,7 @@ import {
 import { getStoreSettings } from "./store-settings";
 import { assertOrderAcceptanceWindow, OrderAcceptanceError } from "./order-acceptance";
 import { readBoundedJson, RequestBodyError } from "./request-body";
+import { isPublicMutationRequestAllowed } from "./public-origin";
 import {
 	deliverNewOrderNotification,
 	listMerchantNotificationDeliveries,
@@ -429,6 +430,13 @@ app.post("/api/checkout/quote", async (c) => {
 });
 
 async function handleCreateOrder(c: Context<AppEnvironment>, orderSource: OrderSource) {
+	if (!isPublicMutationRequestAllowed({
+		requestUrl: c.req.url,
+		origin: c.req.header("Origin"),
+		secFetchSite: c.req.header("Sec-Fetch-Site"),
+	})) {
+		return c.json({ error: { code: "ORIGIN_DENIED", message: "Customer mutation is not authorized" } }, 403);
+	}
 	const clientAddress = c.req.header("CF-Connecting-IP");
 
 	if (
@@ -547,13 +555,11 @@ app.post("/api/orders/by-token/:token/cancel", async (c) => {
 	if (!/^[a-f0-9]{64}$/.test(token)) {
 		return c.json({ error: { code: "ORDER_NOT_FOUND", message: "Order not found" } }, 404);
 	}
-	let origin: URL;
-	try {
-		origin = new URL(c.req.header("Origin") ?? "invalid:");
-	} catch {
-		return c.json({ error: { code: "ORIGIN_DENIED", message: "Customer mutation is not authorized" } }, 403);
-	}
-	if (origin.origin !== new URL(c.req.url).origin || c.req.header("Sec-Fetch-Site") !== "same-origin") {
+	if (!isPublicMutationRequestAllowed({
+		requestUrl: c.req.url,
+		origin: c.req.header("Origin"),
+		secFetchSite: c.req.header("Sec-Fetch-Site"),
+	})) {
 		return c.json({ error: { code: "ORIGIN_DENIED", message: "Customer mutation is not authorized" } }, 403);
 	}
 	try {
