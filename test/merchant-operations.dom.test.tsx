@@ -259,14 +259,14 @@ function createFetchMock({
 				return json({ error: { code } }, orderActionStatus);
 			}
 			const [, orderId, action] = actionMatch;
-			const current = activeOrders.find((candidate) => candidate.id === orderId);
+			const current = activeOrders.find((candidate) => candidate.id === orderId) ?? (action === "complete" ? history.find((candidate) => candidate.id === orderId) : undefined);
 			if (!current) return json({ error: { code: "ORDER_NOT_FOUND" } }, 404);
 			const status = action === "accept" ? "accepted" : action === "reject" ? "rejected" : "completed";
 			const updated = { ...current, status };
 			activeOrders = action === "accept"
 				? activeOrders.map((candidate) => candidate.id === orderId ? updated : candidate)
 				: activeOrders.filter((candidate) => candidate.id !== orderId);
-			if (action !== "accept") history = [updated, ...history];
+			if (action !== "accept") history = [updated, ...history.filter((candidate) => candidate.id !== orderId)];
 			return json({ order: updated });
 		}
 		const shortageMatch = url.match(/^\/api\/merchant\/orders\/([^/]+)\/shortages$/);
@@ -833,7 +833,7 @@ describe("Merchant operations UI", () => {
 		expect(window.location.pathname).toBe("/merchant");
 	});
 
-	it("renders an accepted Order past its deadline as history without forging completion controls", async () => {
+	it("allows explicit authenticated completion of overdue accepted history without inferring completion", async () => {
 		vi.stubGlobal("fetch", createFetchMock({
 			orders: [],
 			historyOrders: [order({ status: "accepted", completedAt: null })],
@@ -845,7 +845,10 @@ describe("Merchant operations UI", () => {
 		await userEvent.click(acceptedHistoryRow);
 		const historyCard = await findOrderCard();
 		expect(acceptedHistoryRow.textContent).toContain("已到預計取餐時間");
-		expect(within(historyCard).queryByRole("button", { name: "完成" })).toBeNull();
+		expect(within(historyCard).getByRole("button", { name: "完成" })).toBeTruthy();
+		await userEvent.click(within(historyCard).getByRole("button", { name: "完成" }));
+		expect(await screen.findByText("已完成 · 預計完成 19:56")).toBeTruthy();
+		expect(within(await findOrderCard()).queryByRole("button", { name: "完成" })).toBeNull();
 	});
 
 	it("keeps 辣粉另包 as an item requirement inside the 不辣 group", async () => {

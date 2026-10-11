@@ -13,8 +13,8 @@ const boundaries = [
 	["2026-10-06T17:29:59+08:00", false],
 	["2026-10-06T17:30:00+08:00", true],
 	["2026-10-06T23:14:59+08:00", true],
-	["2026-10-06T23:15:00+08:00", false],
-	["2026-10-07T00:30:00+08:00", false],
+	["2026-10-06T23:15:00+08:00", true],
+	["2026-10-07T00:30:00+08:00", true],
 	["2026-10-12T18:00:00+08:00", false],
 ] as const;
 
@@ -74,14 +74,11 @@ describe("authoritative new-order acceptance window", () => {
 			expect(await response.json()).toMatchObject({ error: { code: "STORE_NOT_ACCEPTING_ORDERS" } });
 			expect(await state()).toEqual(before);
 		});
-		it(source + " rejects a valid earlier quote when submitted at cutoff", async () => {
+		it(source + " accepts a valid earlier quote during soft closing", async () => {
 			const confirmed = await (await quote()).json() as { quoteFingerprint: string };
 			vi.setSystemTime(new Date("2026-10-06T23:15:00+08:00"));
-			const before = await state();
 			const response = await post(source, "stale-quote-" + source, confirmed.quoteFingerprint);
-			expect(response.status).toBe(409);
-			expect(await response.json()).toMatchObject({ error: { code: "BUSINESS_HOURS_CLOSED" } });
-			expect(await state()).toEqual(before);
+			expect(response.status).toBe(201);
 		});
 		it(source + " rejects changed contents under an existing key, including after cutoff", async () => {
 			const quoteFingerprint=await fingerprint();
@@ -113,7 +110,7 @@ describe("authoritative new-order acceptance window", () => {
 		if (!open) expect(await response.json()).toMatchObject({ error: { code: "BUSINESS_HOURS_CLOSED" } });
 		expect(await state()).toEqual(before);
 	});
-	it("keeps Tuesday business-day identity at Wednesday 00:30 while new orders are closed", () => {
+	it("keeps Tuesday business-day identity during the Wednesday 00:30 soft extension", () => {
 		expect(getOpeningBusinessDay(new Date("2026-10-07T00:30:00+08:00"), orderTestSchedule)).toBe("2026-10-06");
 	});
 	it.each([null, "{}", "[]"])("fails closed on missing or malformed schedule %s without side effects", async (schedule) => {
@@ -127,11 +124,11 @@ describe("authoritative new-order acceptance window", () => {
 		expect((await quote()).status).toBe(409);
 		expect(await state()).toEqual(before);
 	});
-	it("uses closing time when nullable last-order time is absent", async () => {
+	it("supports soft closing when nullable last-order time is absent", async () => {
 		await env.DB.prepare("UPDATE store_settings SET last_order_time=NULL WHERE id=1").run();
 		expect((await post("online", "null-cutoff-open")).status).toBe(201);
 		vi.setSystemTime(new Date("2026-10-06T23:15:00+08:00"));
-		expect((await post("onsite", "null-cutoff-closed")).status).toBe(409);
+		expect((await post("onsite", "null-cutoff-closed")).status).toBe(201);
 	});
 	it("honors an earlier configured last-order time", async () => {
 		await env.DB.prepare("UPDATE store_settings SET last_order_time='23:00' WHERE id=1").run();
@@ -169,7 +166,7 @@ describe("authoritative new-order acceptance window", () => {
 		const snapshot=(await env.DB.prepare("SELECT id,status,estimated_ready_at,accepted_at,rejected_at,completed_at FROM orders ORDER BY id").all()).results;
 		const before=await state();
 		vi.setSystemTime(new Date("2026-10-06T23:15:00+08:00"));
-		expect((await post("online","blocked-after-cutoff")).status).toBe(409);
+		expect((await quote()).status).toBe(200);
 		expect((await env.DB.prepare("SELECT id,status,estimated_ready_at,accepted_at,rejected_at,completed_at FROM orders ORDER BY id").all()).results).toEqual(snapshot);
 		expect(await state()).toEqual(before);
 		expect(await listActiveMerchantOrders(env.DB,new Date())).toMatchObject([{status:"pending"},{status:"accepted"}]);

@@ -1396,7 +1396,7 @@ export default function MerchantView() {
 													<strong>{formatTaipeiDeadlineTime(order.estimatedReadyAt) ?? uiCopy.common.timeMissing}</strong>
 													<span>NT$ {order.total}<small>{order.status === "completed" ? uiCopy.merchant.completed : order.status === "cancelled" ? uiCopy.merchant.cancelled : order.status === "accepted" ? uiCopy.merchant.pickupTimeReached : uiCopy.merchant.rejected}</small></span>
 												</button>
-												{selectedHistoryId === order.id && <MerchantOrderCard order={order} isNew={false} isProcessing={false} processingAction={null} isHistorical embeddedHistory onAction={() => undefined} />}
+												{selectedHistoryId === order.id && <MerchantOrderCard order={order} isNew={false} isProcessing={processingControl === `order-${order.id}`} processingAction={processingControl === `order-${order.id}` ? processingAction : null} isHistorical embeddedHistory onAction={(action) => { if (action === "complete") requestOrderAction(order, action); }} />}
 											</li>
 										))}
 									</ul>

@@ -91,7 +91,7 @@ try {
 					AND busy_mode = 0 AND missed_order_count = 0 AND auto_pause_reason IS NULL
 					AND weekly_business_hours IS NOT NULL AND last_order_time = '23:15'
 					AND customer_phone_mode = 'optional' AND show_product_images = 1
-					AND new_order_sound_enabled = 1) AS storeCount,
+					AND new_order_sound_enabled = 1 AND pause_reason IS NULL AND scheduled_closed_business_date IS NULL) AS storeCount,
 				(SELECT COUNT(*) FROM menu_items) AS menuItemCount,
 				(SELECT COUNT(*) FROM modifier_groups WHERE id IN (5, 6) AND menu_item_id IN (9, 10) AND name = '調味' AND is_required = 1 AND is_active = 1) AS seasoningGroupCount,
 				(SELECT COUNT(*) FROM modifier_options WHERE id BETWEEN 15 AND 20 AND name IN ('梅粉', '胡椒') AND is_active = 1) AS seasoningOptionCount,
@@ -115,7 +115,7 @@ try {
 	);
 
 	if (
-		summary.migrationCount !== 20 ||
+		summary.migrationCount !== 21 ||
 		summary.storeCount !== 1 ||
 		summary.menuItemCount !== 47 ||
 		summary.seasoningGroupCount !== 2 ||
@@ -513,7 +513,7 @@ try {
 		"--command",
 		"SELECT COUNT(*) AS migrationCount FROM d1_migrations",
 	], true);
-	if (firstResult(secondHistory).migrationCount !== 20) {
+	if (firstResult(secondHistory).migrationCount !== 21) {
 		throw new Error("Second fresh D1 migration apply changed migration history");
 	}
 	if (firstResult(runWrangler(["d1", "execute", database, "--json", "--command", "PRAGMA quick_check"], true)).quick_check !== "ok") {
@@ -521,7 +521,7 @@ try {
 	}
 
 	console.log(
-		"Fresh D1 PASS: 20 sequential migrations, nullable daily sold-out marker without backfill, Customer Store configuration and new Order sound setting, operational busy/auto-reject schema, additive order source, packaging preference, shortage/cancellation ledgers and request fingerprints, Admin menu metadata and customer_note schema, complete local-only 47-product development menu, API-backed fries seasoning and spice fixtures, Store state version/audit constraints, idempotent second apply, required store row, untouched historical LINE tables, additive Web Push tables, no Store/Push fixtures, and quick_check verified.",
+		"Fresh D1 PASS: 21 sequential migrations, nullable scheduled closure markers without inferred legacy state, nullable daily sold-out marker without backfill, Customer Store configuration and new Order sound setting, operational busy/auto-reject schema, additive order source, packaging preference, shortage/cancellation ledgers and request fingerprints, Admin menu metadata and customer_note schema, complete local-only 47-product development menu, API-backed fries seasoning and spice fixtures, Store state version/audit constraints, idempotent second apply, required store row, untouched historical LINE tables, additive Web Push tables, no Store/Push fixtures, and quick_check verified.",
 	);
 } finally {
 	const resolvedPersistence = resolve(persistenceDirectory);

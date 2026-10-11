@@ -6,7 +6,7 @@
 	"workers_dev": true,
 	"preview_urls": false,
 	"triggers": {
-		"crons": ["* * * * *"]
+		"crons": ["* * * * *", "30 9 * * *"]
 	},
 	"version_metadata": {
 		"binding": "CF_VERSION_METADATA"

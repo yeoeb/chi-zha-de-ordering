@@ -247,7 +247,7 @@ export function MerchantOrderCard({
 				<strong>NT$ {order.total}</strong>
 			</footer>}
 
-			{isActiveOrder && <div className={`merchant-actions merchant-actions-${order.status}`}>
+			{(isActiveOrder || (isHistorical && order.status === "accepted")) && <div className={`merchant-actions merchant-actions-${order.status}`}>
 				{order.status === "pending" ? (
 					<>
 						<button className={`accept-button source-${orderSource}`} type="button" disabled={isProcessing} onClick={() => onAction("accept")}>

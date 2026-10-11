@@ -231,6 +231,7 @@ export async function processDueAutoRejections(db: D1Database, now = new Date())
 					auto_pause_reason = CASE
 						WHEN is_accepting_orders = 1 AND missed_order_count + 1 >= 3 THEN 'missed_orders'
 						ELSE auto_pause_reason END,
+					pause_reason = CASE WHEN missed_order_count + 1 >= 3 THEN 'missed_orders' ELSE pause_reason END,
 					state_version = state_version + 1
 				WHERE id = 1 AND EXISTS (
 					SELECT 1 FROM order_auto_rejection_events

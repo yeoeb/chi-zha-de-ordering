@@ -1,3 +1,4 @@
+import { runScheduledStoreCycle } from "./store-schedule";
 import { Hono, type Context } from "hono";
 import { BusinessScheduleUnavailableError, restorePreviousBusinessDaySoldOut } from "./daily-sold-out";
 import {
@@ -1041,7 +1042,10 @@ app.post("/api/merchant/orders/:id/shortages", async (c) => {
 
 const worker = Object.assign(app, {
 	scheduled(_controller: ScheduledController, env: AppEnvironment["Bindings"], ctx: ExecutionContext) {
-		ctx.waitUntil(processDueAutoRejections(env.DB));
+		ctx.waitUntil((async () => {
+			await processDueAutoRejections(env.DB);
+			await runScheduledStoreCycle({ db: env.DB, auditActorHashKey: env.AUDIT_ACTOR_HASH_KEY, workerVersion: env.CF_VERSION_METADATA?.id, scheduledTime: _controller.scheduledTime });
+		})());
 		ctx.waitUntil(restorePreviousBusinessDaySoldOut(env.DB));
 	},
 });

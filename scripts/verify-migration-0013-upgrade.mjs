@@ -77,6 +77,7 @@ function installMigration(number) {
 		18: "0018_add_customer_store_configuration.sql",
 		19: "0019_add_new_order_sound_setting.sql",
 		20: "0020_add_sold_out_business_date.sql",
+		21: "0021_add_scheduled_store_closure.sql",
 	};
 	const name = names[number];
 	copyFileSync(join(root, "migrations", name), join(migrationDirectory, name));
@@ -189,12 +190,21 @@ try {
 		"d1", "execute", "DB", "--json", "--command", "SELECT COUNT(*) AS migrationCount FROM d1_migrations",
 	], true));
 	if (secondHistory.migrationCount !== 20) throw new Error("Second upgrade apply changed migration history");
+ const beforeClosure = firstResult(runWrangler(["d1", "execute", "DB", "--json", "--command", baselineSql], true));
+ installMigration(21);
+ runWrangler(["d1", "migrations", "apply", "DB"]);
+ const afterClosure = firstResult(runWrangler(["d1", "execute", "DB", "--json", "--command", baselineSql], true));
+ if (JSON.stringify(beforeClosure) !== JSON.stringify(afterClosure)) throw new Error("0021 changed existing menu or historical snapshots");
+ const closure = firstResult(runWrangler(["d1", "execute", "DB", "--json", "--command", "SELECT COUNT(*) AS safe FROM store_settings WHERE pause_reason IS NULL AND scheduled_closed_business_date IS NULL"], true));
+ if (closure.safe !== 1) throw new Error("0021 inferred an unsafe legacy closure");
+ runWrangler(["d1", "migrations", "apply", "DB"]);
+ if (firstResult(runWrangler(["d1", "execute", "DB", "--json", "--command", "SELECT COUNT(*) AS n FROM d1_migrations"], true)).n !== 21) throw new Error("0021 migration replay is not idempotent");
 	const quickCheck = firstResult(runWrangler([
 		"d1", "execute", "DB", "--json", "--command", "PRAGMA quick_check",
 	], true));
 	if (quickCheck.quick_check !== "ok") throw new Error("Upgrade D1 quick_check failed");
 
-	console.log("Migrations 0011-0020 upgrade PASS: pre-0011 data preserved; immediate 0019 -> 0020 preserves menu prices/availability/archive/history/table counts with nullable marker and no backfill; second apply idempotent and quick_check passed.");
+	console.log("Migrations 0011-0021 upgrade PASS: 0021 additive markers remain NULL; pre-0011 data preserved; immediate 0019 -> 0020 preserves menu prices/availability/archive/history/table counts with nullable marker and no backfill; second apply idempotent and quick_check passed.");
 } finally {
 	const resolvedVerifierRoot = resolve(verifierRoot);
 	const resolvedTempRoot = resolve(safeTempRoot);

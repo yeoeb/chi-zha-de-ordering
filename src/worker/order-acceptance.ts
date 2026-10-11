@@ -1,4 +1,5 @@
 import { decodeWeeklyBusinessHours } from "./admin-store";
+import { scheduledServiceCycle } from "./store-schedule";
 import { getOpeningBusinessDay } from "./business-day";
 import type { StoreSettingsRow } from "./store-settings";
 
@@ -12,8 +13,8 @@ export class OrderAcceptanceError extends Error {
 	}
 }
 
-// Opening-cycle identity is shared with daily sold-out maintenance. Remaining
-// in that business day after midnight does not keep its acceptance window open.
+// Opening-cycle identity is shared with daily sold-out maintenance. The approved
+// soft-close cycle can continue after midnight while Store remains accepting.
 export function assertOrderAcceptanceWindow(
 	store: Pick<StoreSettingsRow, "weekly_business_hours" | "last_order_time">,
 	now: Date,
@@ -28,6 +29,7 @@ export function assertOrderAcceptanceWindow(
 	if (!schedule || (store.last_order_time !== null && !/^(?:[01][0-9]|2[0-3]):[0-5][0-9]$/.test(store.last_order_time))) {
 		throw new OrderAcceptanceError("BUSINESS_SCHEDULE_UNAVAILABLE");
 	}
+	if (scheduledServiceCycle(store, now)) return;
 	const day = getOpeningBusinessDay(now, schedule);
 	if (!day) throw new OrderAcceptanceError("BUSINESS_HOURS_CLOSED");
 	const hours = schedule[String(new Date(day + "T00:00:00Z").getUTCDay())]!;

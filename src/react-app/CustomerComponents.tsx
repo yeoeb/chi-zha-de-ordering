@@ -124,6 +124,7 @@ export function BusinessHoursPill({
 }) {
 	const [open, setOpen] = useState(false);
 	if (todayIsOpen === null) return null;
+	const softClosing = todayIsOpen && todayOpenAt === "17:30" && todayCloseAt === "23:15" && (lastOrderAt === null || lastOrderAt === "23:15");
 	const summary = todayIsOpen && todayOpenAt && todayCloseAt
 		? `${uiCopy.customer.todayHoursPrefix}${todayOpenAt}–${todayCloseAt}`
 		: uiCopy.customer.closedToday;
@@ -137,7 +138,8 @@ export function BusinessHoursPill({
 				<section id="business-hours-panel" className="business-hours-panel" aria-label={uiCopy.customer.todayHours}>
 					<header><strong>{uiCopy.customer.todayHours}</strong><button type="button" aria-label={uiCopy.common.close} onClick={() => setOpen(false)}>×</button></header>
 					<p>{todayIsOpen && todayOpenAt && todayCloseAt ? `${todayOpenAt} – ${todayCloseAt}` : uiCopy.customer.closedToday}</p>
-					{todayIsOpen && lastOrderAt && <p><span>{uiCopy.customer.lastOrder}</span><strong>{lastOrderAt}</strong></p>}
+					{todayIsOpen && (lastOrderAt || softClosing) && <p><span>{softClosing ? "最早收店" : uiCopy.customer.lastOrder}</span><strong>{lastOrderAt ?? todayCloseAt}</strong></p>}
+					{softClosing && <p>23:15 後依訂單狀況延後收店，請依目前接單狀態下單。</p>}
 				</section>
 			</>}
 		</div>
