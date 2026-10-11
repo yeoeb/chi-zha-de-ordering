@@ -1,4 +1,5 @@
 import { runScheduledStoreCycle } from "./store-schedule";
+import { getAuthorizedSchedulerActivation, getSchedulerActivation, parseSchedulerActivationRequest, performSchedulerActivation, SchedulerActivationError } from "./scheduler-activation";
 import { Hono, type Context } from "hono";
 import { BusinessScheduleUnavailableError, restorePreviousBusinessDaySoldOut } from "./daily-sold-out";
 import {
@@ -381,7 +382,7 @@ app.post("/api/checkout/quote", async (c) => {
 		}
 
 		const now = new Date();
-		assertOrderAcceptanceWindow(store, now);
+		assertOrderAcceptanceWindow(store, now, (await getAuthorizedSchedulerActivation(c.env.DB, c.env.CF_VERSION_METADATA?.id)) !== null);
 		const [pricedCart, queueCounts] = await Promise.all([
 			validateAndPriceCart(c.env.DB, selections),
 			c.env.DB
@@ -488,7 +489,7 @@ async function handleCreateOrder(c: Context<AppEnvironment>, orderSource: OrderS
 			return c.json({ error: { code: "STORE_SETTINGS_NOT_FOUND", message: "Store settings not found" } }, 500);
 		}
 		const request = parseCreateOrderRequest(requestBody, orderSource, store.customer_phone_mode);
-		const result = await createOrder(c.env.DB, request, idempotencyKey, new Date());
+		const result = await createOrder(c.env.DB, request, idempotencyKey, new Date(), c.env.CF_VERSION_METADATA?.id);
 
 		if (!result.replayed) {
 			c.executionCtx.waitUntil(
@@ -625,6 +626,25 @@ app.use("/api/admin/*", async (c, next) => {
 });
 
 app.get("/api/admin/menu", async (c) => c.json(await listAdminMenu(c.env.DB)));
+
+// Covered by the existing Admin JWT and exact same-origin mutation middleware.
+app.get("/api/admin/scheduler-activation", async (c) => {
+	try { return c.json({ state: await getSchedulerActivation(c.env.DB) }); }
+	catch { return c.json({ error: { code: "SCHEDULER_ACTIVATION_UNAVAILABLE" } }, 500); }
+});
+app.post("/api/admin/scheduler-activation", async (c) => {
+	try {
+		const request = parseSchedulerActivationRequest(await readBoundedJson(c.req.raw));
+		const result = await performSchedulerActivation({ db: c.env.DB, request,
+			actorSubject: c.get("adminActorSubject"), auditActorHashKey: c.env.AUDIT_ACTOR_HASH_KEY,
+			workerVersion: c.env.CF_VERSION_METADATA?.id });
+		return c.json(result, result.operation.outcome === "stale" ? 409 : 200);
+	} catch (error) {
+		if (error instanceof SchedulerActivationError) return c.json({ error: { code: error.code } }, error.status);
+		if (error instanceof RequestBodyError) return c.json({ error: { code: "INVALID_SCHEDULER_ACTIVATION" } }, 400);
+		return c.json({ error: { code: "SCHEDULER_ACTIVATION_UNAVAILABLE" } }, 500);
+	}
+});
 
 app.post("/api/admin/menu-items", async (c) => {
 	try {

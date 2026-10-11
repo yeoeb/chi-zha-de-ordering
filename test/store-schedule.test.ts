@@ -3,10 +3,11 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { runScheduledStoreCycle } from "../src/worker/store-schedule";
 import { performStoreOperation } from "../src/worker/store-operations";
 import { orderTestSchedule } from "./order-acceptance-fixture";
+import { enableTestScheduler, schedulerTestVersion } from "./scheduler-activation-fixture";
 const secret='local-schedule-audit-secret-at-least-32';
 const closeTime='2026-10-06T23:15:00+08:00';
 const openTime='2026-10-07T17:30:00+08:00';
-const run=(now=closeTime,db=env.DB,scheduledTime?:number)=>runScheduledStoreCycle({db,now:new Date(now),scheduledTime,auditActorHashKey:secret,workerVersion:'local-test'});
+const run=(now=closeTime,db=env.DB,scheduledTime?:number)=>runScheduledStoreCycle({db,now:new Date(now),scheduledTime,auditActorHashKey:secret,workerVersion:schedulerTestVersion});
 async function state(){return env.DB.prepare('SELECT is_accepting_orders,state_version,pause_reason,scheduled_closed_business_date FROM store_settings WHERE id=1').first();}
 async function orders(){return (await env.DB.prepare('SELECT * FROM orders').all()).results;}
 beforeEach(async()=>{
@@ -19,6 +20,7 @@ beforeEach(async()=>{
   env.DB.prepare('DELETE FROM orders'),
   env.DB.prepare("UPDATE store_settings SET is_accepting_orders=1,state_version=0,missed_order_count=0,auto_pause_reason=NULL,pause_reason=NULL,scheduled_closed_business_date=NULL,weekly_business_hours=?,last_order_time='23:15' WHERE id=1").bind(JSON.stringify(orderTestSchedule)),
  ]);
+ await enableTestScheduler();
 });
 async function order(status='accepted',created='2026-10-06T22:00:00+08:00',completed: string|null=null){
  await env.DB.prepare(`INSERT INTO orders(id,public_lookup_token,order_number,status,total_amount,estimated_ready_at,created_at,customer_name,customer_phone,special_order,idempotency_key,request_fingerprint,completed_at)
@@ -101,7 +103,7 @@ describe('daily safe store scheduling',()=>{
   vi.useFakeTimers({toFake:['Date']});vi.setSystemTime(new Date(closeTime));
   try {
    const worker=(await import('../src/worker/index')).default;const tasks:Promise<unknown>[]=[];
-   worker.scheduled({scheduledTime:new Date(closeTime).getTime(),cron:'* * * * *'} as ScheduledController,env,{waitUntil:(task:Promise<unknown>)=>tasks.push(task)} as unknown as ExecutionContext);
+   worker.scheduled({scheduledTime:new Date(closeTime).getTime(),cron:'* * * * *'} as ScheduledController,{...env,CF_VERSION_METADATA:{id:schedulerTestVersion}},{waitUntil:(task:Promise<unknown>)=>tasks.push(task)} as unknown as ExecutionContext);
    await Promise.all(tasks);expect(await state()).toMatchObject({pause_reason:'scheduled_closed',state_version:1});
   } finally {vi.useRealTimers();}
  });
@@ -125,12 +127,12 @@ describe('daily safe store scheduling',()=>{
   const {createOrder}=await import('../src/worker/order-creation');const {validateAndPriceCart,createQuoteFingerprint}=await import('../src/worker/checkout-quote');
   const items=[{menuItemId:991,modifierOptionIds:[],quantity:1}];const quoteFingerprint=await createQuoteFingerprint(await validateAndPriceCart(env.DB,items));
   const db=new Proxy(env.DB,{get(target,key){if(key==='batch')return async(statements:D1PreparedStatement[])=>{await run();return target.batch(statements);};const value=Reflect.get(target,key);return typeof value==='function'?value.bind(target):value;}});
-  await expect(createOrder(db,{items,specialOrder:false,quoteFingerprint,customerName:'Local',customerPhone:'Local'},'close-race',new Date(closeTime))).rejects.toMatchObject({code:'STORE_NOT_ACCEPTING_ORDERS'});
+  await expect(createOrder(db,{items,specialOrder:false,quoteFingerprint,customerName:'Local',customerPhone:'Local'},'close-race',new Date(closeTime),schedulerTestVersion)).rejects.toMatchObject({code:'STORE_NOT_ACCEPTING_ORDERS'});
   expect(await orders()).toEqual([]);expect((await env.DB.prepare('SELECT COUNT(*) AS n FROM order_items').first())!.n).toBe(0);
   expect((await env.DB.prepare('SELECT COUNT(*) AS n FROM web_push_notification_deliveries').first())!.n).toBe(0);
  });
  it('missing audit key cannot mutate Store',async()=>{
-  await expect(runScheduledStoreCycle({db:env.DB,now:new Date(closeTime)})).rejects.toThrow();expect(await state()).toMatchObject({state_version:0});
+  await expect(runScheduledStoreCycle({db:env.DB,now:new Date(closeTime),workerVersion:schedulerTestVersion})).rejects.toThrow();expect(await state()).toMatchObject({state_version:0});
  });
  it('fails closed on exhausted version, corrupted schedule and missed-order safety state',async()=>{
   await env.DB.prepare('UPDATE store_settings SET missed_order_count=1 WHERE id=1').run();expect(await run()).toMatchObject({outcome:'SKIPPED'});

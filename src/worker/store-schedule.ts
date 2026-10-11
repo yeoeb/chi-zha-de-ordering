@@ -2,6 +2,7 @@ import { decodeWeeklyBusinessHours } from "./admin-store";
 import { getOpeningBusinessDay } from "./business-day";
 import { getStoreSettings, MAX_STORE_STATE_VERSION, type StoreSettingsRow } from "./store-settings";
 import { hashAuditActor } from "./store-operations";
+import { getAuthorizedSchedulerActivation, SCHEDULER_ACTIVATION_GUARD_SQL } from "./scheduler-activation";
 
 const DAY = 86400000;
 // Only the approved 17:30 / 23:15 schedule gets a soft extension.
@@ -29,6 +30,8 @@ export async function runScheduledStoreCycle(input: {
 }) {
  const { db, auditActorHashKey, workerVersion, now = new Date() } = input;
  if (!Number.isFinite(now.getTime())) throw new RangeError("now must be valid");
+ const activation = await getAuthorizedSchedulerActivation(db, workerVersion);
+ if (!activation) return { outcome: "SKIPPED" };
  if (input.scheduledTime !== undefined && (!Number.isFinite(input.scheduledTime) || input.scheduledTime > now.getTime() || now.getTime()-input.scheduledTime >= DAY)) return { outcome: "SKIPPED" };
  const store = await getStoreSettings(db);
  if (!store) return { outcome: "SKIPPED" };
@@ -76,10 +79,11 @@ export async function runScheduledStoreCycle(input: {
    AND typeof(state_version)='integer' AND state_version BETWEEN 0 AND ?
    AND auto_pause_reason IS NULL AND missed_order_count=0
    AND weekly_business_hours IS ? AND last_order_time IS ?
+   AND ${SCHEDULER_ACTIVATION_GUARD_SQL}
    AND ${close ? "pause_reason IS NULL AND " + closeGuard : resumeGuard}
    ON CONFLICT(operation_id) DO NOTHING`)
    .bind(eventId,id,fingerprint,action,expected,target,actorHash,workerVersion ?? null,timestamp,
-    expected,store.state_version,MAX_STORE_STATE_VERSION-1,store.weekly_business_hours,store.last_order_time,
+    expected,store.state_version,MAX_STORE_STATE_VERSION-1,store.weekly_business_hours,store.last_order_time,workerVersion!,activation.state_version,
     ...(close ? [timestamp,new Date(cycle.opening).toISOString()] : [store.scheduled_closed_business_date,closeId,closeId])),
   db.prepare(`UPDATE store_settings SET is_accepting_orders=?,state_version=state_version+1,
    pause_reason=?,scheduled_closed_business_date=?

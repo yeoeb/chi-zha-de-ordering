@@ -87,6 +87,8 @@ try {
 			"--command",
 			`SELECT
 				(SELECT COUNT(*) FROM d1_migrations) AS migrationCount,
+				(SELECT COUNT(*) FROM scheduler_activation WHERE id=1 AND enabled=0 AND approved_version_id IS NULL AND state_version=0 AND last_operation_id IS NULL) AS disabledSchedulerCount,
+				(SELECT COUNT(*) FROM scheduler_activation_events) AS schedulerEventCount,
 				(SELECT COUNT(*) FROM store_settings WHERE id = 1 AND display_name = '吃炸的' AND state_version = 0
 					AND busy_mode = 0 AND missed_order_count = 0 AND auto_pause_reason IS NULL
 					AND weekly_business_hours IS NOT NULL AND last_order_time = '23:15'
@@ -115,7 +117,7 @@ try {
 	);
 
 	if (
-		summary.migrationCount !== 21 ||
+		summary.migrationCount !== 22 || summary.disabledSchedulerCount !== 1 || summary.schedulerEventCount !== 0 ||
 		summary.storeCount !== 1 ||
 		summary.menuItemCount !== 47 ||
 		summary.seasoningGroupCount !== 2 ||
@@ -513,7 +515,7 @@ try {
 		"--command",
 		"SELECT COUNT(*) AS migrationCount FROM d1_migrations",
 	], true);
-	if (firstResult(secondHistory).migrationCount !== 21) {
+	if (firstResult(secondHistory).migrationCount !== 22) {
 		throw new Error("Second fresh D1 migration apply changed migration history");
 	}
 	if (firstResult(runWrangler(["d1", "execute", database, "--json", "--command", "PRAGMA quick_check"], true)).quick_check !== "ok") {
@@ -521,7 +523,7 @@ try {
 	}
 
 	console.log(
-		"Fresh D1 PASS: 21 sequential migrations, nullable scheduled closure markers without inferred legacy state, nullable daily sold-out marker without backfill, Customer Store configuration and new Order sound setting, operational busy/auto-reject schema, additive order source, packaging preference, shortage/cancellation ledgers and request fingerprints, Admin menu metadata and customer_note schema, complete local-only 47-product development menu, API-backed fries seasoning and spice fixtures, Store state version/audit constraints, idempotent second apply, required store row, untouched historical LINE tables, additive Web Push tables, no Store/Push fixtures, and quick_check verified.",
+		"Fresh D1 PASS: 22 sequential migrations; Scheduler disabled/version NULL/no activation audit; nullable scheduled closure markers without inferred legacy state; historical data, price fixtures, original constraints and quick_check verified.",
 	);
 } finally {
 	const resolvedPersistence = resolve(persistenceDirectory);

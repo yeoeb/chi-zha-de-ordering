@@ -78,6 +78,7 @@ function installMigration(number) {
 		19: "0019_add_new_order_sound_setting.sql",
 		20: "0020_add_sold_out_business_date.sql",
 		21: "0021_add_scheduled_store_closure.sql",
+		22: "0022_add_scheduler_activation.sql",
 	};
 	const name = names[number];
 	copyFileSync(join(root, "migrations", name), join(migrationDirectory, name));
@@ -199,12 +200,23 @@ try {
  if (closure.safe !== 1) throw new Error("0021 inferred an unsafe legacy closure");
  runWrangler(["d1", "migrations", "apply", "DB"]);
  if (firstResult(runWrangler(["d1", "execute", "DB", "--json", "--command", "SELECT COUNT(*) AS n FROM d1_migrations"], true)).n !== 21) throw new Error("0021 migration replay is not idempotent");
+ const beforeActivation = firstResult(runWrangler(["d1", "execute", "DB", "--json", "--command", baselineSql], true));
+ const storeBeforeActivation = firstResult(runWrangler(["d1", "execute", "DB", "--json", "--command", "SELECT * FROM store_settings WHERE id=1"], true));
+ installMigration(22);
+ runWrangler(["d1", "migrations", "apply", "DB"]);
+ const activation = firstResult(runWrangler(["d1", "execute", "DB", "--json", "--command", "SELECT enabled,approved_version_id,state_version,last_operation_id,(SELECT COUNT(*) FROM scheduler_activation_events) AS auditCount FROM scheduler_activation WHERE id=1"], true));
+ if (activation.enabled !== 0 || activation.approved_version_id !== null || activation.state_version !== 0 || activation.last_operation_id !== null || activation.auditCount !== 0) throw new Error("0022 unexpectedly activated Scheduler");
+ const afterActivation = firstResult(runWrangler(["d1", "execute", "DB", "--json", "--command", baselineSql], true));
+ const storeAfterActivation = firstResult(runWrangler(["d1", "execute", "DB", "--json", "--command", "SELECT * FROM store_settings WHERE id=1"], true));
+ if (JSON.stringify({...beforeActivation,tables:beforeActivation.tables+2}) !== JSON.stringify(afterActivation) || JSON.stringify(storeBeforeActivation) !== JSON.stringify(storeAfterActivation)) throw new Error("0022 changed existing Store/prices/history or added unexpected tables");
+ runWrangler(["d1", "migrations", "apply", "DB"]);
+ if (firstResult(runWrangler(["d1", "execute", "DB", "--json", "--command", "SELECT COUNT(*) AS n FROM d1_migrations"], true)).n !== 22) throw new Error("0022 migration replay is not idempotent");
 	const quickCheck = firstResult(runWrangler([
 		"d1", "execute", "DB", "--json", "--command", "PRAGMA quick_check",
 	], true));
 	if (quickCheck.quick_check !== "ok") throw new Error("Upgrade D1 quick_check failed");
 
-	console.log("Migrations 0011-0021 upgrade PASS: 0021 additive markers remain NULL; pre-0011 data preserved; immediate 0019 -> 0020 preserves menu prices/availability/archive/history/table counts with nullable marker and no backfill; second apply idempotent and quick_check passed.");
+	console.log("Migrations 0011-0022 upgrade PASS: 0021 markers remain NULL; 0022 disabled/version NULL/no audit; existing Store/prices/history unchanged; replay idempotent and quick_check passed.");
 } finally {
 	const resolvedVerifierRoot = resolve(verifierRoot);
 	const resolvedTempRoot = resolve(safeTempRoot);

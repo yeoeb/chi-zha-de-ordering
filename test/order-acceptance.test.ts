@@ -5,6 +5,7 @@ import { getOpeningBusinessDay } from "../src/worker/business-day";
 import { createQuoteFingerprint, validateAndPriceCart } from "../src/worker/checkout-quote";
 import { createOrder } from "../src/worker/order-creation";
 import { listActiveMerchantOrders, transitionMerchantOrder } from "../src/worker/merchant-orders";
+import { enableTestScheduler } from "./scheduler-activation-fixture";
 
 setupOrderAcceptanceTests();
 const items = [{ menuItemId: 990, quantity: 1, modifierOptionIds: [] }];
@@ -25,6 +26,7 @@ beforeAll(async () => {
 	]);
 });
 beforeEach(async () => {
+	await enableTestScheduler((env as typeof env & { CF_VERSION_METADATA: { id:string } }).CF_VERSION_METADATA.id);
 	await env.DB.batch([
 		env.DB.prepare("DELETE FROM web_push_notification_deliveries"),
 		env.DB.prepare("DELETE FROM order_item_modifiers"),

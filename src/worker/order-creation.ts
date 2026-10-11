@@ -7,6 +7,8 @@ import {
 } from "./checkout-quote";
 import { getStoreSettings } from "./store-settings";
 import { assertOrderAcceptanceWindow } from "./order-acceptance";
+import { scheduledServiceCycle } from "./store-schedule";
+import { getAuthorizedSchedulerActivation, SCHEDULER_ACTIVATION_GUARD_SQL } from "./scheduler-activation";
 import { isValidCustomerPhone } from "../shared/customer-contact";
 import {
 	ONLINE_CUSTOMER_NAME,
@@ -611,6 +613,7 @@ export async function createOrder(
 	request: CreateOrderRequest,
 	idempotencyKey: string,
 	now: Date,
+	workerVersion?: string,
 ): Promise<CreateOrderResult> {
 	const orderSource = request.orderSource ?? "online";
 	const requestFingerprint = await createRequestFingerprint(request);
@@ -641,7 +644,10 @@ export async function createOrder(
 			);
 		}
 
-		assertOrderAcceptanceWindow(store, now);
+		const activation = await getAuthorizedSchedulerActivation(db, workerVersion);
+		assertOrderAcceptanceWindow(store, now, activation !== null);
+		const cycle = scheduledServiceCycle(store, now);
+		const extendedWindow = cycle !== null && now.getTime() >= cycle.earliestClose;
 		await assertConfirmedQuote(pricedCart, request.quoteFingerprint);
 		const activeSchedule = await readActiveKitchenSchedule(db);
 		const scheduleFingerprint = createKitchenScheduleFingerprint(activeSchedule);
@@ -695,6 +701,7 @@ export async function createOrder(
 						AND store_settings.state_version = ?
 						AND store_settings.weekly_business_hours IS ?
 						AND store_settings.last_order_time IS ?
+						AND ${extendedWindow ? SCHEDULER_ACTIVATION_GUARD_SQL : "1"}
 						AND store_settings.base_prep_minutes = ?
 						AND store_settings.normal_order_minutes = ?
 						AND store_settings.special_extra_minutes = ?
@@ -731,6 +738,7 @@ export async function createOrder(
 					store.state_version,
 					store.weekly_business_hours,
 					store.last_order_time,
+					...(extendedWindow ? [workerVersion!, activation!.state_version] : []),
 					store.base_prep_minutes,
 					store.normal_order_minutes,
 					store.special_extra_minutes,
@@ -886,7 +894,7 @@ export async function createOrder(
 			"Store is not accepting orders",
 		);
 	}
-	if (store) assertOrderAcceptanceWindow(store, now);
+	if (store) assertOrderAcceptanceWindow(store, now, (await getAuthorizedSchedulerActivation(db, workerVersion)) !== null);
 	const pricedCart = await validateAndPriceCart(db, request.items);
 	await assertConfirmedQuote(pricedCart, request.quoteFingerprint);
 	throw new OrderCreationError(

@@ -18,6 +18,7 @@ export class OrderAcceptanceError extends Error {
 export function assertOrderAcceptanceWindow(
 	store: Pick<StoreSettingsRow, "weekly_business_hours" | "last_order_time">,
 	now: Date,
+	softClosingAuthorized = false,
 ) {
 	if (!Number.isFinite(now.getTime())) throw new RangeError("now must be a valid date");
 	let schedule;
@@ -29,7 +30,7 @@ export function assertOrderAcceptanceWindow(
 	if (!schedule || (store.last_order_time !== null && !/^(?:[01][0-9]|2[0-3]):[0-5][0-9]$/.test(store.last_order_time))) {
 		throw new OrderAcceptanceError("BUSINESS_SCHEDULE_UNAVAILABLE");
 	}
-	if (scheduledServiceCycle(store, now)) return;
+	if (softClosingAuthorized && scheduledServiceCycle(store, now)) return;
 	const day = getOpeningBusinessDay(now, schedule);
 	if (!day) throw new OrderAcceptanceError("BUSINESS_HOURS_CLOSED");
 	const hours = schedule[String(new Date(day + "T00:00:00Z").getUTCDay())]!;

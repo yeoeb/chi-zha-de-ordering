@@ -10,7 +10,7 @@ function migrate(db,limit){for(const p of migrations.filter(p=>Number(p.slice(0,
 function rows(db,table){return db.prepare('SELECT * FROM '+table+' ORDER BY rowid').all().map(r=>({...r}));}
 for(const scenario of ['fresh','upgrade']){
  const db=new DatabaseSync(':memory:');
- migrate(db,scenario==='fresh'?21:20);
+ migrate(db,scenario==='fresh'?22:20);
  db.exec(`INSERT INTO menu_categories(id,name,sort_order,is_active) VALUES(1,'Local',1,1);
  INSERT INTO menu_items(id,category_id,name,description,price,sort_order,is_available) VALUES(4,1,'鹽酥雞','',83,1,1),(3,1,'香酥魷魚','',117,2,1);
  INSERT INTO modifier_groups(id,menu_item_id,name,selection_type,is_required,sort_order,is_active) VALUES(7,4,'份量','single',1,1,1),(8,3,'份量','single',1,1,1);
@@ -18,6 +18,11 @@ for(const scenario of ['fresh','upgrade']){
  UPDATE store_settings SET is_accepting_orders=0,state_version=7,auto_pause_reason=NULL;`);
  const before={menu:rows(db,'menu_items'),store:rows(db,'store_settings'),options:rows(db,'modifier_options'),orders:rows(db,'orders')};
  if(scenario==='upgrade')db.exec(sql('migrations/0021_add_scheduled_store_closure.sql'));
+ const beforeActivation=rows(db,'store_settings');
+ if(scenario==='upgrade')db.exec(sql('migrations/0022_add_scheduler_activation.sql'));
+ assert.deepEqual(rows(db,'store_settings'),beforeActivation);
+ assert.deepEqual(rows(db,'scheduler_activation').map(r=>({...r})),[{id:1,enabled:0,approved_version_id:null,state_version:0,last_operation_id:null,updated_at:null}]);
+ assert.deepEqual(rows(db,'scheduler_activation_events'),[]);
  const store=rows(db,'store_settings')[0];assert.equal(store.pause_reason,null);assert.equal(store.scheduled_closed_business_date,null);
  const legacyStore={...store};delete legacyStore.pause_reason;delete legacyStore.scheduled_closed_business_date;
  const expected={...before.store[0]};delete expected.pause_reason;delete expected.scheduled_closed_business_date;assert.deepEqual(legacyStore,expected);
