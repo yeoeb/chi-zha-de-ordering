@@ -1,3 +1,5 @@
+**Language:** [English](./CLIENT_DELIVERY_ASSURANCE.en.md) · 繁體中文
+
 # 客戶交付與品質保障｜吃炸的
 
 > 文件類型：**Client delivery / Quality Assurance / Operational readiness**。本文件為已實作機制的證據索引與待驗收清單，**不是已簽署的保固、SLA、商業委託或驗收證明**。來源以 GitHub `main` 的程式碼及既有本機測試為主；Production 狀態需以最新操作證據重新核對。
