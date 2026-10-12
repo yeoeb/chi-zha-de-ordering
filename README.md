@@ -166,7 +166,7 @@ On Windows PowerShell, use `npm.cmd` if the `npm.ps1` shim is blocked. A success
 ## 8. Engineering documentation
 
 - [Product blueprint and failure cases](docs/PRODUCT_BLUEPRINT.md)
-- [Client acceptance and quality assurance](docs/CLIENT_DELIVERY_ASSURANCE.md)
+- [Client acceptance and quality assurance](docs/CLIENT_DELIVERY_ASSURANCE.en.md)
 - [Safe demo environment plan](docs/DEMO_ENVIRONMENT_PLAN.md)
 - [Deployment and rollback runbook](docs/DEPLOYMENT_RUNBOOK.md)
 - [Scheduler release / activation model](docs/SCHEDULER_ACTIVATION_RELEASE.md)
