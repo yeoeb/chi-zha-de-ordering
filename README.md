@@ -129,7 +129,7 @@ A real-shop system also needs an operational plan. **Implementation evidence is 
 | Performance | Unit/concurrency behavior tests | Representative peak-load test and latency metrics |
 | Privacy / maintenance | Data-minimizing access and technical safeguards | Business-approved retention/privacy notice and maintenance agreement |
 
-Detailed client-focused acceptance and remaining work: [Delivery and quality assurance checklist (Traditional Chinese)](docs/CLIENT_DELIVERY_ASSURANCE.md).
+Detailed client-focused acceptance and remaining work: [Delivery and quality assurance checklist](docs/CLIENT_DELIVERY_ASSURANCE.en.md) ([繁體中文](docs/CLIENT_DELIVERY_ASSURANCE.md)).
 
 **No unsupported claims:** no published uptime percentage, external penetration-test certification, signed client acceptance, production load capacity, warranty or SLA is asserted in this repository.
 
