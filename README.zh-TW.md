@@ -150,6 +150,7 @@ npm run verify
 ## 08 · 專案文件與開發流程
 
 - [客戶交付、品質保障與待驗收清單](docs/CLIENT_DELIVERY_ASSURANCE.md)
+- [獨立面試 Demo 安全規劃（英文）](docs/DEMO_ENVIRONMENT_PLAN.md)
 - [產品規則與交易邊界](docs/PRODUCT_BLUEPRINT.md)
 - [正式發布／回滾流程](docs/DEPLOYMENT_RUNBOOK.md)
 - [Scheduler 版本啟用與安全](docs/SCHEDULER_ACTIVATION_RELEASE.md)
