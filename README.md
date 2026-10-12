@@ -1,131 +1,149 @@
 <div align="center">
-  <img src="./public/icons/icon.svg" alt="吃炸的品牌圖示" width="92" />
 
-  # 吃炸的｜實體餐飲店雲端點餐與營運系統
+<img src="./public/icons/icon.svg" alt="Chi Zha De logo" width="88" />
 
-  **Client-oriented Production System · React + TypeScript + Cloudflare Workers + D1**
+# Chi Zha De (吃炸的)
+### Restaurant Ordering & Store Operations System
 
-  以台灣實際營業的炸物店需求為背景，設計**可供店家操作的單店點餐與營運系統**：顧客線上點餐、現場 QR 點餐、商家接單與 Admin 管理。
-  重點是**需求落地、交易資料正確性、權限、安全發布與營運交付**，而不只是完成一個展示網站。
+**Real business workflow · React 19 · TypeScript · Hono · Cloudflare Workers · D1**
 
-  [顧客線上點餐](https://chizhade.com/) · [現場掃碼入口](https://chizhade.com/onsite) · [商家工作台（需授權）](https://chizhade.com/merchant) · [商品管理（需授權）](https://chizhade.com/admin)
+An ordering and operations platform designed around the day-to-day workflow of a real Taiwanese fried-food shop—from online ordering and on-site QR orders to kitchen operations and menu administration.
+
+**Engineering focus:** transaction correctness, clear authorization boundaries, concurrency control, operational recovery, and evidence-based delivery.
+
+[Production storefront](https://chizhade.com/) · [On-site ordering entry](https://chizhade.com/onsite) · [Merchant workspace (restricted)](https://chizhade.com/merchant) · [Admin console (restricted)](https://chizhade.com/admin)
+
+**Language: English · [繁體中文](./README.zh-TW.md)**
+
 </div>
 
-> **公開展示注意**：此網址連接真實店家，請勿為 Demo 送出正式訂單。Merchant / Admin 需要 Cloudflare Access 授權。此專案以真實店家業務需求為背景，**不宣稱有付費委託合約、客戶正式簽收、特定營收或 SLA**；對外交付狀態以[品質與驗收證據](docs/CLIENT_DELIVERY_ASSURANCE.md)為準。
+> **Live business, not a public test sandbox.** The storefront is connected to a real shop. Please do **not** place fake or interview-test orders. Merchant and Admin are protected by Cloudflare Access. A separate, seeded interview demo is [planned, not yet publicly available](docs/DEMO_ENVIRONMENT_PLAN.md). Code implementation and local tests are not claims of signed client acceptance, commercial SLAs, or measured uptime.
 
-## 01 · 店家需求與交付目標
+## 1. Business problem and delivery goals
 
-**業務問題**：尖峰時段電話／現場點單容易漏單、取餐時間難以協調，已售罄品項仍可能被誤點。店家需要簡單、低硬體成本、可直接在手機上操作的接單流程。
+Phone calls and walk-in orders become difficult to coordinate during busy periods. Orders can be missed, pickup expectations can become unclear, and an item may sell out while customers are still browsing.
 
-**交付目標**：整合「顧客選餐 → 送出訂單 → 商家接單／製作 → 顧客查看狀態／取餐」流程，並讓營業狀態、缺貨和訂單截止時間在顧客與商家間保持一致。
+The solution is a **single-store, mobile-first ordering workflow**, with explicit business rules rather than a generic shopping-cart demo:
 
-- **真實商家情境，三種操作角色**：顧客、Merchant、Admin；不為了展示而虛構多租戶需求。
-- **手機優先、低硬體門檻**：網頁＋PWA，店家不必添購專用 POS 設備。
-- **後端決定價格與訂單狀態**：前端僅提供互動與預覽，Cloudflare D1 保存權威資料。
-- **失敗情境也要正確**：重複送單、併發接單、資料過期、短缺調整、網路中斷都納入設計與測試。
+- **Customer:** browse categories, select portions and modifiers, check out, see pickup timing and order status.
+- **On-site customer:** enter through a QR code, with server-authoritative order source and no mandatory contact fields.
+- **Merchant:** accept, prepare, complete or reject orders; handle shortages, sold-out items, business availability and notifications.
+- **Admin:** maintain items, categories, prices and display settings under a separate authorization policy.
 
-## 02 · 功能展示
+The scope is intentionally limited to **one real shop**. This project does not claim to be a multi-tenant SaaS, payment gateway or full POS integration.
 
-| 角色 | 主要功能 | 入口 |
+## 2. Product walkthrough
+
+| Interface | Business capability | Access |
 | --- | --- | --- |
-| **Customer** | 分類菜單、份量與辣度選項、購物車、預計取餐時間、訂單狀態與允許期限內取消 | [線上點餐](https://chizhade.com/) |
-| **On-site QR** | 掃碼進入現場下單流程；由後端識別來源，現場單不需填姓名電話 | [現場點餐](https://chizhade.com/onsite) |
-| **Merchant** | 待接單／製作中／售罄、接單與完成、缺貨處理、暫停接單、通知與連線狀態 | [工作台](https://chizhade.com/merchant)（Access） |
-| **Admin** | 管理分類、商品、價格、圖片及展示設定；獨立角色授權 | [管理後台](https://chizhade.com/admin)（Access） |
+| **Customer ordering** | Menu, portions/spice modifiers, cart, authoritative quote, pickup ETA, cancellation rules | [Live storefront](https://chizhade.com/) |
+| **On-site QR** | Walk-in order flow with server-controlled source and capacity-aware scheduling | [On-site entry](https://chizhade.com/onsite) |
+| **Merchant operations** | Pending / In Progress / Sold Out, order transitions, stock controls, connection status and notifications | [Restricted Merchant UI](https://chizhade.com/merchant) |
+| **Admin operations** | Product/category management, pricing and image/display metadata | [Restricted Admin UI](https://chizhade.com/admin) |
 
-實際店家可能暫停接單，這不代表網站故障。公開頁面的即時營業狀態與售價，以正式系統為準。
+**Screenshots:** real UI captures still need to be added; see the [safe screenshot checklist](docs/PORTFOLIO_SCREENSHOTS.md). AI-generated mockups are **not** presented as application screenshots.
 
-## 03 · 交付品質與保障範圍
-
-商用系統除了正常操作，更要說清楚**故障時怎麼辦、誰負責，以及哪些情境已被測試**。下表是目前的**工程證據摘要**，不等於店家已簽收或正式 SLA：
-
-| 業務保障 | 已建立的工程機制 | 還需要的實際驗收 |
-| --- | --- | --- |
-| **不重複扣單、不錯價** | Idempotency、後端重新計價、D1 原子批次與 Snapshot | 真實操作／弱網路與菜單改價的情境驗證 |
-| **兩台手機操作不互相覆蓋** | 訂單狀態條件更新、CAS、Store Audit | 商家雙機 UAT |
-| **權限與個資保護** | Access JWT、角色隔離、Origin Guard、Opaque Order Token | 正式 Access 設定、新版本驗證、個資告知與保存政策 |
-| **發版失敗能停止與回退** | Release Gate、版本驗證與 Rollback SOP | 演練及最新部署證據 |
-| **店家持續收到新訂單** | Web Push + Merchant 5 秒輪詢、斷線提示 | 真實手機背景通知、現場提示音與營運告警 |
-| **資料與營業安全** | D1 Time Travel 可用、Scheduler Version Gate | 隔離復原演練、自然排程 Audit、故障時人工接單 SOP |
-
-**詳細交付檢查與缺口**：[客戶交付與品質保障矩陣](docs/CLIENT_DELIVERY_ASSURANCE.md)（包含需求驗收、資訊安全、監控、備份、保固／維護範本）。
-
-> **透明範圍**：倉庫有實作與本機測試，不代表每一項 Production 配置、手機 UAT、壓測、故障監控與客戶書面驗收均已完成。這些項目分別列為待驗證，而不是用「可上線」三字一筆帶過。
-
-## 04 · 系統架構
+## 3. Architecture
 
 ```mermaid
-flowchart TB
-  A["Customer / On-site PWA"] --> B["Cloudflare Worker"]
-  M["Merchant PWA"] --> B
-  D["Admin"] --> B
-  B --> H["Hono API（/api/*）"]
-  B --> R["React SPA 靜態資源"]
-  H --> V["驗證 / 授權 / 交易規則"]
-  V --> DB[("Cloudflare D1")]
-  H --> P["Web Push（通知）"]
-  C["Cron Trigger"] --> S["排程與版本啟用保護"]
-  S --> DB
-  CF["Cloudflare Access"] -. "保護 Merchant / Admin" .-> H
+flowchart TD
+  C["Customer / On-site PWA"] --> W["Cloudflare Worker"]
+  M["Merchant PWA"] --> W
+  A["Admin"] --> W
+  W --> SPA["React SPA assets"]
+  W --> API["Hono /api/*"]
+  API --> Rules["Authorization + business rules"]
+  Rules --> D1[("Cloudflare D1")]
+  API --> Push["Web Push (best-effort)"]
+  Cron["Cron Trigger"] --> Scheduler["Version-gated scheduler"]
+  Scheduler --> D1
+  Access["Cloudflare Access"] -. "Merchant / Admin authorization" .-> API
 ```
 
-| 層級 | 技術 |
+| Layer | Stack |
 | --- | --- |
-| Frontend | React 19、TypeScript、Vite、Responsive Web UI |
-| Backend | Cloudflare Workers、Hono |
-| Database | Cloudflare D1 / SQLite、SQL Migrations |
-| Auth & Security | Cloudflare Access JWT、角色分離、Origin／Fetch Metadata Guard |
-| Reliability | D1 原子交易、CAS、Idempotency、Audit Log |
-| Notifications | Service Worker、Web Push、5 秒 Merchant Polling fallback |
-| Test & Tooling | Vitest、Testing Library、TypeScript、ESLint、Wrangler |
+| Web | React 19, TypeScript, Vite, responsive interface, PWA |
+| API | Cloudflare Workers, Hono |
+| Database | Cloudflare D1 (SQLite), versioned SQL migrations |
+| Identity & security | Cloudflare Access JWT, role-separated audiences, Origin/Fetch Metadata guards |
+| Consistency | D1 atomic batches, compare-and-swap (CAS), idempotency, immutable order snapshots, audit |
+| Notifications | Service Worker, Web Push, five-second Merchant polling fallback |
+| Verification | Vitest, Testing Library, ESLint, TypeScript, Wrangler |
 
-## 05 · 工程重點（面試可深入討論）
+## 4. Engineering case studies
 
-### A. 避免重複訂單與錯價
+The interesting part of this system is what happens **when requests are repeated, state changes or a device goes offline**.
 
-**問題**：顧客連點送出、網路逾時重試，或確認價格後店家修改菜單。
+### 4.1 Duplicate orders and stale prices
 
-**處理**：使用 Idempotency Key 與請求指紋識別重試；建單時由 D1 重新計價，對照 Quote Fingerprint，將訂單與品項／Modifier Snapshot、通知意圖以原子批次寫入。錯誤或競態不留下半張訂單。
+**Failure scenario:** A customer taps Submit twice, retries after a timeout, or confirms a quote just as the menu price or availability changes.
 
-**查看程式**：[Order Creation](src/worker/order-creation.ts) · [Concurrency Tests](test/order-concurrency.test.ts) · [Atomicity Tests](test/order-atomicity.test.ts)
+**Design:** Normalize the order request and enforce an idempotency key and fingerprint; recalculate server-side prices from D1; validate the quote fingerprint; persist the order, line/modifier snapshots and notification intent atomically. Conflicting or stale requests must not leave partial order records.
 
-### B. 多裝置接單與店家狀態一致性
+**Evidence:** [Order creation](src/worker/order-creation.ts) · [Concurrency tests](test/order-concurrency.test.ts) · [Atomicity tests](test/order-atomicity.test.ts)
 
-**問題**：兩支手機同時接單／完成，或店家暫停接單的同時仍有顧客送出。
+### 4.2 Concurrent Merchant actions
 
-**處理**：訂單狀態使用條件式更新；商家開關使用 `state_version`、CAS、操作 ID 與 Audit；前端 Mutation 失敗不假裝成功，而是重新抓取權威狀態。
+**Failure scenario:** Two authorized devices accept or complete the same order, or the shop pauses while a customer is creating an order.
 
-**查看程式**：[Merchant Orders](src/worker/merchant-orders.ts) · [Store Operations](src/worker/store-operations.ts)
+**Design:** Conditional order-state transitions, store `state_version` compare-and-swap, operation IDs and audited state changes. A failed mutation does not optimistically overwrite the authoritative state.
 
-### C. 權限邊界與安全防護
+**Evidence:** [Merchant transitions](src/worker/merchant-orders.ts) · [Store operations](src/worker/store-operations.ts) · [Store tests](test/store-operations.test.ts)
 
-Merchant 與 Admin 具有不同 Cloudflare Access Audience。受保護 API 會驗證 JWT，Mutation 另外檢查 Origin／Fetch Metadata；公開建單與取消也有自己的 Origin Guard、輸入驗證與限流。前端隱藏按鈕不等於取得權限。
+### 4.3 Authorization and public API protection
 
-**查看程式**：[Authentication](src/worker/security.ts) · [Public Origin Guard](src/worker/public-origin.ts) · [Security Tests](test/public-origin-guard.test.ts)
+**Failure scenario:** Someone directly calls Merchant/Admin endpoints, or a cross-site page attempts a browser mutation.
 
-### D. 可控的每日自動營業
+**Design:** Separate Cloudflare Access JWT audiences and hostname allowlists for Merchant and Admin; exact same-origin checks for protected mutations; separate public Origin guards, request validation and rate limiting. UI-level hiding is not treated as authorization.
 
-23:15 後使用柔性收店規則；每日 17:30 恢復只針對明確的正常收店，不能覆蓋人工暫停或漏單保護。Scheduler Activation 預設關閉，並綁定核准的 Worker Version；版本不符或狀態不可信時 Fail Closed。
+**Evidence:** [Security boundary](src/worker/security.ts) · [Public origin guard](src/worker/public-origin.ts) · [Security tests](test/public-origin-guard.test.ts)
 
-**查看程式**：[Store Schedule](src/worker/store-schedule.ts) · [Scheduler Activation](src/worker/scheduler-activation.ts) · [Activation Tests](test/scheduler-activation.test.ts)
+### 4.4 Safe operating-hours automation
 
-### E. 通知失敗不等於訂單失敗
+**Failure scenario:** A scheduled task reopens a store that a person deliberately paused, or a stale Worker version runs newly introduced scheduling behavior.
 
-建立訂單與儲存通知意圖屬於資料交易；Web Push 屬於 Commit 後的附帶行為。推播失敗不能回滾已成立的訂單，Merchant 仍透過輪詢取得權威訂單列表。
+**Design:** A version-specific Scheduler Activation Gate, state/audit checks and CAS-based transitions. Normal closing and reopening rules do not override unknown, manually paused or missed-order states; unsafe conditions fail closed.
 
-**查看設計**：[Product Blueprint](docs/PRODUCT_BLUEPRINT.md)
+**Evidence:** [Store schedule](src/worker/store-schedule.ts) · [Scheduler authorization](src/worker/scheduler-activation.ts) · [Scheduler tests](test/scheduler-activation.test.ts)
 
-## 06 · 技術取捨
+### 4.5 Notifications are not the source of truth
 
-- **單 Worker 架構**：一間店用 React SPA + Hono API + D1，減少分離部署、環境與硬體維護成本。
-- **PWA 而非原生 App**：顧客掃碼即可使用，Merchant 可以加入手機主畫面；背景通知與音量能力仍受作業系統限制。
-- **Polling + Push**：推播提供提醒，輪詢與 D1 才是訂單狀態依據。
-- **不將排程等同直接寫入權限**：Cron 仍需經過 Store State、Version、CAS 與 Audit 的保護。
-- **不誇大產品範圍**：這是單店點餐／營運系統，不宣稱已具備金流、POS 硬體整合或 SaaS 多租戶能力。
+**Failure scenario:** A push provider fails after the order has already been committed.
 
-## 07 · 本機啟動與驗證
+**Design:** Store notification intent with the order; deliver push after commit; retain Merchant polling and D1 as the operational source of truth. A notification failure must not silently erase a valid order.
 
-需要 Node.js 與 npm。使用本機 D1，**不連線 Production D1**：
+**Evidence:** [Product and transaction blueprint](docs/PRODUCT_BLUEPRINT.md)
+
+## 5. Client delivery, quality assurance and limitations
+
+A real-shop system also needs an operational plan. **Implementation evidence is not the same as proven production reliability.**
+
+| Delivery concern | Engineering evidence | Still requires acceptance |
+| --- | --- | --- |
+| Duplicate/stale orders | Idempotency, re-pricing and atomic D1 tests | Slow-network and real-device scenarios |
+| Multi-device consistency | CAS, guarded transitions and audit | Two-device shop UAT |
+| Access control | JWT, role separation, same-origin guards | Fresh live Cloudflare Access checks |
+| Safe releases | Release gate and rollback runbooks | Periodic rollback exercise |
+| Data recovery | D1 Time Travel capability | Isolated recovery exercise; measured RPO/RTO |
+| Availability & incident response | Client disconnected states and polling fallback | External monitoring, alerts and an on-call/response procedure |
+| Performance | Unit/concurrency behavior tests | Representative peak-load test and latency metrics |
+| Privacy / maintenance | Data-minimizing access and technical safeguards | Business-approved retention/privacy notice and maintenance agreement |
+
+Detailed client-focused acceptance and remaining work: [Delivery and quality assurance checklist (Traditional Chinese)](docs/CLIENT_DELIVERY_ASSURANCE.md).
+
+**No unsupported claims:** no published uptime percentage, external penetration-test certification, signed client acceptance, production load capacity, warranty or SLA is asserted in this repository.
+
+## 6. Why these trade-offs?
+
+- **One Worker + D1:** keeps deployment and infrastructure manageable for a single shop.
+- **PWA rather than an app-store application:** QR access and low device overhead, with explicit acknowledgement of iOS/Android notification limits.
+- **Polling + Push:** push is an alert channel, not the authoritative order transport.
+- **Fail-closed scheduling and strict release gates:** safety and auditability take precedence over unverified automatic reopening.
+- **Separate demo deployment:** reviewers must never be able to mutate live shop data.
+
+## 7. Run locally
+
+Requires Node.js and npm. These commands use **local-only D1 state**, not the live database:
 
 ```bash
 npm install
@@ -134,7 +152,7 @@ npm run db:seed:local
 npm run dev
 ```
 
-啟動後開啟 `http://localhost:5173`。本機 Seed 僅供開發與測試，**商品售價不代表目前正式環境價格**。
+Open `http://localhost:5173`. Local seed prices are test fixtures, not the current production menu.
 
 ```bash
 npm run test:worker
@@ -143,19 +161,26 @@ npm run check
 npm run verify
 ```
 
-`npm run verify` 會進行本機驗證，不是 Production 部署。Windows PowerShell 可使用 `npm.cmd` 代替 `npm`。
+On Windows PowerShell, use `npm.cmd` if the `npm.ps1` shim is blocked. A successful local test suite does **not** establish live production behavior.
 
-## 08 · 專案文件與開發流程
+## 8. Engineering documentation
 
-- [客戶交付、品質保障與待驗收清單](docs/CLIENT_DELIVERY_ASSURANCE.md)
-- [產品規則與交易邊界](docs/PRODUCT_BLUEPRINT.md)
-- [正式發布／回滾流程](docs/DEPLOYMENT_RUNBOOK.md)
-- [Scheduler 版本啟用與安全](docs/SCHEDULER_ACTIVATION_RELEASE.md)
-- [主分支與 PR 開發規範](docs/MAIN_DEVELOPMENT_POLICY.md)
-- [面試展示截圖與安全注意事項](docs/PORTFOLIO_SCREENSHOTS.md)
+- [Product blueprint and failure cases](docs/PRODUCT_BLUEPRINT.md)
+- [Client acceptance and quality assurance](docs/CLIENT_DELIVERY_ASSURANCE.md)
+- [Safe demo environment plan](docs/DEMO_ENVIRONMENT_PLAN.md)
+- [Deployment and rollback runbook](docs/DEPLOYMENT_RUNBOOK.md)
+- [Scheduler release / activation model](docs/SCHEDULER_ACTIVATION_RELEASE.md)
+- [Repository development policy](docs/MAIN_DEVELOPMENT_POLICY.md)
+- [Screenshot and portfolio evidence checklist](docs/PORTFOLIO_SCREENSHOTS.md)
 
-**開發與交付方式**：以店家流程為需求來源，使用 Git Branch／PR、測試、驗收清單與 Release Gate 管理更動。本專案採 **AI-assisted development**，AI Coding Agent 協助實作與文件，工程品質需回到可檢查的程式碼、測試和實際商家驗收；沒有證據的客戶回饋與營運成效不會被包裝成成果。
+### Development approach
+
+AI coding agents were used to assist implementation, testing and documentation. Git history, bounded requirements, code review, repeatable tests and separate production release authorization are the accountability mechanisms. Engineering claims should be assessed against source code and acceptance evidence rather than the amount of AI-generated output.
 
 ---
 
-**English summary:** A client-oriented, real-world ordering and store-operations system built around a Taiwanese fried-food shop's workflows. React, TypeScript, Hono, Cloudflare Workers and D1. Focus: correct business transactions, authoritative pricing, idempotency, concurrency control, access boundaries, failure recovery, and explicit delivery / acceptance criteria. Actual customer sign-off and service-level guarantees are not claimed.
+<div align="center">
+
+**English** · [繁體中文](./README.zh-TW.md) · [Visit the live storefront](https://chizhade.com/)
+
+</div>
