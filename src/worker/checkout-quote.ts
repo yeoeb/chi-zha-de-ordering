@@ -1,3 +1,5 @@
+import { SPICE_GROUP_NAME, requiresModifierSelection } from "../shared/spice";
+
 export const MAX_QUANTITY_PER_LINE = 99;
 const MAX_CART_LINES = 50;
 const MAX_MODIFIER_OPTIONS_PER_LINE = 50;
@@ -26,7 +28,39 @@ export type PricedCart = {
 	total: number;
 };
 
-type CheckoutQuoteErrorCode =
+export async function createQuoteFingerprint(pricedCart: PricedCart) {
+	const items = pricedCart.items
+		.map((item) => {
+			const modifiers = [...item.modifiers]
+				.sort((left, right) => left.groupId - right.groupId || left.optionId - right.optionId)
+				.map((modifier) => ({
+					groupId: modifier.groupId,
+					groupName: modifier.groupName,
+					optionId: modifier.optionId,
+					name: modifier.name,
+					priceDelta: modifier.priceDelta,
+				}));
+			return {
+				menuItemId: item.menuItemId,
+				name: item.name,
+				quantity: item.quantity,
+				basePrice:
+					item.unitPrice - modifiers.reduce((total, modifier) => total + modifier.priceDelta, 0),
+				modifiers,
+				unitPrice: item.unitPrice,
+				lineTotal: item.lineTotal,
+			};
+		})
+		.sort((left, right) => JSON.stringify(left).localeCompare(JSON.stringify(right)));
+	const canonicalQuote = JSON.stringify({ version: 1, items, total: pricedCart.total });
+	const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(canonicalQuote));
+
+	return [...new Uint8Array(digest)]
+		.map((value) => value.toString(16).padStart(2, "0"))
+		.join("");
+}
+
+export type CheckoutQuoteErrorCode =
 	| "INVALID_REQUEST"
 	| "EMPTY_CART"
 	| "TOO_MANY_ITEMS"
@@ -41,15 +75,47 @@ type CheckoutQuoteErrorCode =
 	| "MISSING_REQUIRED_MODIFIER"
 	| "MULTIPLE_MODIFIER_SELECTIONS";
 
+export type CheckoutLineIssueCode =
+	| "UNKNOWN_ITEM"
+	| "INACTIVE_ITEM"
+	| "UNAVAILABLE_ITEM"
+	| "INVALID_MODIFIER_OPTION"
+	| "INACTIVE_MODIFIER_GROUP"
+	| "INACTIVE_MODIFIER_OPTION"
+	| "MISSING_REQUIRED_MODIFIER";
+
+export type CheckoutLineIssue = {
+	itemIndex: number;
+	menuItemId: number;
+	code: CheckoutLineIssueCode;
+	modifierOptionId?: number;
+};
+
 export class CheckoutQuoteError extends Error {
 	constructor(
 		readonly status: 400 | 422,
 		readonly code: CheckoutQuoteErrorCode,
 		message: string,
+		readonly lineIssues: CheckoutLineIssue[] = [],
 	) {
 		super(message);
 		this.name = "CheckoutQuoteError";
 	}
+}
+
+function createLineIssueError(
+	itemIndex: number,
+	selection: CheckoutLineSelection,
+	code: CheckoutLineIssueCode,
+	message: string,
+	modifierOptionId?: number,
+) {
+	return new CheckoutQuoteError(422, code, message, [{
+		itemIndex,
+		menuItemId: selection.menuItemId,
+		code,
+		...(modifierOptionId === undefined ? {} : { modifierOptionId }),
+	}]);
 }
 
 type QuoteCatalogRow = {
@@ -193,8 +259,10 @@ export async function validateAndPriceCart(
 		selections.map((selection) => query.bind(selection.menuItemId)),
 	);
 	const pricedItems: PricedCart["items"] = [];
+	const lineIssues: CheckoutLineIssue[] = [];
 
 	for (const [index, selection] of selections.entries()) {
+		try {
 		if (
 			!Number.isSafeInteger(selection.quantity) ||
 			selection.quantity <= 0 ||
@@ -211,15 +279,15 @@ export async function validateAndPriceCart(
 		const item = rows[0];
 
 		if (!item) {
-			throw new CheckoutQuoteError(422, "UNKNOWN_ITEM", `Menu item ${selection.menuItemId} does not exist`);
+			throw createLineIssueError(index, selection, "UNKNOWN_ITEM", `Menu item ${selection.menuItemId} does not exist`);
 		}
 
 		if (!item.categoryIsActive || item.itemIsArchived) {
-			throw new CheckoutQuoteError(422, "INACTIVE_ITEM", `Menu item ${selection.menuItemId} is not active`);
+			throw createLineIssueError(index, selection, "INACTIVE_ITEM", `Menu item ${selection.menuItemId} is not active`);
 		}
 
 		if (!item.itemIsAvailable) {
-			throw new CheckoutQuoteError(422, "UNAVAILABLE_ITEM", `Menu item ${selection.menuItemId} is unavailable`);
+			throw createLineIssueError(index, selection, "UNAVAILABLE_ITEM", `Menu item ${selection.menuItemId} is unavailable`);
 		}
 
 		if (new Set(selection.modifierOptionIds).size !== selection.modifierOptionIds.length) {
@@ -263,28 +331,34 @@ export async function validateAndPriceCart(
 			const option = optionRows.get(optionId);
 
 			if (!option || option.modifierGroupId === null) {
-				throw new CheckoutQuoteError(
-					422,
+				throw createLineIssueError(
+					index,
+					selection,
 					"INVALID_MODIFIER_OPTION",
 					`Modifier option ${optionId} does not belong to menu item ${selection.menuItemId}`,
+					optionId,
 				);
 			}
 
 			const group = groups.get(option.modifierGroupId);
 
 			if (!group?.isActive) {
-				throw new CheckoutQuoteError(
-					422,
+				throw createLineIssueError(
+					index,
+					selection,
 					"INACTIVE_MODIFIER_GROUP",
 					`Modifier option ${optionId} belongs to an inactive group`,
+					optionId,
 				);
 			}
 
 			if (!option.modifierOptionIsActive) {
-				throw new CheckoutQuoteError(
-					422,
+				throw createLineIssueError(
+					index,
+					selection,
 					"INACTIVE_MODIFIER_OPTION",
 					`Modifier option ${optionId} is inactive`,
+					optionId,
 				);
 			}
 
@@ -293,6 +367,9 @@ export async function validateAndPriceCart(
 
 		for (const group of groups.values()) {
 			if (!group.isActive) {
+				if (group.name === SPICE_GROUP_NAME) {
+					throw createLineIssueError(index, selection, "INACTIVE_MODIFIER_GROUP", "Spice configuration is inactive");
+				}
 				continue;
 			}
 
@@ -306,9 +383,10 @@ export async function validateAndPriceCart(
 				);
 			}
 
-			if (group.isRequired && selectionCount !== 1) {
-				throw new CheckoutQuoteError(
-					422,
+			if (requiresModifierSelection(group) && selectionCount !== 1) {
+				throw createLineIssueError(
+					index,
+					selection,
 					"MISSING_REQUIRED_MODIFIER",
 					`Modifier group ${group.name} requires exactly one option`,
 				);
@@ -357,6 +435,22 @@ export async function validateAndPriceCart(
 			lineTotal,
 			modifiers,
 		});
+		} catch (error) {
+			if (error instanceof CheckoutQuoteError && error.lineIssues.length > 0) {
+				lineIssues.push(...error.lineIssues);
+				continue;
+			}
+			throw error;
+		}
+	}
+
+	if (lineIssues.length > 0) {
+		throw new CheckoutQuoteError(
+			422,
+			lineIssues[0]!.code,
+			"One or more Cart lines are no longer available",
+			lineIssues,
+		);
 	}
 
 	const total = pricedItems.reduce((sum, item) => sum + item.lineTotal, 0);

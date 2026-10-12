@@ -1,10 +1,16 @@
 import { describe, expect, it } from "vitest";
+import { getDefaultOptionIds, getSpiceGroup, hasValidSpiceSelection, toSelectedModifier, type MenuItem } from "../src/react-app/customer-menu";
+import { restoreCartDraft, serializeCartDraft } from "../src/react-app/cart-draft";
 import {
 	calculateUnitPrice,
 	cartReducer,
 	createCartLine,
 	getCartLineSubtotal,
 	getCartTotal,
+	getCartItemCount,
+	toCheckoutItems,
+	MAX_CART_LINE_QUANTITY,
+	reconfigureCartLines,
 	type CartLine,
 	type SelectedModifier,
 } from "../src/react-app/cart";
@@ -27,6 +33,12 @@ const verySpicy: SelectedModifier = {
 	...mild,
 	optionId: 104,
 	optionName: "大辣",
+	priceDelta: 0,
+};
+const pepperPacket: SelectedModifier = {
+	...mild,
+	optionId: 105,
+	optionName: "辣粉另包",
 	priceDelta: 0,
 };
 const sliced: SelectedModifier = {
@@ -90,6 +102,15 @@ describe("cart identity and transitions", () => {
 		expect(cart).toHaveLength(2);
 	});
 
+	it("keeps 辣粉另包 mutually exclusive in line identity", () => {
+		const mildLine = createCartLine(item, [mild, sliced]);
+		const packetLine = createCartLine(item, [pepperPacket, sliced]);
+		expect(packetLine.id).not.toBe(mildLine.id);
+		expect(packetLine.selectedModifiers.filter((modifier) => modifier.groupId === mild.groupId)).toEqual([
+			pepperPacket,
+		]);
+	});
+
 	it("reconfigures only the targeted line and merges when persisted modifiers become identical", () => {
 		const mildLine = createCartLine(item, [mild, sliced]);
 		const plainLine = createCartLine(item, [notSpicy, sliced]);
@@ -115,6 +136,44 @@ describe("cart identity and transitions", () => {
 		expect(merged[0]?.quantity).toBe(2);
 	});
 
+	it("bulk reconfiguration preserves non-spice modifiers and merges all quantities", () => {
+		const mildLine: CartLine = { ...createCartLine(item, [mild, sliced]), quantity: 2 };
+		const hotLine: CartLine = { ...createCartLine(item, [verySpicy, sliced]), quantity: 3 };
+		const result = reconfigureCartLines([mildLine, hotLine], [
+			{ lineId: mildLine.id, selectedModifiers: [notSpicy, sliced] },
+			{ lineId: hotLine.id, selectedModifiers: [notSpicy, sliced] },
+		]);
+
+		expect(result.exceededQuantityLimit).toBe(false);
+		expect(result.lines).toHaveLength(1);
+		expect(result.lines[0]).toMatchObject({ quantity: 5, unitPrice: 85 });
+		expect(result.lines[0]?.selectedModifiers).toEqual([notSpicy, sliced]);
+	});
+
+	it("rejects an all-line spice merge that would exceed the backend line limit", () => {
+		const mildLine: CartLine = { ...createCartLine(item, [mild, sliced]), quantity: 60 };
+		const hotLine: CartLine = { ...createCartLine(item, [verySpicy, sliced]), quantity: 50 };
+		const original = [mildLine, hotLine];
+		const result = reconfigureCartLines(original, [
+			{ lineId: mildLine.id, selectedModifiers: [notSpicy, sliced] },
+			{ lineId: hotLine.id, selectedModifiers: [notSpicy, sliced] },
+		]);
+
+		expect(result).toEqual({ lines: original, exceededQuantityLimit: true });
+		expect(getCartTotal(result.lines)).toBe(getCartTotal(original));
+		expect(result.lines.reduce((total, line) => total + line.quantity, 0)).toBe(110);
+	});
+
+	it("never increases an existing cart line beyond 99", () => {
+		const line: CartLine = {
+			...createCartLine(item, [mild, sliced]),
+			quantity: MAX_CART_LINE_QUANTITY,
+		};
+
+		expect(cartReducer([line], { type: "increase", lineId: line.id })).toEqual([line]);
+		expect(cartReducer([line], { type: "add", line })).toEqual([line]);
+	});
+
 	it("keeps API-backed seasoning selections in cart-line identity without affecting price", () => {
 		const pepper = createCartLine(item, [mild, pepperSeasoning]);
 		const plum = createCartLine(item, [mild, plumSeasoning]);
@@ -128,18 +187,53 @@ describe("cart identity and transitions", () => {
 		expect(cart).toHaveLength(2);
 	});
 
-	it("increases, decreases without going negative, and removes explicitly", () => {
+	it("decreases 2 to 1 to 0 and preserves the same full line for recovery", () => {
 		const line = createCartLine(item, [mild, sliced]);
 		const one = cartReducer([], { type: "add", line });
 		const two = cartReducer(one, { type: "increase", lineId: line.id });
 		const backToOne = cartReducer(two, { type: "decrease", lineId: line.id });
-		const stillOne = cartReducer(backToOne, { type: "decrease", lineId: line.id });
-		const removed = cartReducer(stillOne, { type: "remove", lineId: line.id });
+		const removedAtZero = cartReducer(backToOne, { type: "decrease", lineId: line.id });
 
 		expect(two[0]?.quantity).toBe(2);
 		expect(backToOne[0]?.quantity).toBe(1);
-		expect(stillOne[0]?.quantity).toBe(1);
-		expect(removed).toEqual([]);
+		expect(removedAtZero).toEqual([{ ...line, quantity: 0 }]);
+		expect(cartReducer(removedAtZero, { type: "decrease", lineId: line.id })).toEqual(removedAtZero);
+		expect(cartReducer(removedAtZero, { type: "increase", lineId: line.id })).toEqual(one);
+		expect(cartReducer(removedAtZero, { type: "add", line })).toEqual(one);
+	});
+
+	it("excludes zero lines from count, total and the shared quote/order payload", () => {
+		const zero = { ...createCartLine(item, [mild, sliced, pepperSeasoning]), quantity: 0 };
+		const active = { ...createCartLine(item, [notSpicy, sliced]), quantity: 2 };
+		expect(getCartItemCount([zero, active])).toBe(2);
+		expect(getCartTotal([zero, active])).toBe(170);
+		expect(toCheckoutItems([zero, active])).toEqual([{ menuItemId: 1, quantity: 2, modifierOptionIds: [100, 201] }]);
+		expect(getCartTotal([zero])).toBe(0);
+		expect(getCartItemCount([zero])).toBe(0);
+		expect(toCheckoutItems([zero])).toEqual([]);
+	});
+
+	it("never changes zero lines during spice reconfiguration or loses their identity through a merge", () => {
+		const zero = { ...createCartLine(item, [mild, sliced, pepperSeasoning]), quantity: 0 };
+		const active = { ...createCartLine(item, [verySpicy, sliced]), quantity: 2 };
+		const changed = reconfigureCartLines([zero, active], [
+			{ lineId: zero.id, selectedModifiers: [notSpicy, sliced, pepperSeasoning] },
+			{ lineId: active.id, selectedModifiers: [notSpicy, sliced] },
+		]);
+		expect(changed.lines[0]).toBe(zero);
+		expect(changed.lines[1]).toMatchObject({ quantity: 2, selectedModifiers: [notSpicy, sliced] });
+		const matchingZero = { ...createCartLine(item, [notSpicy, sliced]), quantity: 0 };
+		const refused = reconfigureCartLines([matchingZero, active], [{ lineId: active.id, selectedModifiers: [notSpicy, sliced] }]);
+		expect(refused.zeroLineConflict).toBe(true);
+		expect(refused.lines).toEqual([matchingZero, active]);
+	});
+
+	it("restores a removed full line once without overwriting an identical replacement", () => {
+		const line: CartLine = { ...createCartLine(item, [pepperPacket, sliced]), quantity: 2 };
+		const restored = cartReducer([], { type: "restore", line });
+		const duplicateRestore = cartReducer(restored, { type: "restore", line });
+		expect(restored).toEqual([line]);
+		expect(duplicateRestore).toEqual([line]);
 	});
 });
 
@@ -157,5 +251,43 @@ describe("cart calculations", () => {
 
 		expect(getCartLineSubtotal(first)).toBe(180);
 		expect(getCartTotal([first, second])).toBe(220);
+	});
+});
+
+describe("spice defaults and zero-quantity drafts", () => {
+	const product: MenuItem = {
+		id: 9, name: "薯條", description: "", price: 40, isAvailable: true,
+		modifierGroups: [
+			{ id: 5, name: "調味", selectionType: "single", isRequired: true, options: [{ id: 16, name: "胡椒", priceDelta: 0 }] },
+			{ id: 90, name: "辣度", selectionType: "single", isRequired: false, options: [
+				{ id: 901, name: "小辣", priceDelta: 0 }, { id: 900, name: "不辣", priceDelta: 0 },
+			] },
+		],
+	};
+	it("selects the real non-spicy option even for legacy optional groups and non-default ordering", () => {
+		expect(getDefaultOptionIds(product)).toEqual({ 5: 16, 90: 900 });
+		expect(hasValidSpiceSelection(product, [])).toBe(false);
+		const group = getSpiceGroup(product)!;
+		expect(hasValidSpiceSelection(product, [toSelectedModifier(group, group.options[1]!)])).toBe(true);
+		expect(getDefaultOptionIds({ ...product, modifierGroups: [{ ...group, options: [group.options[0]!] }] })).toEqual({});
+	});
+	it("does not invent spice options for the configured 招牌炸蛋 exception", () => {
+		const egg = { ...product, id: 5, name: "招牌炸蛋", modifierGroups: [] };
+		expect(getSpiceGroup(egg)).toBeUndefined();
+		expect(getDefaultOptionIds(egg)).toEqual({});
+		expect(hasValidSpiceSelection(egg, [])).toBe(true);
+	});
+	it("persists only positive lines, drops legacy zero/negative lines on startup, and fills a missing active spice default", () => {
+		const modifiers = product.modifierGroups.map((group) => toSelectedModifier(group, group.options.find((option) => option.id === getDefaultOptionIds(product)[group.id])!));
+		const line = { ...createCartLine(product, modifiers), quantity: 0 };
+		const categories = [{ id: 1, name: "炸物", items: [product] }];
+		expect(JSON.parse(serializeCartDraft([line], 1000)).items).toEqual([]);
+		const legacy = JSON.stringify({ version: 1, updatedAt: 1000, items: [
+			{ menuItemId: 9, quantity: 0, modifierOptionIds: [16, 900] },
+			{ menuItemId: 9, quantity: -1, modifierOptionIds: [16, 900] },
+			{ menuItemId: 9, quantity: 1, modifierOptionIds: [16] },
+		] });
+		expect(restoreCartDraft(legacy, categories, 1000)).toMatchObject({ lines: [{ ...line, quantity: 1 }], skippedCount: 2 });
+		expect(cartReducer([line], { type: "increase", lineId: line.id })[0]).toEqual({ ...line, quantity: 1 });
 	});
 });

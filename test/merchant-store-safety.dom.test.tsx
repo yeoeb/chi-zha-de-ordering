@@ -50,8 +50,9 @@ function createFetchMock(options: MockOptions = {}) {
 		if (url === "/api/menu" && method === "GET") return json({ categories: [] });
 		if (url === "/api/store" && method === "GET") return json(store);
 		if (url.includes("/api/merchant/orders/") && method === "POST") {
+			const current = orders.find((order) => url.includes(`/orders/${order.id}/`));
 			orders = [];
-			return json({ order: { status: "rejected" } });
+			return json({ order: { ...current, status: "rejected" } });
 		}
 		if (url === "/api/merchant/store/resume" && method === "POST") {
 			const body = JSON.parse(String(init?.body)) as { operationId: string };
@@ -127,7 +128,9 @@ describe("Merchant Store safety DOM", () => {
 		vi.stubGlobal("fetch", mock);
 		vi.mocked(confirm).mockReturnValue(false);
 		render(<MerchantView />);
-		await screen.findByTestId("store-control");
+		const control = await screen.findByTestId("store-control");
+		expect(control.classList.contains("paused")).toBe(true);
+		expect(screen.getByRole("button", { name: "恢復接單" })).toBeTruthy();
 		const readsBefore = callsTo(mock, "/api/store", "GET").length;
 
 		await userEvent.click(button(".resume-store-button"));
@@ -431,6 +434,7 @@ describe("Merchant Store safety DOM", () => {
 		expect(screen.getByText("辣粉另包")).toBeTruthy();
 
 		await userEvent.click(reject);
+		await userEvent.click(screen.getByRole("button", { name: "確認拒單" }));
 
 		await waitFor(() => expect(document.querySelector(".reject-button")).toBeNull());
 		expect(screen.getByTestId("store-control")).toBe(controlBefore);

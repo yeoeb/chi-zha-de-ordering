@@ -1,7 +1,16 @@
+import { setupOrderAcceptanceTests } from "./order-acceptance-fixture";
 import { env, exports } from "cloudflare:workers";
 import { beforeAll, beforeEach, describe, expect, it } from "vitest";
 import app from "../src/worker/index";
-import { createOrder, type OrderSnapshot } from "../src/worker/order-creation";
+import {
+	createQuoteFingerprint,
+	validateAndPriceCart,
+} from "../src/worker/checkout-quote";
+import {
+	createOrder,
+	type CreateOrderRequest,
+	type OrderSnapshot,
+} from "../src/worker/order-creation";
 import {
 	deliverNewOrderNotification,
 	FakeNotificationProvider,
@@ -16,13 +25,15 @@ import {
 	type WebPushSender,
 } from "../src/worker/web-push";
 
-const orderRequest = {
+let orderRequest: CreateOrderRequest;
+const orderRequestItems = [{ menuItemId: 1, quantity: 2, modifierOptionIds: [] }];
+const orderRequestBase = {
 	customerName: "測試顧客",
-	customerPhone: "0912-345-678",
+	customerPhone: "0912345678",
 	specialOrder: false,
-	items: [{ menuItemId: 1, quantity: 2, modifierOptionIds: [] }],
+	items: orderRequestItems,
 };
-const fixedNow = new Date("2026-09-12T04:00:00.000Z");
+const fixedNow = new Date("2026-09-12T10:00:00.000Z");
 const subscription = {
 	endpoint: "https://push.example.test/subscription-1",
 	expirationTime: null,
@@ -33,6 +44,8 @@ const vapid = {
 	privateKey: "test-private-key",
 	subject: "mailto:merchant@example.test",
 };
+
+setupOrderAcceptanceTests();
 
 beforeAll(async () => {
 	await env.DB.batch([
@@ -56,8 +69,14 @@ beforeEach(async () => {
 		env.DB.prepare("DELETE FROM notification_deliveries"),
 		env.DB.prepare("DELETE FROM order_item_modifiers"),
 		env.DB.prepare("DELETE FROM order_items"),
-		env.DB.prepare("DELETE FROM orders"),
+		 env.DB.prepare("DELETE FROM orders"),
 	]);
+	orderRequest = {
+		...orderRequestBase,
+		quoteFingerprint: await createQuoteFingerprint(
+			await validateAndPriceCart(env.DB, orderRequestItems),
+		),
+	};
 });
 
 function toNotification(order: OrderSnapshot) {
@@ -152,7 +171,7 @@ describe("durable new Order notification intent", () => {
 			fixedNow,
 		);
 
-		const retryAt = new Date("2026-09-12T04:02:00.000Z");
+		const retryAt = new Date("2026-09-12T10:02:00.000Z");
 		const retried = await retryNotificationDelivery(
 			env.DB,
 			result.notificationDeliveryId,
@@ -229,6 +248,7 @@ describe("durable new Order notification intent", () => {
 describe("Web Push provider", () => {
 	it("builds only the minimal Merchant queue pointer payload", () => {
 		const message = buildWebPushMessage({
+			id: "stable-order-id",
 			orderNumber: "CZ-TEST",
 			total: 999,
 			estimatedReadyAt: fixedNow.toISOString(),
@@ -237,12 +257,20 @@ describe("Web Push provider", () => {
 		const payload = JSON.parse(message.data) as Record<string, unknown>;
 
 		expect(payload).toEqual({
-			title: "吃炸的｜新訂單",
-			body: "新訂單 #CZ-TEST",
-			data: { url: "/merchant" },
+			title: "新訂單",
+			body: "預計 18:00・2 項餐點",
+			data: { url: "/merchant", tag: "order:stable-order-id" },
 		});
 		expect(message.data).not.toContain("999");
 		expect(message.data).not.toContain("香雞排");
+		const duplicate = JSON.parse(buildWebPushMessage({
+			id: "stable-order-id",
+			orderNumber: "CZ-TEST-RETRY",
+			total: 999,
+			estimatedReadyAt: fixedNow.toISOString(),
+			items: [],
+		}).data) as { data: { tag: string } };
+		expect(duplicate.data.tag).toBe("order:stable-order-id");
 	});
 
 	it("delivers to a stored subscription without exposing its credentials", async () => {

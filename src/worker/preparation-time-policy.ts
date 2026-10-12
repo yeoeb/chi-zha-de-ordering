@@ -4,12 +4,16 @@ export type PreparationTimePolicyInput = {
 	specialExtraMinutes: number;
 	ordersAhead: number;
 	specialOrdersAhead: number;
+	minimumLeadMinutes?: number;
 };
 
 export type PreparationTimeEstimate = {
 	leadMinutes: number;
 	estimatedReadyAt: string;
 };
+
+const PREPARATION_BUFFER_MINUTES = 5;
+const PREPARATION_ROUNDING_MINUTES = 5;
 
 function requireNonNegativeInteger(value: number, name: string) {
 	if (!Number.isInteger(value) || value < 0) {
@@ -26,6 +30,7 @@ export function getPreparationTimeEstimate(
 	requireNonNegativeInteger(input.specialExtraMinutes, "specialExtraMinutes");
 	requireNonNegativeInteger(input.ordersAhead, "ordersAhead");
 	requireNonNegativeInteger(input.specialOrdersAhead, "specialOrdersAhead");
+	requireNonNegativeInteger(input.minimumLeadMinutes ?? 0, "minimumLeadMinutes");
 
 	if (input.specialOrdersAhead > input.ordersAhead) {
 		throw new RangeError("specialOrdersAhead must not exceed ordersAhead");
@@ -39,10 +44,25 @@ export function getPreparationTimeEstimate(
 		input.basePrepMinutes +
 		input.ordersAhead * input.normalOrderMinutes +
 		input.specialOrdersAhead * input.specialExtraMinutes;
-	const leadMinutes = Math.max(input.basePrepMinutes, calculatedLeadMinutes);
+	const existingLeadMinutes = roundPreparationDurationMinutes(
+		Math.max(input.basePrepMinutes, calculatedLeadMinutes),
+	);
+	const leadMinutes = Math.max(existingLeadMinutes, input.minimumLeadMinutes ?? 0);
+	const initialReadyAt = now.getTime() + leadMinutes * 60_000;
+	const roundingMilliseconds = PREPARATION_ROUNDING_MINUTES * 60_000;
 
 	return {
 		leadMinutes,
-		estimatedReadyAt: new Date(now.getTime() + leadMinutes * 60_000).toISOString(),
+		estimatedReadyAt: new Date(
+			Math.ceil(initialReadyAt / roundingMilliseconds) * roundingMilliseconds,
+		).toISOString(),
 	};
+}
+
+export function roundPreparationDurationMinutes(estimatedDurationMinutes: number) {
+	requireNonNegativeInteger(estimatedDurationMinutes, "estimatedDurationMinutes");
+	return Math.ceil(
+		(estimatedDurationMinutes + PREPARATION_BUFFER_MINUTES) /
+			PREPARATION_ROUNDING_MINUTES,
+	) * PREPARATION_ROUNDING_MINUTES;
 }

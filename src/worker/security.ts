@@ -6,11 +6,13 @@ export type SecurityBindings = {
 	ADMIN_DEV_BYPASS?: string;
 	ADMIN_DEV_ACTOR_SUBJECT?: string;
 	ADMIN_HOSTNAME?: string;
+	ADMIN_HOSTNAMES?: string;
 	CF_ACCESS_AUD?: string;
 	CF_ACCESS_TEAM_DOMAIN?: string;
 	MERCHANT_DEV_BYPASS?: string;
 	MERCHANT_DEV_ACTOR_SUBJECT?: string;
 	MERCHANT_HOSTNAME?: string;
+	MERCHANT_HOSTNAMES?: string;
 	ORDER_RATE_LIMITER?: RateLimit;
 	PUBLIC_WRITE_RATE_LIMIT_DEV_BYPASS?: string;
 };
@@ -76,11 +78,23 @@ async function verifyCloudflareAccessIdentity(token: string, teamDomain: string,
 		: null;
 }
 
-function hasExpectedHostname(requestUrl: string, expectedHostname: string | undefined) {
-	const normalized = expectedHostname?.trim().toLowerCase();
-	if (!normalized) return false;
+function configuredHostnames(expectedHostname?: string, expectedHostnames: readonly string[] = []) {
+	const hostnames = [expectedHostname, ...expectedHostnames]
+		.map((hostname) => hostname?.trim().toLowerCase())
+		.filter((hostname): hostname is string => Boolean(hostname));
+	if (hostnames.some((hostname) => {
+		if (!/^[a-z0-9.-]+$/.test(hostname)) return true;
+		try { return new URL(`https://${hostname}`).origin !== `https://${hostname}`; }
+		catch { return true; }
+	})) return new Set<string>();
+	return new Set(hostnames);
+}
+
+function hasExpectedHostname(requestUrl: string, expectedHostname?: string, expectedHostnames?: readonly string[]) {
+	const hostnames = configuredHostnames(expectedHostname, expectedHostnames);
 	try {
-		return new URL(requestUrl).hostname.toLowerCase() === normalized;
+		const request = new URL(requestUrl);
+		return request.protocol === "https:" && hostnames.has(request.host.toLowerCase());
 	} catch {
 		return false;
 	}
@@ -90,6 +104,7 @@ export async function authenticateMerchantRequest(input: {
 	devBypass?: string;
 	devActorSubject?: string;
 	expectedHostname?: string;
+	expectedHostnames?: readonly string[];
 	requestUrl: string;
 	accessAudience?: string;
 	accessTeamDomain?: string;
@@ -101,7 +116,7 @@ export async function authenticateMerchantRequest(input: {
 		return subject ? { subject } : null;
 	}
 
-	if (!hasExpectedHostname(input.requestUrl, input.expectedHostname)) return null;
+	if (!hasExpectedHostname(input.requestUrl, input.expectedHostname, input.expectedHostnames)) return null;
 	const accessAudience = input.accessAudience?.trim();
 	const accessTeamDomain = input.accessTeamDomain?.trim();
 	const accessToken = input.accessToken?.trim();
@@ -122,6 +137,7 @@ export async function authenticateAdminRequest(input: {
 	devBypass?: string;
 	devActorSubject?: string;
 	expectedHostname?: string;
+	expectedHostnames?: readonly string[];
 	requestUrl: string;
 	accessAudience?: string;
 	accessTeamDomain?: string;
@@ -133,20 +149,45 @@ export async function authenticateAdminRequest(input: {
 
 export function isMerchantMutationRequestAllowed(input: {
 	method: string;
+	devBypass?: string;
 	expectedHostname?: string;
+	expectedHostnames?: readonly string[];
+	requestUrl?: string;
 	origin?: string;
 	secFetchSite?: string;
 }) {
 	if (["GET", "HEAD", "OPTIONS"].includes(input.method.toUpperCase())) return true;
-	const expectedHostname = input.expectedHostname?.trim().toLowerCase();
-	if (!expectedHostname || input.secFetchSite !== "same-origin" || !input.origin) return false;
+	if (input.secFetchSite !== "same-origin" || !input.origin) return false;
 
-	const expectedOrigin = `https://${expectedHostname}`;
+	if (input.devBypass === "true") {
+		try {
+			const requestUrl = new URL(input.requestUrl ?? "");
+			const isLoopback = ["localhost", "127.0.0.1", "::1"].includes(requestUrl.hostname);
+			if (isLoopback) {
+				const origin = new URL(input.origin);
+				return (
+					input.origin === origin.origin &&
+					origin.origin === requestUrl.origin &&
+					origin.username === "" &&
+					origin.password === "" &&
+					origin.pathname === "/" &&
+					origin.search === "" &&
+					origin.hash === ""
+				);
+			}
+		} catch {
+			return false;
+		}
+	}
+
+	const hostnames = configuredHostnames(input.expectedHostname, input.expectedHostnames);
 	try {
 		const origin = new URL(input.origin);
 		return (
-			origin.origin === expectedOrigin &&
-			input.origin === expectedOrigin &&
+			origin.protocol === "https:" &&
+			hostnames.has(origin.host) &&
+			input.origin === origin.origin &&
+			(!input.requestUrl || new URL(input.requestUrl).origin === origin.origin) &&
 			origin.username === "" &&
 			origin.password === "" &&
 			origin.pathname === "/" &&
@@ -161,6 +202,7 @@ export function isMerchantMutationRequestAllowed(input: {
 export async function isMerchantRequestAllowed(input: {
 	devBypass?: string;
 	expectedHostname?: string;
+	expectedHostnames?: readonly string[];
 	requestUrl: string;
 	accessAudience?: string;
 	accessTeamDomain?: string;
@@ -171,7 +213,7 @@ export async function isMerchantRequestAllowed(input: {
 		return true;
 	}
 
-	if (!hasExpectedHostname(input.requestUrl, input.expectedHostname)) {
+	if (!hasExpectedHostname(input.requestUrl, input.expectedHostname, input.expectedHostnames)) {
 		return false;
 	}
 

@@ -1,12 +1,16 @@
-const SHELL_CACHE = "chi-zha-de-shell-v2";
+const SHELL_CACHE = "chi-zha-de-shell-v4";
 const MERCHANT_PATH = "/merchant";
 const DEFAULT_PUSH_TITLE = "吃炸的｜新訂單";
 const DEFAULT_PUSH_BODY = "有一筆新訂單待處理";
 const SHELL_FILES = [
 	"/",
-	"/manifest.webmanifest",
-	"/icons/icon-192.png",
-	"/icons/icon-512.png",
+	"/manifest.webmanifest?v=red-zha-1",
+	"/icons/icon.svg?v=red-zha-1",
+	"/icons/favicon-32.png?v=red-zha-1",
+	"/favicon.ico?v=red-zha-1",
+	"/icons/apple-touch-icon-180.png?v=red-zha-1",
+	"/icons/icon-192.png?v=red-zha-1",
+	"/icons/icon-512.png?v=red-zha-1",
 ];
 
 self.addEventListener("install", (event) => {
@@ -88,14 +92,27 @@ self.addEventListener("push", (event) => {
 		typeof payload.body === "string" && payload.body.trim()
 			? payload.body.trim().slice(0, 200)
 			: DEFAULT_PUSH_BODY;
+	const notificationTag =
+		typeof payload.data?.tag === "string" && payload.data.tag.startsWith("order:")
+			? payload.data.tag
+			: "new-order";
 	event.waitUntil(
 		self.registration.showNotification(title, {
 			body,
 			icon: "/icons/icon-192.png",
 			badge: "/icons/icon-192.png",
-			tag: "new-order",
+			vibrate: [200, 100, 200],
+			tag: notificationTag,
 			data: { url: MERCHANT_PATH },
 		}),
+	);
+});
+
+self.addEventListener("message", (event) => {
+	if (event.data?.type !== "CLOSE_ORDER_NOTIFICATION" || typeof event.data.orderId !== "string") return;
+	event.waitUntil(
+		self.registration.getNotifications({ tag: `order:${event.data.orderId}` })
+			.then((notifications) => notifications.forEach((notification) => notification.close())),
 	);
 });
 
@@ -120,6 +137,7 @@ self.addEventListener("notificationclick", (event) => {
 					}
 				});
 				if (merchantClient) {
+					merchantClient.postMessage({ type: "MERCHANT_NOTIFICATION_OPEN" });
 					return merchantClient.focus();
 				}
 				return self.clients.openWindow(targetUrl);

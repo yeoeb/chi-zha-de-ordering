@@ -1,6 +1,13 @@
+import { setupOrderAcceptanceTests } from "./order-acceptance-fixture";
 import { env } from "cloudflare:workers";
 import { beforeAll, describe, expect, it } from "vitest";
+import {
+	createQuoteFingerprint,
+	validateAndPriceCart,
+} from "../src/worker/checkout-quote";
 import { createOrder } from "../src/worker/order-creation";
+
+setupOrderAcceptanceTests();
 
 beforeAll(async () => {
 	await env.DB.batch([
@@ -18,6 +25,10 @@ beforeAll(async () => {
 
 describe("Order atomicity", () => {
 	it("rolls back the Order when a required snapshot write fails", async () => {
+		const items = [{ menuItemId: 1, quantity: 1, modifierOptionIds: [] }];
+		const quoteFingerprint = await createQuoteFingerprint(
+			await validateAndPriceCart(env.DB, items),
+		);
 		await expect(
 			createOrder(
 				env.DB,
@@ -25,10 +36,11 @@ describe("Order atomicity", () => {
 					customerName: "測試顧客",
 					customerPhone: "0912345678",
 					specialOrder: false,
-					items: [{ menuItemId: 1, quantity: 1, modifierOptionIds: [] }],
+					quoteFingerprint,
+					items,
 				},
 				"atomic-failure-key",
-				new Date("2026-09-06T04:00:00.000Z"),
+				new Date("2026-09-06T10:00:00.000Z"),
 			),
 		).rejects.toThrow(/forced order item failure/);
 
@@ -36,5 +48,8 @@ describe("Order atomicity", () => {
 			.prepare("SELECT COUNT(*) AS count FROM orders")
 			.first<{ count: number }>();
 		expect(orderCount?.count).toBe(0);
+		for (const table of ["order_items", "order_item_modifiers", "web_push_notification_deliveries"]) {
+			expect(await env.DB.prepare(`SELECT COUNT(*) AS count FROM ${table}`).first()).toEqual({ count: 0 });
+		}
 	});
 });

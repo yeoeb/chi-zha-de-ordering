@@ -7,6 +7,16 @@ export type StoreSettingsRow = {
 	special_extra_minutes: number;
 	state_version: number;
 	origin_disclosure: string | null;
+	busy_mode: number;
+	missed_order_count: number;
+	auto_pause_reason: "missed_orders" | null;
+	pause_reason: string | null;
+	scheduled_closed_business_date: string | null;
+	weekly_business_hours: string | null;
+	last_order_time: string | null;
+	customer_phone_mode: "hidden" | "optional";
+	show_product_images: number;
+	new_order_sound_enabled: number;
 };
 
 export const MAX_STORE_STATE_VERSION = Number.MAX_SAFE_INTEGER;
@@ -45,7 +55,17 @@ export async function getStoreSettings(db: D1Database) {
 				normal_order_minutes,
 				special_extra_minutes,
 				state_version,
-				origin_disclosure
+				origin_disclosure,
+				busy_mode,
+				missed_order_count,
+				auto_pause_reason
+				,pause_reason
+				,scheduled_closed_business_date
+				,weekly_business_hours
+				,last_order_time
+				,customer_phone_mode
+				,show_product_images
+				,new_order_sound_enabled
 			FROM store_settings
 			WHERE id = 1`,
 		)

@@ -1,7 +1,11 @@
+import { setupOrderAcceptanceTests } from "./order-acceptance-fixture";
 import { env, exports } from "cloudflare:workers";
 import { beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { dailyTestSchedule } from "./business-hours-fixture";
 
 const orderItems = [{ menuItemId: 1, quantity: 1, modifierOptionIds: [10] }];
+
+setupOrderAcceptanceTests();
 
 beforeAll(async () => {
 	await env.DB.batch([
@@ -28,7 +32,8 @@ beforeEach(async () => {
 		env.DB.prepare("UPDATE store_settings SET is_accepting_orders = 1 WHERE id = 1"),
 		env.DB.prepare("UPDATE store_settings SET state_version = 0 WHERE id = 1"),
 		env.DB.prepare("DELETE FROM store_state_events"),
-		env.DB.prepare("UPDATE menu_items SET is_available = 1 WHERE id = 1"),
+		env.DB.prepare("UPDATE store_settings SET weekly_business_hours = ? WHERE id = 1").bind(JSON.stringify(dailyTestSchedule)),
+		env.DB.prepare("UPDATE menu_items SET is_available = 1, sold_out_business_date = NULL WHERE id = 1"),
 		env.DB.prepare("UPDATE menu_items SET is_available = 0 WHERE id = 2"),
 	]);
 });
@@ -41,16 +46,25 @@ function postQuote() {
 	});
 }
 
-function postOrder(idempotencyKey: string) {
+async function postOrder(idempotencyKey: string) {
+	let quoteFingerprint = "0".repeat(64);
+	const quoteResponse = await postQuote();
+	if (quoteResponse.ok) {
+		quoteFingerprint = ((await quoteResponse.json()) as { quoteFingerprint: string })
+			.quoteFingerprint;
+	}
 	return exports.default.fetch("https://example.com/api/orders", {
 		method: "POST",
 		headers: {
 			"content-type": "application/json",
+			Origin: "https://example.com",
+			"Sec-Fetch-Site": "same-origin",
 			"Idempotency-Key": idempotencyKey,
 		},
 		body: JSON.stringify({
 			customerName: "王小明",
 			customerPhone: "0912345678",
+			quoteFingerprint,
 			items: orderItems,
 		}),
 	});
@@ -93,6 +107,16 @@ async function getMenuItem(itemId: number) {
 }
 
 describe("Merchant item availability", () => {
+	it("keeps concurrent same-target sold-out operations idempotent", async () => {
+		const responses = await Promise.all([
+			postAction("/api/merchant/menu-items/1/sold-out"),
+			postAction("/api/merchant/menu-items/1/sold-out"),
+		]);
+
+		expect(responses.map((response) => response.status)).toEqual([200, 200]);
+		expect((await getMenuItem(1)).item?.isAvailable).toBe(false);
+	});
+
 	it("marks an item sold out, keeps it visible, rejects new checkout, and restores it", async () => {
 		expect((await getMenuItem(1)).item?.isAvailable).toBe(true);
 

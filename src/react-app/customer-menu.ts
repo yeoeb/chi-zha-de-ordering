@@ -1,4 +1,5 @@
 import type { SelectedModifier } from "./cart";
+import { DEFAULT_SPICE_NAME, SPICE_GROUP_NAME, requiresModifierSelection } from "../shared/spice";
 
 export type ModifierOption = {
 	id: number;
@@ -32,6 +33,8 @@ export type MenuCategory = {
 	items: MenuItem[];
 };
 
+export const POPULAR_MENU_SECTION_ID = -1;
+
 export type MainOptionDefinition = {
 	id: string;
 	label: string;
@@ -54,26 +57,44 @@ type ProductModifierPresentation = {
 // Stable IDs from the human-approved 43-item production menu configuration.
 const productModifierPresentation: Record<number, ProductModifierPresentation> = {
 	1: { defaultOptionIds: { 1: 1, 2: 5 }, mainGroupIds: [2], spiceGroupId: 1 },
-	4: { defaultOptionIds: { 3: 7 }, mainGroupIds: [], spiceGroupId: 3 },
+	3: { defaultOptionIds: { 8: 29 }, mainGroupIds: [8] },
+	4: { defaultOptionIds: { 3: 7, 7: 27 }, mainGroupIds: [7], spiceGroupId: 3 },
 	6: { defaultOptionIds: { 4: 11 }, mainGroupIds: [], spiceGroupId: 4 },
 	9: { defaultOptionIds: { 5: 16 }, mainGroupIds: [5] },
 	10: { defaultOptionIds: { 6: 18 }, mainGroupIds: [6] },
 };
 
-export const spiceChoices = ["不辣", "小辣", "中辣", "大辣"] as const;
+export const spiceChoices = ["不辣", "微辣", "小辣", "中辣", "大辣", "辣粉另包"] as const;
 export type SpiceChoice = (typeof spiceChoices)[number];
 
-const mainOptionGroupNames = new Set(["調味", "調味料", "切法"]);
+const mainOptionGroupNames = new Set(["份量", "調味", "調味料", "切法"]);
 const seasoningOffLabels = new Set(["不加調味", "原味"]);
 
 export function isPopularItem(item: MenuItem) {
 	return Boolean(item.isPopular);
 }
 
+export function buildCustomerMenuSections(categories: MenuCategory[]): MenuCategory[] {
+	const popularItems = categories.flatMap((category) =>
+		category.items.filter((item) => isPopularItem(item)),
+	);
+	if (popularItems.length === 0) return categories;
+
+	return [
+		{ id: POPULAR_MENU_SECTION_ID, name: "人氣精選", items: popularItems },
+		...categories
+			.map((category) => ({
+				...category,
+				items: category.items.filter((item) => !isPopularItem(item)),
+			}))
+			.filter((category) => category.items.length > 0),
+	];
+}
+
 export function getSpiceGroup(item: MenuItem) {
 	const configuredId = productModifierPresentation[item.id]?.spiceGroupId;
 	return item.modifierGroups.find(
-		(group) => group.id === configuredId || (configuredId === undefined && group.name === "辣度"),
+		(group) => group.id === configuredId || group.name === SPICE_GROUP_NAME,
 	);
 }
 
@@ -92,8 +113,8 @@ export function getMainOptionDefinitions(item: MenuItem): MainOptionDefinition[]
 export function getSpecialOptionChoices(item: MenuItem): SpecialOptionChoice[] {
 	const mainDefinitions = getMainOptionDefinitions(item);
 	const mainGroupIds = new Set(mainDefinitions.map((definition) => definition.group.id));
-	const hasSeasoningOffChoice = mainDefinitions.some((definition) =>
-		definition.group.options.some((option) => option.name === "不加調味"),
+	const hasSeasoningGroup = mainDefinitions.some((definition) =>
+		definition.group.name === "調味" || definition.group.name === "調味料",
 	);
 
 	return item.modifierGroups.flatMap((group) => {
@@ -109,7 +130,7 @@ export function getSpecialOptionChoices(item: MenuItem): SpecialOptionChoice[] {
 
 		const option = group.options[0];
 		if (!option || option.priceDelta !== 0) return [];
-		if (hasSeasoningOffChoice && seasoningOffLabels.has(option.name)) return [];
+		if (hasSeasoningGroup && seasoningOffLabels.has(option.name)) return [];
 
 		return [{
 			id: `special-${group.id}-${option.id}`,
@@ -125,15 +146,24 @@ export function getDefaultOptionIds(item: MenuItem) {
 	const configuredDefaults = productModifierPresentation[item.id]?.defaultOptionIds ?? {};
 
 	for (const group of item.modifierGroups) {
-		if (!group.isRequired) continue;
+		if (!requiresModifierSelection(group)) continue;
 		const configuredOption = group.options.find(
 			(option) => option.id === configuredDefaults[group.id],
 		);
-		const selectedOption = configuredOption ?? group.options[0];
+		const selectedOption = group.name === SPICE_GROUP_NAME
+			? group.options.find((option) => option.name === DEFAULT_SPICE_NAME)
+			: configuredOption ?? group.options[0];
 		if (selectedOption) selected[group.id] = selectedOption.id;
 	}
 
 	return selected;
+}
+
+export function hasValidSpiceSelection(item: MenuItem, modifiers: SelectedModifier[]) {
+	const group = getSpiceGroup(item);
+	if (!group) return true;
+	const selected = modifiers.filter((modifier) => modifier.groupId === group.id);
+	return selected.length === 1 && group.options.some((option) => option.id === selected[0]?.optionId);
 }
 
 export function toSelectedModifier(

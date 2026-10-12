@@ -1,5 +1,8 @@
 # Project guidance
 
+- Use latest GitHub `main` as the sole stable development baseline. Create `feature/*` or `fix/*` branches and merge tested work through a reviewed PR. Follow `docs/MAIN_DEVELOPMENT_POLICY.md`.
+- A push or merge to `main` does not authorize Cloudflare Production deployment, remote D1 mutation, or Scheduler activation; each requires its independent Release Gate.
+
 - Product: 吃炸的 (`chi-zha-de-ordering`), a single-store ordering system. Do not add multi-tenancy.
 - Stack: TypeScript, React, Vite, Hono, Cloudflare Workers, and Cloudflare D1.
 - Keep development local-first. Do not deploy, push, or add CI/CD or production infrastructure without an explicit task.

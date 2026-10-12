@@ -1,6 +1,9 @@
 import { env, exports } from "cloudflare:workers";
 import { beforeAll, beforeEach, describe, expect, it } from "vitest";
 import {
+	listActiveMerchantOrders,
+	listMerchantOrderHistoryForBusinessDate,
+	listRecentMerchantOrderHistory,
 	MerchantOrderError,
 	transitionMerchantOrder,
 	type MerchantOrderAction,
@@ -58,6 +61,8 @@ async function insertOrder({
 	estimatedReadyAt = fixedEta,
 	itemName = "雞排快照",
 	customerNote = null,
+	packagingPreference = "together",
+	orderSource = "online",
 }: {
 	id: string;
 	status: OrderStatus;
@@ -65,6 +70,8 @@ async function insertOrder({
 	estimatedReadyAt?: string;
 	itemName?: string;
 	customerNote?: string | null;
+	packagingPreference?: "together" | "separate_spicy";
+	orderSource?: "online" | "onsite";
 }) {
 	const acceptedAt = status === "accepted" || status === "completed" ? "2026-09-06T04:10:00.000Z" : null;
 	const completedAt = status === "completed" ? "2026-09-06T04:30:00.000Z" : null;
@@ -74,22 +81,24 @@ async function insertOrder({
 		env.DB
 			.prepare(
 				`INSERT INTO orders (
-					id, public_lookup_token, order_number, status, total_amount, estimated_ready_at, created_at,
+					id, public_lookup_token, order_number, status, order_source, total_amount, estimated_ready_at, created_at,
 					accepted_at, completed_at, rejected_at, customer_name, customer_phone,
-					customer_note, special_order, idempotency_key, request_fingerprint
-				) VALUES (?, ?, ?, ?, 90, ?, ?, ?, ?, ?, '王小明', '0912345678', ?, 0, ?, ?)`,
+					customer_note, packaging_preference, special_order, idempotency_key, request_fingerprint
+				) VALUES (?, ?, ?, ?, ?, 90, ?, ?, ?, ?, ?, '王小明', '0912345678', ?, ?, 0, ?, ?)`,
 			)
 			.bind(
 				id,
 				lookupToken(id),
 				`ORDER-${id}`,
 				status,
+				orderSource,
 				estimatedReadyAt,
 				createdAt,
 				acceptedAt,
 				completedAt,
 				rejectedAt,
 				customerNote,
+				packagingPreference,
 				`key-${id}`,
 				"a".repeat(64),
 			),
@@ -134,6 +143,31 @@ async function expectIllegal(orderId: string, action: MerchantOrderAction) {
 }
 
 describe("Merchant Order state machine", () => {
+	it("filters history by the selected Asia/Taipei deadline date", async () => {
+		await insertOrder({ id: "taipei-day-one", status: "completed", estimatedReadyAt: "2026-09-06T15:59:00.000Z" });
+		await insertOrder({ id: "taipei-day-two", status: "rejected", estimatedReadyAt: "2026-09-06T16:00:00.000Z" });
+
+		const firstDay = await listMerchantOrderHistoryForBusinessDate(env.DB, "2026-09-06", fixedNow);
+		const secondDay = await listMerchantOrderHistoryForBusinessDate(env.DB, "2026-09-07", fixedNow);
+
+		expect(firstDay.map((candidate) => candidate.id)).toEqual(["taipei-day-one"]);
+		expect(secondDay.map((candidate) => candidate.id)).toEqual(["taipei-day-two"]);
+	});
+
+	it("keeps accepted Orders active only before the pickup deadline without fabricating completion", async () => {
+		await insertOrder({ id: "before-deadline", status: "accepted", estimatedReadyAt: "2026-09-06T05:01:00.000Z" });
+		await insertOrder({ id: "at-deadline", status: "accepted", estimatedReadyAt: fixedNowIso });
+		await insertOrder({ id: "after-deadline", status: "accepted", estimatedReadyAt: "2026-09-06T04:59:00.000Z" });
+
+		const active = await listActiveMerchantOrders(env.DB, fixedNow);
+		const history = await listRecentMerchantOrderHistory(env.DB, 50, fixedNow);
+
+		expect(active.map((order) => order.id)).toEqual(["before-deadline"]);
+		expect(history.map((order) => order.id)).toEqual(expect.arrayContaining(["at-deadline", "after-deadline"]));
+		expect((await readStatus("at-deadline"))).toMatchObject({ status: "accepted", completed_at: null });
+		expect((await readStatus("after-deadline"))).toMatchObject({ status: "accepted", completed_at: null });
+	});
+
 	it("accepts pending Orders and sets only accepted_at", async () => {
 		await insertOrder({ id: "accept-order", status: "pending" });
 
@@ -191,6 +225,40 @@ describe("Merchant Order state machine", () => {
 		});
 	});
 
+	it("re-evaluates only pending onsite deadlines after an early completion", async () => {
+		await env.DB.prepare(
+			"UPDATE store_settings SET base_prep_minutes = 15, normal_order_minutes = 5, special_extra_minutes = 10 WHERE id = 1",
+		).run();
+		await insertOrder({
+			id: "completed-capacity",
+			status: "accepted",
+			estimatedReadyAt: "2026-09-06T05:20:00.000Z",
+		});
+		await insertOrder({
+			id: "fixed-online",
+			status: "pending",
+			estimatedReadyAt: "2026-09-06T05:40:00.000Z",
+		});
+		await insertOrder({
+			id: "waiting-onsite",
+			status: "pending",
+			orderSource: "onsite",
+			estimatedReadyAt: "2026-09-06T05:45:00.000Z",
+		});
+
+		await transitionMerchantOrder(env.DB, "completed-capacity", "complete", fixedNow);
+
+		expect((await readStatus("waiting-onsite"))?.estimated_ready_at).toBe(
+			"2026-09-06T05:05:00.000Z",
+		);
+		expect((await readStatus("fixed-online"))?.estimated_ready_at).toBe(
+			"2026-09-06T05:40:00.000Z",
+		);
+		expect((await readStatus("completed-capacity"))?.estimated_ready_at).toBe(
+			"2026-09-06T05:20:00.000Z",
+		);
+	});
+
 	it.each<[OrderStatus, MerchantOrderAction]>([
 		["pending", "complete"],
 		["accepted", "reject"],
@@ -230,6 +298,33 @@ describe("Merchant Order state machine", () => {
 		expect((await readStatus("reject-wins"))?.status).toBe("rejected");
 	});
 
+	it("allows exactly one of concurrent accept and reject operations to win", async () => {
+		await insertOrder({ id: "concurrent-decision", status: "pending" });
+		const results = await Promise.allSettled([
+			transitionMerchantOrder(env.DB, "concurrent-decision", "accept", fixedNow),
+			transitionMerchantOrder(env.DB, "concurrent-decision", "reject", fixedNow),
+		]);
+
+		expect(results.filter((result) => result.status === "fulfilled")).toHaveLength(1);
+		const rejected = results.find((result) => result.status === "rejected");
+		expect(rejected?.status === "rejected" ? rejected.reason : null).toMatchObject({
+			code: "ILLEGAL_ORDER_TRANSITION",
+		});
+		expect(["accepted", "rejected"]).toContain((await readStatus("concurrent-decision"))?.status);
+	});
+
+	it("completes an accepted Order once under a concurrent double tap", async () => {
+		await insertOrder({ id: "concurrent-complete", status: "accepted" });
+		const results = await Promise.allSettled([
+			transitionMerchantOrder(env.DB, "concurrent-complete", "complete", fixedNow),
+			transitionMerchantOrder(env.DB, "concurrent-complete", "complete", fixedNow),
+		]);
+
+		expect(results.filter((result) => result.status === "fulfilled")).toHaveLength(1);
+		expect(results.filter((result) => result.status === "rejected")).toHaveLength(1);
+		expect((await readStatus("concurrent-complete"))?.status).toBe("completed");
+	});
+
 	it("returns 404 for a missing Order", async () => {
 		await expect(
 			transitionMerchantOrder(env.DB, "missing-order", "accept", fixedNow),
@@ -254,7 +349,8 @@ describe("Merchant Order API", () => {
 			status: "pending",
 			createdAt: "2026-09-06T04:00:00.000Z",
 			estimatedReadyAt: "2026-09-06T06:30:00.000Z",
-			customerNote: "辣粉另包",
+			customerNote: "雞排不要切",
+			packagingPreference: "separate_spicy",
 		});
 		await insertOrder({
 			id: "accepted",
@@ -277,6 +373,7 @@ describe("Merchant Order API", () => {
 			orders: Array<{
 				id: string;
 				customerNote: string | null;
+				packagingPreference: string;
 				items: Array<{
 					name: string;
 					unitPrice: number;
@@ -284,15 +381,43 @@ describe("Merchant Order API", () => {
 				}>;
 			}>;
 		};
+		const historyResponse = await exports.default.fetch(
+			"https://example.com/api/merchant/orders/history?date=2026-09-06",
+		);
+		const historyResult = (await historyResponse.json()) as {
+			history: Array<{
+				id: string;
+				status: OrderStatus;
+				items: Array<{ name: string; unitPrice: number }>;
+			}>;
+		};
 
 		expect(response.status).toBe(200);
-		expect(result.orders.map((order) => order.id)).toEqual(["newer", "accepted", "oldest"]);
-		expect(result.orders[2].customerNote).toBe("辣粉另包");
-		expect(result.orders[2].items[0]).toMatchObject({
+		expect(result.orders.map((order) => order.id)).toEqual(["newer", "oldest"]);
+		expect(result.orders[1].customerNote).toBe("雞排不要切");
+		expect(result.orders[1].packagingPreference).toBe("separate_spicy");
+		expect(result.orders[1].items[0]).toMatchObject({
 			name: "雞排快照",
 			unitPrice: 90,
 			modifiers: [{ groupName: "辣度快照", name: "小辣快照", priceDelta: 5 }],
 		});
+		expect(historyResponse.status).toBe(200);
+		expect(historyResult.history.map((order) => [order.id, order.status])).toEqual([
+			["rejected", "rejected"],
+			["completed", "completed"],
+			["accepted", "accepted"],
+		]);
+		expect(historyResult.history[0].items[0]).toMatchObject({ name: "雞排快照", unitPrice: 90 });
+	});
+
+	it("rejects malformed, future, and out-of-window Merchant history dates", async () => {
+		for (const date of ["not-a-date", "2099-01-01", "2020-01-01"]) {
+			const response = await exports.default.fetch(
+				`https://example.com/api/merchant/orders/history?date=${date}`,
+			);
+			expect(response.status).toBe(400);
+			expect(await response.json()).toMatchObject({ error: { code: "INVALID_HISTORY_DATE" } });
+		}
 	});
 
 	it("exposes guarded explicit action endpoints", async () => {

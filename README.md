@@ -2,6 +2,11 @@
 
 Local-first baseline for the single-store 吃炸的 ordering system. It uses React, Vite, Hono, Cloudflare Workers, and a locally emulated Cloudflare D1 database.
 
+The latest GitHub `main` is the stable development baseline. Start features on
+`feature/*` and fixes on `fix/*`, then merge tested work through a reviewed PR.
+GitHub updates do not deploy Cloudflare Production; an independent Release Gate
+is required. See [Main development policy](docs/MAIN_DEVELOPMENT_POLICY.md).
+
 ## Local setup
 
 ```sh
@@ -17,6 +22,7 @@ The Vite development server serves the React SPA and runs `/api/*` through the H
 
 ```sh
 npm run check
+npm run verify
 ```
 
 Local D1 data is stored under `.wrangler/` and is intentionally not committed.

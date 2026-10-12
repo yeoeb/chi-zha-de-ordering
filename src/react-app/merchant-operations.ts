@@ -1,27 +1,50 @@
+import { uiCopy } from "./ui-copy";
+
 export type MerchantModifier = {
 	groupName: string;
 	name: string;
 };
 
 export type MerchantOrderItem = {
+	id?: string;
+	menuItemId?: number;
 	name: string;
+	unitPrice?: number;
 	quantity: number;
 	lineTotal: number;
 	modifiers: MerchantModifier[];
 };
 
+export type MerchantSpiceGroup = {
+	name: string;
+	className: "none" | "mild" | "small" | "medium" | "large" | "other" | "unspecified";
+	items: Array<MerchantOrderItem & { displayModifiers: MerchantModifier[] }>;
+};
+
 export type MerchantOrder = {
 	id: string;
 	orderNumber: string;
-	status: "pending" | "accepted";
+	status: "pending" | "accepted" | "completed" | "rejected" | "cancelled";
+	orderSource?: "online" | "onsite";
 	total: number;
+	originalTotal?: number;
+	shortagePolicy?: "continue_available" | "cancel_entire_order" | null;
+	shortageRevision?: number;
+	cancelledAt?: string | null;
+	cancellationReason?: "customer_cancelled" | "shortage_cancelled" | "all_items_unavailable" | null;
 	estimatedReadyAt: string;
 	createdAt: string;
+	acceptedAt?: string | null;
+	completedAt?: string | null;
+	rejectedAt?: string | null;
+	rejectionReason?: "merchant_rejected" | "auto_rejected_unanswered" | null;
 	customerName: string;
 	customerPhone: string;
 	customerNote: string | null;
+	packagingPreference: "together" | "separate_spicy";
 	specialOrder: boolean;
 	items: MerchantOrderItem[];
+	shortages?: Array<{ orderItemId: string; name: string; quantity: number; amountDeducted: number }>;
 };
 
 export type MerchantMenuItem = {
@@ -46,24 +69,70 @@ export type DeadlineState = {
 
 export function getDeadlineState(estimatedReadyAt: string, now = new Date()): DeadlineState {
 	const differenceMs = new Date(estimatedReadyAt).getTime() - now.getTime();
+	if (!Number.isFinite(differenceMs)) {
+		return { className: "normal", label: uiCopy.common.deadlineMissing };
+	}
 	if (differenceMs < 0) {
 		return {
 			className: "overdue",
-			label: `已逾時 ${Math.max(1, Math.ceil(Math.abs(differenceMs) / 60_000))} 分`,
+			label: `${uiCopy.merchant.overduePrefix}${Math.max(1, Math.ceil(Math.abs(differenceMs) / 60_000))}${uiCopy.merchant.minutesSuffix}`,
 		};
 	}
 
 	const minutes = Math.max(1, Math.ceil(differenceMs / 60_000));
 	return {
 		className: minutes <= 5 ? "urgent" : minutes <= 10 ? "approaching" : "normal",
-		label: `剩 ${minutes} 分`,
+		label: `${uiCopy.merchant.remainingTimePrefix}${minutes}${uiCopy.merchant.minutesSuffix}`,
 	};
 }
 
 export function sortOrdersByReadyDeadline(orders: MerchantOrder[]) {
 	return [...orders].sort((left, right) => {
+		const leftDeadline = new Date(left.estimatedReadyAt).getTime();
+		const rightDeadline = new Date(right.estimatedReadyAt).getTime();
 		const deadlineDifference =
-			new Date(left.estimatedReadyAt).getTime() - new Date(right.estimatedReadyAt).getTime();
+			(Number.isFinite(leftDeadline) ? leftDeadline : Number.POSITIVE_INFINITY) -
+			(Number.isFinite(rightDeadline) ? rightDeadline : Number.POSITIVE_INFINITY);
 		return deadlineDifference || left.createdAt.localeCompare(right.createdAt) || left.id.localeCompare(right.id);
+	});
+}
+
+const SPICE_PRESENTATION: Record<string, { order: number; className: MerchantSpiceGroup["className"] }> = {
+	"不辣": { order: 0, className: "none" },
+	"微辣": { order: 1, className: "mild" },
+	"小辣": { order: 2, className: "small" },
+	"中辣": { order: 3, className: "medium" },
+	"大辣": { order: 4, className: "large" },
+};
+
+export function groupMerchantItemsBySpice(items: MerchantOrderItem[]): MerchantSpiceGroup[] {
+	const groups = new Map<string, MerchantSpiceGroup>();
+	for (const item of items) {
+		const packet = item.modifiers.find(
+			(modifier) => modifier.groupName === "辣度" && modifier.name === "辣粉另包",
+		);
+		const spice = item.modifiers.find(
+			(modifier) => modifier.groupName === "辣度" && modifier.name !== "辣粉另包",
+		);
+		const name = spice?.name ?? (packet ? "不辣" : "未指定辣度");
+		const presentation = SPICE_PRESENTATION[name] ?? {
+			order: spice ? 90 : 99,
+			className: spice ? "other" as const : "unspecified" as const,
+		};
+		let group = groups.get(name);
+		if (!group) {
+			group = { name, className: presentation.className, items: [] };
+			groups.set(name, group);
+		}
+		group.items.push({
+			...item,
+			displayModifiers: item.modifiers.filter((modifier) => modifier !== spice),
+		});
+	}
+
+	return [...groups.values()].sort((left, right) => {
+		const leftOrder = SPICE_PRESENTATION[left.name]?.order ?? (left.name === "未指定辣度" ? 99 : 90);
+		const rightOrder = SPICE_PRESENTATION[right.name]?.order ?? (right.name === "未指定辣度" ? 99 : 90);
+		return leftOrder - rightOrder || left.name.localeCompare(right.name, "zh-Hant");
 	});
 }

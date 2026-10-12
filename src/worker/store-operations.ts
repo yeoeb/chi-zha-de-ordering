@@ -289,7 +289,10 @@ export async function performStoreOperation(input: {
 			db
 				.prepare(
 					`UPDATE store_settings
-					SET is_accepting_orders = ?, state_version = state_version + 1
+					SET is_accepting_orders = ?, state_version = state_version + 1,
+						auto_pause_reason = NULL,
+						pause_reason = CASE WHEN ? = 0 THEN 'manual_pause' ELSE NULL END,
+						scheduled_closed_business_date = NULL
 					WHERE id = 1
 						AND EXISTS (
 							SELECT 1
@@ -300,7 +303,7 @@ export async function performStoreOperation(input: {
 								AND from_state_version = store_settings.state_version
 						)`,
 				)
-				.bind(target, request.operationId),
+				.bind(target, target, request.operationId),
 			db.prepare("SELECT is_accepting_orders, state_version FROM store_settings WHERE id = 1"),
 		]);
 

@@ -1,3 +1,4 @@
+import { setupOrderAcceptanceTests } from "./order-acceptance-fixture";
 import { env, exports } from "cloudflare:workers";
 import { beforeAll, beforeEach, describe, expect, it } from "vitest";
 import app from "../src/worker/index";
@@ -8,6 +9,8 @@ const adminHeaders = {
 	Origin: "https://example.com",
 	"Sec-Fetch-Site": "same-origin",
 };
+
+setupOrderAcceptanceTests();
 
 beforeAll(async () => {
 	await env.DB.batch([
@@ -213,15 +216,21 @@ describe("Admin menu API", () => {
 	});
 
 	it("archives and restores without deleting or rewriting historical snapshots", async () => {
+		const confirmedQuote = (await (await quoteAdminItem()).json()) as {
+			quoteFingerprint: string;
+		};
 		const creation = await exports.default.fetch("https://example.com/api/orders", {
 			method: "POST",
 			headers: {
 				"content-type": "application/json",
+				Origin: "https://example.com",
+				"Sec-Fetch-Site": "same-origin",
 				"Idempotency-Key": "admin-history-order",
 			},
 			body: JSON.stringify({
 				customerName: "歷史顧客",
 				customerPhone: "0912345678",
+				quoteFingerprint: confirmedQuote.quoteFingerprint,
 				items: [{ menuItemId: 700, quantity: 1, modifierOptionIds: [] }],
 			}),
 		});

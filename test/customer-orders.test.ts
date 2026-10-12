@@ -44,6 +44,7 @@ async function insertOrder(
 	id: string,
 	status: OrderStatus = "pending",
 	customerNote: string | null = null,
+	packagingPreference: "together" | "separate_spicy" = "together",
 ) {
 	const acceptedAt = status === "accepted" || status === "completed" ? "2026-09-06T05:15:00.000Z" : null;
 	const completedAt = status === "completed" ? "2026-09-06T05:45:00.000Z" : null;
@@ -55,9 +56,9 @@ async function insertOrder(
 				`INSERT INTO orders (
 					id, public_lookup_token, order_number, status, total_amount, estimated_ready_at, created_at,
 					accepted_at, completed_at, rejected_at, customer_name, customer_phone,
-					customer_note, special_order, idempotency_key, request_fingerprint
+					customer_note, packaging_preference, special_order, idempotency_key, request_fingerprint
 				) VALUES (?, ?, ?, ?, 90, ?, '2026-09-06T05:00:00.000Z', ?, ?, ?, '王小明',
-					'0912345678', ?, 0, ?, ?)`,
+					'0912345678', ?, ?, 0, ?, ?)`,
 			)
 			.bind(
 				id,
@@ -69,6 +70,7 @@ async function insertOrder(
 				completedAt,
 				rejectedAt,
 				customerNote,
+				packagingPreference,
 				`key-${id}`,
 				"c".repeat(64),
 			),
@@ -114,7 +116,7 @@ describe("GET /api/orders/by-token/:token", () => {
 	);
 
 	it("returns stored item and modifier snapshots after current menu changes", async () => {
-		await insertOrder("snapshot-order", "pending", "雞排不要切、辣粉另包");
+		await insertOrder("snapshot-order", "pending", "雞排不要切", "separate_spicy");
 		await env.DB.batch([
 			env.DB.prepare("UPDATE menu_items SET name = '豪大雞排', price = 150 WHERE id = 1"),
 			env.DB.prepare("UPDATE modifier_groups SET name = '新版辣度' WHERE id = 1"),
@@ -130,6 +132,7 @@ describe("GET /api/orders/by-token/:token", () => {
 			order: {
 				total: number;
 				customerNote: string | null;
+				packagingPreference: string;
 				items: Array<{
 					name: string;
 					unitPrice: number;
@@ -142,7 +145,8 @@ describe("GET /api/orders/by-token/:token", () => {
 		expect(response.status).toBe(200);
 		expect(result.order).toMatchObject({
 			total: 90,
-			customerNote: "雞排不要切、辣粉另包",
+			customerNote: "雞排不要切",
+			packagingPreference: "separate_spicy",
 			items: [
 				{
 					name: "雞排快照",
@@ -157,6 +161,16 @@ describe("GET /api/orders/by-token/:token", () => {
 	it("returns a no-store 404 for an unknown Order", async () => {
 		const response = await exports.default.fetch(
 			`https://example.com/api/orders/by-token/${"f".repeat(64)}`,
+		);
+
+		expect(response.status).toBe(404);
+		expect(response.headers.get("Cache-Control")).toContain("no-store");
+		expect(await response.json()).toMatchObject({ error: { code: "ORDER_NOT_FOUND" } });
+	});
+
+	it("rejects malformed lookup tokens without exposing a different error", async () => {
+		const response = await exports.default.fetch(
+			"https://example.com/api/orders/by-token/not-a-token",
 		);
 
 		expect(response.status).toBe(404);

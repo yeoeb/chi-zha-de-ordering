@@ -1,20 +1,33 @@
-export type OrderStatus = "pending" | "accepted" | "completed" | "rejected";
+import { advancePendingOnsiteOrders } from "./order-scheduling";
+import { getStoreBusinessDateRange } from "../shared/business-date";
+import { getStoreSettings } from "./store-settings";
+
+export type OrderStatus = "pending" | "accepted" | "completed" | "rejected" | "cancelled";
 
 export type MerchantOrder = {
 	id: string;
 	orderNumber: string;
 	status: OrderStatus;
+	orderSource: "online" | "onsite";
 	total: number;
+	originalTotal: number;
+	shortagePolicy: "continue_available" | "cancel_entire_order" | null;
+	shortageRevision: number;
+	cancelledAt: string | null;
+	cancellationReason: "customer_cancelled" | "shortage_cancelled" | "all_items_unavailable" | null;
 	estimatedReadyAt: string;
 	createdAt: string;
 	acceptedAt: string | null;
 	completedAt: string | null;
 	rejectedAt: string | null;
+	rejectionReason: "merchant_rejected" | "auto_rejected_unanswered" | null;
 	customerName: string;
 	customerPhone: string;
 	customerNote: string | null;
+	packagingPreference: "together" | "separate_spicy";
 	specialOrder: boolean;
 	items: Array<{
+		id: string;
 		menuItemId: number;
 		name: string;
 		unitPrice: number;
@@ -26,6 +39,12 @@ export type MerchantOrder = {
 			name: string;
 			priceDelta: number;
 		}>;
+	}>;
+	shortages: Array<{
+		orderItemId: string;
+		name: string;
+		quantity: number;
+		amountDeducted: number;
 	}>;
 };
 
@@ -48,15 +67,23 @@ type MerchantOrderRow = {
 	orderId: string;
 	orderNumber: string;
 	orderStatus: OrderStatus;
+	orderSource: "online" | "onsite";
 	totalAmount: number;
+	originalTotalAmount: number | null;
+	shortagePolicy: MerchantOrder["shortagePolicy"];
+	shortageRevision: number;
+	cancelledAt: string | null;
+	cancellationReason: MerchantOrder["cancellationReason"];
 	estimatedReadyAt: string;
 	createdAt: string;
 	acceptedAt: string | null;
 	completedAt: string | null;
 	rejectedAt: string | null;
+	rejectionReason: MerchantOrder["rejectionReason"];
 	customerName: string;
 	customerPhone: string;
 	customerNote: string | null;
+	packagingPreference: "together" | "separate_spicy";
 	specialOrder: number;
 	orderItemId: string | null;
 	menuItemId: number | null;
@@ -64,6 +91,8 @@ type MerchantOrderRow = {
 	unitPrice: number | null;
 	quantity: number | null;
 	lineTotal: number | null;
+	unavailableQuantity: number | null;
+	amountDeducted: number | null;
 	modifierOptionId: number | null;
 	modifierGroupName: string | null;
 	modifierOptionName: string | null;
@@ -74,15 +103,23 @@ const SNAPSHOT_SELECT = `SELECT
 	orders.id AS orderId,
 	orders.order_number AS orderNumber,
 	orders.status AS orderStatus,
+	orders.order_source AS orderSource,
 	orders.total_amount AS totalAmount,
+	orders.original_total_amount AS originalTotalAmount,
+	orders.shortage_policy AS shortagePolicy,
+	orders.shortage_revision AS shortageRevision,
+	orders.cancelled_at AS cancelledAt,
+	orders.cancellation_reason AS cancellationReason,
 	orders.estimated_ready_at AS estimatedReadyAt,
 	orders.created_at AS createdAt,
 	orders.accepted_at AS acceptedAt,
 	orders.completed_at AS completedAt,
 	orders.rejected_at AS rejectedAt,
+	orders.rejection_reason AS rejectionReason,
 	orders.customer_name AS customerName,
 	orders.customer_phone AS customerPhone,
 	orders.customer_note AS customerNote,
+	orders.packaging_preference AS packagingPreference,
 	orders.special_order AS specialOrder,
 	order_items.id AS orderItemId,
 	order_items.menu_item_id AS menuItemId,
@@ -90,12 +127,15 @@ const SNAPSHOT_SELECT = `SELECT
 	order_items.unit_price AS unitPrice,
 	order_items.quantity AS quantity,
 	order_items.line_total AS lineTotal,
+	order_item_shortages.unavailable_quantity AS unavailableQuantity,
+	order_item_shortages.amount_deducted AS amountDeducted,
 	order_item_modifiers.modifier_option_id AS modifierOptionId,
 	order_item_modifiers.modifier_group_name AS modifierGroupName,
 	order_item_modifiers.modifier_option_name AS modifierOptionName,
 	order_item_modifiers.price_delta AS modifierPriceDelta
 FROM orders
 LEFT JOIN order_items ON order_items.order_id = orders.id
+LEFT JOIN order_item_shortages ON order_item_shortages.order_item_id = order_items.id
 LEFT JOIN order_item_modifiers ON order_item_modifiers.order_item_id = order_items.id`;
 
 const SNAPSHOT_ORDER = `ORDER BY
@@ -121,18 +161,27 @@ function buildMerchantOrders(rows: MerchantOrderRow[]) {
 			const order: MerchantOrder = {
 				id: row.orderId,
 				orderNumber: row.orderNumber,
-				status: row.orderStatus,
+				status: row.cancelledAt ? "cancelled" : row.orderStatus,
+				orderSource: row.orderSource,
 				total: row.totalAmount,
+				originalTotal: row.originalTotalAmount ?? row.totalAmount,
+				shortagePolicy: row.orderSource === "onsite" ? null : row.shortagePolicy,
+				shortageRevision: row.shortageRevision,
+				cancelledAt: row.cancelledAt,
+				cancellationReason: row.cancellationReason,
 				estimatedReadyAt: row.estimatedReadyAt,
 				createdAt: row.createdAt,
 				acceptedAt: row.acceptedAt,
 				completedAt: row.completedAt,
 				rejectedAt: row.rejectedAt,
+				rejectionReason: row.rejectionReason,
 				customerName: row.customerName,
 				customerPhone: row.customerPhone,
 				customerNote: row.customerNote,
+				packagingPreference: row.packagingPreference,
 				specialOrder: Boolean(row.specialOrder),
 				items: [],
+				shortages: [],
 			};
 			entry = { order, items: new Map() };
 			ordersById.set(row.orderId, entry);
@@ -153,16 +202,27 @@ function buildMerchantOrders(rows: MerchantOrderRow[]) {
 		let item = entry.items.get(row.orderItemId);
 
 		if (!item) {
+			const unavailableQuantity = row.unavailableQuantity ?? 0;
+			const remainingQuantity = Math.max(0, row.quantity - unavailableQuantity);
 			item = {
+				id: row.orderItemId,
 				menuItemId: row.menuItemId,
 				name: row.itemName,
 				unitPrice: row.unitPrice,
-				quantity: row.quantity,
-				lineTotal: row.lineTotal,
+				quantity: remainingQuantity,
+				lineTotal: row.unitPrice * remainingQuantity,
 				modifiers: [],
 			};
 			entry.items.set(row.orderItemId, item);
-			entry.order.items.push(item);
+			if (remainingQuantity > 0) entry.order.items.push(item);
+			if (unavailableQuantity > 0) {
+				entry.order.shortages.push({
+					orderItemId: row.orderItemId,
+					name: row.itemName,
+					quantity: unavailableQuantity,
+					amountDeducted: row.amountDeducted ?? row.unitPrice * unavailableQuantity,
+				});
+			}
 		}
 
 		if (
@@ -183,11 +243,76 @@ function buildMerchantOrders(rows: MerchantOrderRow[]) {
 	return orders;
 }
 
-export async function listActiveMerchantOrders(db: D1Database) {
+export async function listActiveMerchantOrders(db: D1Database, now = new Date()) {
+	requireValidNow(now);
 	const { results } = await db
-		.prepare(`${SNAPSHOT_SELECT} WHERE orders.status IN ('pending', 'accepted') ${SNAPSHOT_ORDER}`)
+		.prepare(`${SNAPSHOT_SELECT}
+			WHERE orders.status = 'pending'
+				OR (orders.status = 'accepted' AND datetime(orders.estimated_ready_at) > datetime(?))
+			${SNAPSHOT_ORDER}`)
+		.bind(now.toISOString())
 		.all<MerchantOrderRow>();
 
+	return buildMerchantOrders(results);
+}
+
+export async function listRecentMerchantOrderHistory(db: D1Database, limit = 50, now = new Date()) {
+	requireValidNow(now);
+	const safeLimit = Math.max(1, Math.min(100, Math.trunc(limit)));
+	const { results } = await db
+		.prepare(
+			`${SNAPSHOT_SELECT}
+			WHERE orders.id IN (
+				SELECT id
+				FROM orders
+				WHERE status IN ('completed', 'rejected')
+					OR (status = 'accepted' AND datetime(estimated_ready_at) <= datetime(?))
+				ORDER BY COALESCE(completed_at, rejected_at, estimated_ready_at, created_at) DESC, id DESC
+				LIMIT ?
+			)
+			ORDER BY
+				COALESCE(orders.completed_at, orders.rejected_at, orders.created_at) DESC,
+				orders.id DESC,
+				order_items.sort_order ASC,
+				order_items.id ASC,
+				order_item_modifiers.sort_order ASC,
+				order_item_modifiers.id ASC`,
+		)
+		.bind(now.toISOString(), safeLimit)
+		.all<MerchantOrderRow>();
+
+	return buildMerchantOrders(results);
+}
+
+export async function listMerchantOrderHistoryForBusinessDate(
+	db: D1Database,
+	businessDate: string,
+	now = new Date(),
+) {
+	requireValidNow(now);
+	const range = getStoreBusinessDateRange(businessDate);
+	if (!range) throw new RangeError("businessDate must use YYYY-MM-DD");
+	const { results } = await db.prepare(
+		`${SNAPSHOT_SELECT}
+		WHERE orders.id IN (
+			SELECT id
+			FROM orders
+			WHERE estimated_ready_at >= ? AND estimated_ready_at < ?
+				AND (
+					status IN ('completed', 'rejected')
+					OR (status = 'accepted' AND datetime(estimated_ready_at) <= datetime(?))
+				)
+			ORDER BY datetime(estimated_ready_at) DESC, id DESC
+			LIMIT 200
+		)
+		ORDER BY
+			datetime(orders.estimated_ready_at) DESC,
+			orders.id DESC,
+			order_items.sort_order ASC,
+			order_items.id ASC,
+			order_item_modifiers.sort_order ASC,
+			order_item_modifiers.id ASC`,
+	).bind(range.startInclusive, range.endExclusive, now.toISOString()).all<MerchantOrderRow>();
 	return buildMerchantOrders(results);
 }
 
@@ -230,20 +355,26 @@ export async function transitionMerchantOrder(
 
 	switch (action) {
 		case "accept":
-			result = await db
-				.prepare(
+			[result] = await db.batch([
+				db.prepare(
 					`UPDATE orders
 					SET status = 'accepted', accepted_at = ?
 					WHERE id = ? AND status = 'pending'`,
 				)
 				.bind(timestamp, orderId)
-				.run();
+				,
+				db.prepare(
+					`UPDATE store_settings SET missed_order_count = 0, state_version = state_version + 1
+					WHERE id = 1 AND missed_order_count <> 0
+						AND EXISTS (SELECT 1 FROM orders WHERE id = ? AND status = 'accepted' AND accepted_at = ?)`,
+				).bind(orderId, timestamp),
+			]);
 			break;
 		case "reject":
 			result = await db
 				.prepare(
 					`UPDATE orders
-					SET status = 'rejected', rejected_at = ?
+					SET status = 'rejected', rejected_at = ?, rejection_reason = 'merchant_rejected'
 					WHERE id = ? AND status = 'pending'`,
 				)
 				.bind(timestamp, orderId)
@@ -276,6 +407,22 @@ export async function transitionMerchantOrder(
 			"ILLEGAL_ORDER_TRANSITION",
 			`Cannot ${action} an Order with status ${existing.status}`,
 		);
+	}
+
+	if (action === "complete" || action === "reject") {
+		try {
+			const store = await getStoreSettings(db);
+			if (store) {
+				await advancePendingOnsiteOrders(db, {
+					basePrepMinutes: store.base_prep_minutes,
+					normalOrderMinutes: store.normal_order_minutes,
+					specialExtraMinutes: store.special_extra_minutes,
+				}, now);
+			}
+		} catch {
+			// The state transition is already authoritative. A stale schedule snapshot is
+			// deliberately left unchanged instead of risking an unsafe deadline move.
+		}
 	}
 
 	const order = await getOrderSnapshotById(db, orderId);

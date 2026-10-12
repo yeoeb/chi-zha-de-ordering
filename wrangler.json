@@ -5,11 +5,17 @@
 	"compatibility_date": "2026-08-18",
 	"workers_dev": true,
 	"preview_urls": false,
+	"triggers": {
+		"crons": ["* * * * *"]
+	},
 	"version_metadata": {
 		"binding": "CF_VERSION_METADATA"
 	},
 	"vars": {
 		"MERCHANT_HOSTNAME": "chi-zha-de-ordering.yeoeb55688.workers.dev",
+		"MERCHANT_HOSTNAMES": "chi-zha-de-ordering.yeoeb55688.workers.dev,chizhade.com",
+		"ADMIN_HOSTNAME": "chi-zha-de-ordering.yeoeb55688.workers.dev",
+		"ADMIN_HOSTNAMES": "chi-zha-de-ordering.yeoeb55688.workers.dev,chizhade.com",
 		"CF_ACCESS_TEAM_DOMAIN": "https://yeoeb.cloudflareaccess.com",
 		"CF_ACCESS_AUD": "0b41555c46401f25d421053db77ca92f2ee8e57e91a32f647b2aa6fdd08928b4",
 		"VAPID_PUBLIC_KEY": "BPlmIxWf_i8z4wAzjdPv5wGwx3l7V5OHAru3FexDmz-8OYqGYCqKTo0h7k-9S7rEP99256kfRcKxmfKKGOfSySg",
