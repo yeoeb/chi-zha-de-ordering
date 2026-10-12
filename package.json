@@ -46,6 +46,7 @@
 		"test": "npm run test:worker && npm run test:dom",
 		"test:dom": "vitest run --config vitest.dom.config.ts",
 		"test:worker": "vitest run --config vitest.config.ts",
+		"verify": "node scripts/verify-local.mjs",
 		"verify:deploy-dry-run": "node scripts/verify-deployment-dry-run.mjs",
 		"verify:fresh-d1": "node scripts/verify-fresh-d1.mjs",
 		"verify:production-data": "node scripts/verify-production-data.mjs && node scripts/verify-hotfix-menu.mjs",
