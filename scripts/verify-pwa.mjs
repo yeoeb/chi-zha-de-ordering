@@ -26,14 +26,48 @@ if (
 	throw new Error("Light and dark browser theme-color metadata is incomplete");
 }
 
+const iconVersion = "red-zha-1";
+const publicAssetPath = (assetUrl) =>
+	join(root, "public", new URL(assetUrl, "https://chizhade.com").pathname.replace(/^\//, ""));
+const assertPngSize = (assetUrl, size) => {
+	const png = readFileSync(publicAssetPath(assetUrl));
+	if (
+		png.subarray(0, 8).toString("hex") !== "89504e470d0a1a0a" ||
+		png.readUInt32BE(16) !== size ||
+		png.readUInt32BE(20) !== size
+	) {
+		throw new Error(`PNG icon ${assetUrl} must be ${size}x${size}`);
+	}
+};
+
 for (const size of ["192x192", "512x512"]) {
 	const icon = manifest.icons?.find((candidate) => candidate.sizes === size);
-	if (!icon || !existsSync(join(root, "public", icon.src.replace(/^\//, "")))) {
+	if (!icon || icon.purpose !== "any maskable" || !icon.src.endsWith(`?v=${iconVersion}`) || !existsSync(publicAssetPath(icon.src))) {
 		throw new Error(`PWA icon ${size} is missing`);
 	}
+	assertPngSize(icon.src, Number.parseInt(size, 10));
+}
+
+for (const [asset, size] of [["/icons/favicon-32.png", 32], ["/icons/apple-touch-icon-180.png", 180]]) {
+	assertPngSize(asset, size);
+	if (!indexHtml.includes(`${asset}?v=${iconVersion}`)) {
+		throw new Error(`HTML does not reference the versioned ${asset}`);
+	}
+}
+for (const asset of ["/icons/icon.svg", "/favicon.ico", "/manifest.webmanifest"]) {
+	if (!existsSync(publicAssetPath(asset)) || !indexHtml.includes(`${asset}?v=${iconVersion}`)) {
+		throw new Error(`HTML does not reference the versioned ${asset}`);
+	}
+}
+const svg = readFileSync(publicAssetPath("/icons/icon.svg"), "utf8");
+if (!svg.includes("炸") || !["#e60012", "#ffffff", "#ffd54a"].every((color) => svg.includes(color))) {
+	throw new Error("Brand icon colors or white 炸 glyph are missing");
 }
 
 const serviceWorker = readFileSync(join(root, "public", "service-worker.js"), "utf8");
+if (!serviceWorker.includes('const SHELL_CACHE = "chi-zha-de-shell-v4";')) {
+	throw new Error("Service Worker cache must advance to v4 for the new icons");
+}
 if (!serviceWorker.includes('url.pathname.startsWith("/api/")')) {
 	throw new Error("Service Worker must bypass every API request");
 }
@@ -43,6 +77,38 @@ if (
 	!serviceWorker.includes('addEventListener("message"')
 ) {
 	throw new Error("Service Worker Web Push handlers are missing");
+}
+
+const lifecycleListeners = new Map();
+const precachedFiles = [];
+const deletedCaches = [];
+const cacheState = {
+	open: async () => ({ addAll: async (files) => { precachedFiles.push(...files); } }),
+	keys: async () => ["chi-zha-de-shell-v3", "chi-zha-de-shell-v4"],
+	delete: async (key) => { deletedCaches.push(key); },
+};
+runInNewContext(serviceWorker, {
+	self: {
+		addEventListener: (type, listener) => lifecycleListeners.set(type, listener),
+		skipWaiting: () => undefined,
+		clients: { claim: async () => undefined },
+	},
+	caches: cacheState,
+	URL,
+	Promise,
+});
+for (const eventName of ["install", "activate"]) {
+	let work;
+	lifecycleListeners.get(eventName)({ waitUntil: (promise) => { work = promise; } });
+	await work;
+}
+for (const asset of ["/manifest.webmanifest", "/icons/icon.svg", "/icons/favicon-32.png", "/favicon.ico", "/icons/apple-touch-icon-180.png", "/icons/icon-192.png", "/icons/icon-512.png"]) {
+	if (!precachedFiles.includes(`${asset}?v=${iconVersion}`)) {
+		throw new Error(`Service Worker does not precache the new ${asset}`);
+	}
+}
+if (deletedCaches.length !== 1 || deletedCaches[0] !== "chi-zha-de-shell-v3") {
+	throw new Error("Service Worker must remove the old icon cache on activation");
 }
 
 function createServiceWorkerHarness(windowClients = [], visibleNotifications = []) {

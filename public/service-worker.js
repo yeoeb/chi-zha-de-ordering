@@ -1,12 +1,16 @@
-const SHELL_CACHE = "chi-zha-de-shell-v3";
+const SHELL_CACHE = "chi-zha-de-shell-v4";
 const MERCHANT_PATH = "/merchant";
 const DEFAULT_PUSH_TITLE = "吃炸的｜新訂單";
 const DEFAULT_PUSH_BODY = "有一筆新訂單待處理";
 const SHELL_FILES = [
 	"/",
-	"/manifest.webmanifest",
-	"/icons/icon-192.png",
-	"/icons/icon-512.png",
+	"/manifest.webmanifest?v=red-zha-1",
+	"/icons/icon.svg?v=red-zha-1",
+	"/icons/favicon-32.png?v=red-zha-1",
+	"/favicon.ico?v=red-zha-1",
+	"/icons/apple-touch-icon-180.png?v=red-zha-1",
+	"/icons/icon-192.png?v=red-zha-1",
+	"/icons/icon-512.png?v=red-zha-1",
 ];
 
 self.addEventListener("install", (event) => {
